@@ -15,33 +15,28 @@ from amazon_client import search_items
 from telegram_client import post_product
 
 
-def estrai_prodotti(risposta_api):
-    """Estrae i campi utili dalla risposta JSON della PA-API."""
+def estrai_prodotti(items):
+    """Estrae i campi utili dagli oggetti prodotto restituiti dalla libreria."""
     prodotti = []
-    items = risposta_api.get("SearchResult", {}).get("Items", [])
 
     for item in items:
         try:
-            title = item["ItemInfo"]["Title"]["DisplayValue"]
-            image_url = item["Images"]["Primary"]["Large"]["URL"]
-            product_url = item["DetailPageURL"]
+            title = item.item_info.title.display_value
+            image_url = item.images.primary.large.url
+            product_url = item.detail_page_url
 
-            listing = item["Offers"]["Listings"][0]
-            price_info = listing["Price"]
-            price = price_info["DisplayAmount"]
+            listing = item.offers.listings[0]
+            price_val = listing.price.amount
+            price = f"{price_val:.2f} {listing.price.currency}"
 
             old_price = None
             discount_percent = 0
-            saving_basis = listing.get("SavingBasis")
-            if saving_basis:
-                old_price = saving_basis["DisplayAmount"]
-                try:
-                    price_val = price_info["Amount"]
-                    old_val = saving_basis["Amount"]
-                    if old_val > 0:
-                        discount_percent = round((1 - price_val / old_val) * 100)
-                except (KeyError, ZeroDivisionError):
-                    discount_percent = 0
+            saving_basis = getattr(listing, "saving_basis", None)
+            if saving_basis and saving_basis.amount:
+                old_val = saving_basis.amount
+                old_price = f"{old_val:.2f} {saving_basis.currency}"
+                if old_val > 0:
+                    discount_percent = round((1 - price_val / old_val) * 100)
 
             prodotti.append(
                 {
@@ -53,7 +48,7 @@ def estrai_prodotti(risposta_api):
                     "product_url": product_url,
                 }
             )
-        except (KeyError, IndexError):
+        except (AttributeError, IndexError, TypeError):
             # Prodotto senza dati sufficienti (es. niente offerta attiva): salta
             continue
 
@@ -64,8 +59,8 @@ def main():
     termine = random.choice(config.SEARCH_TERMS)
     print(f"Cerco prodotti per: {termine}")
 
-    risposta = search_items(termine, search_index=config.SEARCH_INDEX)
-    prodotti = estrai_prodotti(risposta)
+    items = search_items(termine, search_index=config.SEARCH_INDEX)
+    prodotti = estrai_prodotti(items)
 
     candidati = [
         p for p in prodotti if p["discount_percent"] >= config.MIN_DISCOUNT_PERCENT
