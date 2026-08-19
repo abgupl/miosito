@@ -1,7 +1,7 @@
 """
 Client per Amazon Creators API.
 
-Utilizza le nuove credenziali della Amazon Creators API:
+Utilizza le nuove credenziali Amazon:
 - Credential ID
 - Credential Secret
 - Version
@@ -32,7 +32,10 @@ def _get_client():
 
 
 def search_items(keywords, search_index="All", item_count=10):
-    """Cerca prodotti su Amazon e restituisce una lista di prodotti."""
+    """
+    Cerca prodotti su Amazon tramite Creators API
+    e restituisce una lista di oggetti prodotto.
+    """
 
     amazon = _get_client()
 
