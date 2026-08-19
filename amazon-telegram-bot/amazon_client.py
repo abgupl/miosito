@@ -1,36 +1,45 @@
 """
-Client per la Amazon Product Advertising API 5.0, basato sulla libreria
-"python-amazon-paapi" (gestisce firma delle richieste, autenticazione ed
-errori in modo affidabile, senza doverlo implementare a mano).
+Client per Amazon Creators API.
+
+Utilizza le nuove credenziali della Amazon Creators API:
+- Credential ID
+- Credential Secret
+- Version
+- Partner Tag
 """
 
 import os
-from amazon_paapi import AmazonApi
+
+from amazon_creatorsapi import AmazonCreatorsApi, Country
 
 import config
 
 
 def _get_client():
-    access_key = os.environ["AMAZON_ACCESS_KEY"]
-    secret_key = os.environ["AMAZON_SECRET_KEY"]
+    credential_id = os.environ["AMAZON_CREDENTIAL_ID"]
+    credential_secret = os.environ["AMAZON_CREDENTIAL_SECRET"]
+    version = os.environ["AMAZON_CREDENTIAL_VERSION"]
     partner_tag = os.environ[config.PARTNER_TAG_ENV]
 
-    return AmazonApi(
-        access_key,
-        secret_key,
+    return AmazonCreatorsApi(
+        credential_id,
+        credential_secret,
+        version,
         partner_tag,
-        config.COUNTRY,  # es. "IT"
-        throttling=1,  # secondi di attesa tra le richieste, per stare nei limiti
+        Country.IT,
+        throttling=1,
     )
 
 
 def search_items(keywords, search_index="All", item_count=10):
-    """Cerca prodotti su Amazon e restituisce una lista di oggetti prodotto."""
+    """Cerca prodotti su Amazon e restituisce una lista di prodotti."""
+
     amazon = _get_client()
+
     risultato = amazon.search_items(
         keywords=keywords,
         search_index=search_index,
         item_count=item_count,
     )
-    # La libreria restituisce un oggetto con l'attributo .items
+
     return getattr(risultato, "items", []) or []
