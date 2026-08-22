@@ -19,8 +19,7 @@ from telegram.ext import (
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHANNEL_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-# Opzionale ma fortemente consigliato.
-# Dopo ti spiego come recuperare il tuo ID.
+# Facoltativo: se impostato su Railway, solo tu potrai usare il bot
 ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
 
 LINK, NOME, PREZZO, VECCHIO_PREZZO, CONFERMA, RAPIDO = range(6)
@@ -56,14 +55,14 @@ async def controlla_autorizzazione(update: Update):
     elif update.callback_query:
         await update.callback_query.answer(
             "Non sei autorizzato.",
-            show_alert=True
+            show_alert=True,
         )
 
     return False
 
 
 # =========================================================
-# MENU
+# MENU PRINCIPALE
 # =========================================================
 
 def menu_principale():
@@ -72,38 +71,37 @@ def menu_principale():
             [
                 InlineKeyboardButton(
                     "➕ NUOVA OFFERTA",
-                    callback_data="nuova"
+                    callback_data="nuova",
                 )
             ],
             [
                 InlineKeyboardButton(
                     "⚡ MODALITÀ RAPIDA",
-                    callback_data="rapido"
+                    callback_data="rapido",
                 )
             ],
             [
                 InlineKeyboardButton(
                     "🎨 TEMPLATE",
-                    callback_data="template"
+                    callback_data="template",
                 ),
                 InlineKeyboardButton(
                     "📋 ULTIME",
-                    callback_data="ultime"
-                )
+                    callback_data="ultime",
+                ),
             ],
         ]
     )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
 
     await update.message.reply_text(
         "🔥 AMAZON OFFERTE BOT\n\n"
         "Cosa vuoi fare?",
-        reply_markup=menu_principale()
+        reply_markup=menu_principale(),
     )
 
     return ConversationHandler.END
@@ -114,7 +112,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================================================
 
 async def mio_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     await update.message.reply_text(
         f"🆔 Il tuo Telegram User ID è:\n\n"
         f"{update.effective_user.id}"
@@ -127,9 +124,8 @@ async def mio_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def nuova_da_comando(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
 
@@ -144,9 +140,8 @@ async def nuova_da_comando(
 
 async def nuova_da_pulsante(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
 
@@ -164,13 +159,11 @@ async def nuova_da_pulsante(
 
 async def ricevi_link(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     link = update.message.text.strip()
 
     if "amazon." not in link and "amzn." not in link:
-
         await update.message.reply_text(
             "❌ Non sembra un link Amazon.\n\n"
             "Inviami un link valido:"
@@ -189,15 +182,13 @@ async def ricevi_link(
 
 async def ricevi_nome(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     context.user_data["nome"] = update.message.text.strip()
 
     await update.message.reply_text(
         "💰 Qual è il prezzo attuale?\n\n"
-        "Esempio:\n"
-        "39,99"
+        "Esempio: 39,99"
     )
 
     return PREZZO
@@ -205,17 +196,14 @@ async def ricevi_nome(
 
 async def ricevi_prezzo(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     context.user_data["prezzo"] = update.message.text.strip()
 
     await update.message.reply_text(
         "🏷️ Qual era il prezzo precedente?\n\n"
-        "Esempio:\n"
-        "59,99\n\n"
-        "Oppure scrivi:\n"
-        "NO"
+        "Esempio: 59,99\n\n"
+        "Oppure scrivi: NO"
     )
 
     return VECCHIO_PREZZO
@@ -223,12 +211,9 @@ async def ricevi_prezzo(
 
 async def ricevi_vecchio_prezzo(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
-    context.user_data["vecchio_prezzo"] = (
-        update.message.text.strip()
-    )
+    context.user_data["vecchio_prezzo"] = update.message.text.strip()
 
     return await mostra_anteprima(update, context)
 
@@ -239,9 +224,8 @@ async def ricevi_vecchio_prezzo(
 
 async def rapido_da_comando(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
 
@@ -249,10 +233,10 @@ async def rapido_da_comando(
 
     await update.message.reply_text(
         "⚡ MODALITÀ RAPIDA\n\n"
-        "Mandami tutto in una sola riga così:\n\n"
+        "Mandami tutto in una sola riga:\n\n"
         "LINK | NOME | PREZZO | PREZZO PRIMA\n\n"
         "Esempio:\n"
-        "https://amazon.it/... | AirPods Pro | 199,99 | 279,99\n\n"
+        "https://www.amazon.it/... | AirPods Pro | 199,99 | 279,99\n\n"
         "Se non c'è il prezzo precedente usa NO."
     )
 
@@ -261,9 +245,8 @@ async def rapido_da_comando(
 
 async def rapido_da_pulsante(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
 
@@ -277,7 +260,7 @@ async def rapido_da_pulsante(
         "Invia:\n\n"
         "LINK | NOME | PREZZO | PREZZO PRIMA\n\n"
         "Esempio:\n"
-        "https://amazon.it/... | AirPods Pro | 199,99 | 279,99"
+        "https://www.amazon.it/... | AirPods Pro | 199,99 | 279,99"
     )
 
     return RAPIDO
@@ -285,16 +268,14 @@ async def rapido_da_pulsante(
 
 async def ricevi_rapido(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     parti = [
         parte.strip()
         for parte in update.message.text.split("|")
     ]
 
     if len(parti) != 4:
-
         await update.message.reply_text(
             "❌ Formato non corretto.\n\n"
             "Usa:\n"
@@ -306,7 +287,6 @@ async def ricevi_rapido(
     link, nome, prezzo, vecchio = parti
 
     if "amazon." not in link and "amzn." not in link:
-
         await update.message.reply_text(
             "❌ Il primo campo deve essere un link Amazon."
         )
@@ -322,13 +302,11 @@ async def ricevi_rapido(
 
 
 # =========================================================
-# TEMPLATE
+# CALCOLO SCONTO
 # =========================================================
 
 def calcola_sconto(prezzo, vecchio):
-
     try:
-
         nuovo = float(
             prezzo
             .replace("€", "")
@@ -351,19 +329,21 @@ def calcola_sconto(prezzo, vecchio):
         )
 
     except (ValueError, ZeroDivisionError):
-
         return None
 
 
-def crea_messaggio(context):
+# =========================================================
+# TEMPLATE
+# =========================================================
 
+def crea_messaggio(context):
     nome = context.user_data["nome"]
     prezzo = context.user_data["prezzo"]
     vecchio = context.user_data["vecchio_prezzo"]
 
     template = context.user_data.get(
         "template",
-        "pulito"
+        "pulito",
     )
 
     sconto = None
@@ -371,11 +351,10 @@ def crea_messaggio(context):
     if vecchio.upper() != "NO":
         sconto = calcola_sconto(
             prezzo,
-            vecchio
+            vecchio,
         )
 
     if template == "aggressivo":
-
         testo = (
             f"🚨 SUPER OFFERTA AMAZON 🚨\n\n"
             f"🔥 {nome}\n\n"
@@ -396,7 +375,6 @@ def crea_messaggio(context):
         return testo
 
     if template == "tech":
-
         testo = (
             f"⚡ TECH DEAL\n\n"
             f"📱 {nome}\n\n"
@@ -430,33 +408,38 @@ def crea_messaggio(context):
     return testo
 
 
+# =========================================================
+# ANTEPRIMA
+# =========================================================
+
 async def mostra_anteprima(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     messaggio = crea_messaggio(context)
 
     context.user_data["messaggio"] = messaggio
+
+    link = context.user_data.get("link", "")
 
     tastiera = InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
                     "📤 PUBBLICA",
-                    callback_data="pubblica"
+                    callback_data="pubblica",
                 )
             ],
             [
                 InlineKeyboardButton(
                     "🎨 CAMBIA TEMPLATE",
-                    callback_data="cambia_template"
+                    callback_data="cambia_template",
                 )
             ],
             [
                 InlineKeyboardButton(
                     "❌ ANNULLA",
-                    callback_data="annulla"
+                    callback_data="annulla",
                 )
             ],
         ]
@@ -466,21 +449,19 @@ async def mostra_anteprima(
         "👀 ANTEPRIMA\n\n"
         "──────────────\n\n"
         f"{messaggio}\n\n"
-        "🔗 [Pulsante: VEDI OFFERTA]"
+        f"👉 {link}\n\n"
+        "⚡ Prezzo e disponibilità possono variare."
     )
 
     if update.message:
-
         await update.message.reply_text(
             testo,
-            reply_markup=tastiera
+            reply_markup=tastiera,
         )
-
     else:
-
         await update.callback_query.message.reply_text(
             testo,
-            reply_markup=tastiera
+            reply_markup=tastiera,
         )
 
     return CONFERMA
@@ -492,9 +473,8 @@ async def mostra_anteprima(
 
 async def conferma(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
 
@@ -502,7 +482,6 @@ async def conferma(
     await query.answer()
 
     if query.data == "annulla":
-
         context.user_data.clear()
 
         await query.edit_message_text(
@@ -511,31 +490,30 @@ async def conferma(
 
         await query.message.reply_text(
             "Cosa vuoi fare?",
-            reply_markup=menu_principale()
+            reply_markup=menu_principale(),
         )
 
         return ConversationHandler.END
 
     if query.data == "cambia_template":
-
         tastiera = InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
                         "✨ Pulito",
-                        callback_data="tpl_pulito"
+                        callback_data="tpl_pulito",
                     )
                 ],
                 [
                     InlineKeyboardButton(
                         "🚨 Aggressivo",
-                        callback_data="tpl_aggressivo"
+                        callback_data="tpl_aggressivo",
                     )
                 ],
                 [
                     InlineKeyboardButton(
                         "⚡ Tech",
-                        callback_data="tpl_tech"
+                        callback_data="tpl_tech",
                     )
                 ],
             ]
@@ -543,16 +521,15 @@ async def conferma(
 
         await query.message.reply_text(
             "🎨 Scegli il template:",
-            reply_markup=tastiera
+            reply_markup=tastiera,
         )
 
         return CONFERMA
 
     if query.data.startswith("tpl_"):
-
         template = query.data.replace(
             "tpl_",
-            ""
+            "",
         )
 
         context.user_data["template"] = template
@@ -563,11 +540,10 @@ async def conferma(
 
         return await mostra_anteprima(
             update,
-            context
+            context,
         )
 
     if query.data == "pubblica":
-
         messaggio = context.user_data.get(
             "messaggio"
         )
@@ -581,19 +557,27 @@ async def conferma(
         )
 
         if not messaggio or not link:
-
             await query.edit_message_text(
                 "❌ Dati dell'offerta mancanti."
             )
 
             return ConversationHandler.END
 
+        # IMPORTANTE:
+        # Il link è presente anche nel testo del post,
+        # così Telegram può generare l'anteprima Amazon.
+        messaggio_con_link = (
+            f"{messaggio}\n\n"
+            f"👉 {link}\n\n"
+            f"⚡ Prezzo e disponibilità possono variare."
+        )
+
         bottone_offerta = InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
                         "🛒 VEDI OFFERTA",
-                        url=link
+                        url=link,
                     )
                 ]
             ]
@@ -601,8 +585,8 @@ async def conferma(
 
         await context.bot.send_message(
             chat_id=CHANNEL_ID,
-            text=messaggio,
-            reply_markup=bottone_offerta
+            text=messaggio_con_link,
+            reply_markup=bottone_offerta,
         )
 
         ultime_offerte.appendleft(
@@ -611,7 +595,7 @@ async def conferma(
                 "link": link,
                 "prezzo": context.user_data.get(
                     "prezzo"
-                )
+                ),
             }
         )
 
@@ -623,7 +607,7 @@ async def conferma(
 
         await query.message.reply_text(
             "Vuoi pubblicarne un'altra?",
-            reply_markup=menu_principale()
+            reply_markup=menu_principale(),
         )
 
         return ConversationHandler.END
@@ -635,28 +619,24 @@ async def conferma(
 
 async def ultime(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     if not await controlla_autorizzazione(update):
         return
 
     if not ultime_offerte:
-
         testo = (
             "📋 Nessuna offerta pubblicata "
             "da quando il bot è stato avviato."
         )
 
     else:
-
         righe = ["📋 ULTIME OFFERTE\n"]
 
         for numero, offerta in enumerate(
             ultime_offerte,
-            start=1
+            start=1,
         ):
-
             righe.append(
                 f"{numero}. {offerta['nome']} "
                 f"— {offerta['prezzo']} €"
@@ -669,6 +649,7 @@ async def ultime(
 
     else:
         await update.callback_query.answer()
+
         await update.callback_query.message.reply_text(
             testo
         )
@@ -680,9 +661,8 @@ async def ultime(
 
 async def template_menu(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     if not await controlla_autorizzazione(update):
         return
 
@@ -694,19 +674,19 @@ async def template_menu(
             [
                 InlineKeyboardButton(
                     "✨ Pulito",
-                    callback_data="menu_tpl_pulito"
+                    callback_data="menu_tpl_pulito",
                 )
             ],
             [
                 InlineKeyboardButton(
                     "🚨 Aggressivo",
-                    callback_data="menu_tpl_aggressivo"
+                    callback_data="menu_tpl_aggressivo",
                 )
             ],
             [
                 InlineKeyboardButton(
                     "⚡ Tech",
-                    callback_data="menu_tpl_tech"
+                    callback_data="menu_tpl_tech",
                 )
             ],
         ]
@@ -714,21 +694,20 @@ async def template_menu(
 
     await query.message.reply_text(
         "🎨 Scegli il template predefinito:",
-        reply_markup=tastiera
+        reply_markup=tastiera,
     )
 
 
 async def scegli_template_menu(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     query = update.callback_query
     await query.answer()
 
     template = query.data.replace(
         "menu_tpl_",
-        ""
+        "",
     )
 
     context.user_data["template"] = template
@@ -744,14 +723,13 @@ async def scegli_template_menu(
 
 async def annulla(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-
     context.user_data.clear()
 
     await update.message.reply_text(
         "❌ Operazione annullata.",
-        reply_markup=menu_principale()
+        reply_markup=menu_principale(),
     )
 
     return ConversationHandler.END
@@ -762,67 +740,61 @@ async def annulla(
 # =========================================================
 
 def main():
-
     app = Application.builder().token(TOKEN).build()
 
     conversazione = ConversationHandler(
-
         entry_points=[
             CommandHandler(
                 "nuova",
-                nuova_da_comando
+                nuova_da_comando,
             ),
-
             CommandHandler(
                 "rapido",
-                rapido_da_comando
+                rapido_da_comando,
             ),
-
             CallbackQueryHandler(
                 nuova_da_pulsante,
-                pattern="^nuova$"
+                pattern="^nuova$",
             ),
-
             CallbackQueryHandler(
                 rapido_da_pulsante,
-                pattern="^rapido$"
+                pattern="^rapido$",
             ),
         ],
 
         states={
-
             LINK: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    ricevi_link
+                    ricevi_link,
                 )
             ],
 
             NOME: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    ricevi_nome
+                    ricevi_nome,
                 )
             ],
 
             PREZZO: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    ricevi_prezzo
+                    ricevi_prezzo,
                 )
             ],
 
             VECCHIO_PREZZO: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    ricevi_vecchio_prezzo
+                    ricevi_vecchio_prezzo,
                 )
             ],
 
             RAPIDO: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    ricevi_rapido
+                    ricevi_rapido,
                 )
             ],
 
@@ -835,7 +807,7 @@ def main():
                         "tpl_pulito|"
                         "tpl_aggressivo|"
                         "tpl_tech)$"
-                    )
+                    ),
                 )
             ],
         },
@@ -843,31 +815,31 @@ def main():
         fallbacks=[
             CommandHandler(
                 "annulla",
-                annulla
+                annulla,
             )
         ],
 
-        allow_reentry=True
+        allow_reentry=True,
     )
 
     app.add_handler(
         CommandHandler(
             "start",
-            start
+            start,
         )
     )
 
     app.add_handler(
         CommandHandler(
             "id",
-            mio_id
+            mio_id,
         )
     )
 
     app.add_handler(
         CommandHandler(
             "ultime",
-            ultime
+            ultime,
         )
     )
 
@@ -876,21 +848,21 @@ def main():
     app.add_handler(
         CallbackQueryHandler(
             ultime,
-            pattern="^ultime$"
+            pattern="^ultime$",
         )
     )
 
     app.add_handler(
         CallbackQueryHandler(
             template_menu,
-            pattern="^template$"
+            pattern="^template$",
         )
     )
 
     app.add_handler(
         CallbackQueryHandler(
             scegli_template_menu,
-            pattern="^menu_tpl_"
+            pattern="^menu_tpl_",
         )
     )
 
