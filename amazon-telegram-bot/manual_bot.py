@@ -19,7 +19,7 @@ from telegram.ext import (
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHANNEL_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-# Facoltativo: se impostato su Railway, solo tu potrai usare il bot
+# Facoltativo: se impostato su Railway, solo tu puoi usare il bot
 ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
 
 LINK, NOME, PREZZO, VECCHIO_PREZZO, CONFERMA, RAPIDO = range(6)
@@ -234,9 +234,9 @@ async def rapido_da_comando(
     await update.message.reply_text(
         "⚡ MODALITÀ RAPIDA\n\n"
         "Mandami tutto in una sola riga:\n\n"
-        "LINK | NOME | PREZZO | PREZZO PRIMA\n\n"
+        "LINK - NOME - PREZZO - PREZZO PRIMA\n\n"
         "Esempio:\n"
-        "https://www.amazon.it/... | AirPods Pro | 199,99 | 279,99\n\n"
+        "https://www.amazon.it/dp/XXXX - AirPods Pro - 199,99 - 279,99\n\n"
         "Se non c'è il prezzo precedente usa NO."
     )
 
@@ -257,10 +257,12 @@ async def rapido_da_pulsante(
 
     await query.message.reply_text(
         "⚡ MODALITÀ RAPIDA\n\n"
-        "Invia:\n\n"
-        "LINK | NOME | PREZZO | PREZZO PRIMA\n\n"
+        "Invia tutto in una sola riga:\n\n"
+        "LINK - NOME - PREZZO - PREZZO PRIMA\n\n"
         "Esempio:\n"
-        "https://www.amazon.it/... | AirPods Pro | 199,99 | 279,99"
+        "https://www.amazon.it/dp/XXXX - AirPods Pro - 199,99 - 279,99\n\n"
+        "Se non c'è il prezzo precedente:\n"
+        "https://www.amazon.it/dp/XXXX - AirPods Pro - 199,99 - NO"
     )
 
     return RAPIDO
@@ -270,16 +272,20 @@ async def ricevi_rapido(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+    testo = update.message.text.strip()
+
     parti = [
         parte.strip()
-        for parte in update.message.text.split("|")
+        for parte in testo.split(" - ", 3)
     ]
 
     if len(parti) != 4:
         await update.message.reply_text(
             "❌ Formato non corretto.\n\n"
-            "Usa:\n"
-            "LINK | NOME | PREZZO | PREZZO PRIMA"
+            "Usa esattamente:\n\n"
+            "LINK - NOME - PREZZO - PREZZO PRIMA\n\n"
+            "Esempio:\n"
+            "https://www.amazon.it/dp/XXXX - AirPods Pro - 199,99 - 279,99"
         )
 
         return RAPIDO
@@ -390,8 +396,6 @@ def crea_messaggio(context):
 
         return testo
 
-    # TEMPLATE PULITO
-
     testo = (
         f"🔥 OFFERTA AMAZON\n\n"
         f"📦 {nome}\n\n"
@@ -458,6 +462,7 @@ async def mostra_anteprima(
             testo,
             reply_markup=tastiera,
         )
+
     else:
         await update.callback_query.message.reply_text(
             testo,
@@ -563,9 +568,6 @@ async def conferma(
 
             return ConversationHandler.END
 
-        # IMPORTANTE:
-        # Il link è presente anche nel testo del post,
-        # così Telegram può generare l'anteprima Amazon.
         messaggio_con_link = (
             f"{messaggio}\n\n"
             f"👉 {link}\n\n"
