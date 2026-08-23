@@ -1152,16 +1152,37 @@ async def club_home(
 
     await query.answer()
 
+    user_id = update.effective_user.id
+
     aggiungi_attivita(
-        update.effective_user.id
+        user_id
+    )
+
+    punti = get_punti(
+        user_id
+    )
+
+    amici_mese = inviti_premiati_questo_mese(
+        user_id
     )
 
     await query.message.reply_text(
-        "🔥 CLUB OFFERTE\n\n"
-        "Cosa vuoi fare?",
+        "🔥 BENVENUTO NEL CLUB OFFERTE\n\n"
+        "Qui le offerte non sono l'unico vantaggio. 😉\n\n"
+        "Invita i tuoi amici, accumula punti "
+        "e sblocca premi!\n\n"
+        "👥 Ogni amico valido = 2 punti\n"
+        "🎁 10 punti = Buono Amazon da 5 €\n\n"
+        f"⭐ Il tuo saldo: {punti} punti\n"
+        f"👥 Amici premiati questo mese: "
+        f"{amici_mese}/5\n\n"
+        "I tuoi punti si accumulano e puoi "
+        "controllarli quando vuoi.\n\n"
+        "🚀 Porta i tuoi amici nel Club "
+        "e raggiungi il prossimo premio!\n\n"
+        "👇 Cosa vuoi fare?",
         reply_markup=menu_club(),
     )
-
 
 # =========================================================
 # =========================================================
