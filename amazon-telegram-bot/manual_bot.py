@@ -190,17 +190,29 @@ async def start(
     )
 
     testo = (
-        "🔥 BENVENUTO NEL CLUB!\n\n"
-        "Qui puoi accumulare punti, invitare amici "
-        "e richiedere premi. 🎁\n\n"
+        "🔥 BENVENUTO NEL CLUB OFFERTE\n\n"
+        "Qui le offerte non sono l'unico vantaggio. 😉\n\n"
+        "Invita i tuoi amici, accumula punti "
+        "e sblocca premi!\n\n"
+        "👥 Ogni amico valido = 2 punti\n"
+        "🎁 10 punti = Buono Amazon da 5 €\n\n"
     )
 
     if nuovo and invitato_da:
         testo += (
-            "👥 Sei entrato tramite l'invito di un amico!\n\n"
+            "👥 Sei entrato tramite "
+            "l'invito di un amico!\n\n"
         )
 
-    testo += "Cosa vuoi fare?"
+    testo += (
+        "⭐ Il tuo saldo: 0 punti\n"
+        "👥 Amici premiati questo mese: 0/5\n\n"
+        "I tuoi punti si accumulano e puoi "
+        "controllarli quando vuoi.\n\n"
+        "🚀 Porta i tuoi amici nel Club "
+        "e raggiungi il prossimo premio!\n\n"
+        "👇 Cosa vuoi fare?"
+    )
 
     await update.message.reply_text(
         testo,
