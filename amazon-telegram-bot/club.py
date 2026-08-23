@@ -17,9 +17,7 @@ DB_PATH = os.environ.get(
     "club.db"
 )
 
-CHANNEL_ID = os.environ[
-    "TELEGRAM_CHAT_ID"
-]
+CHANNEL_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 CHANNEL_URL = os.environ.get(
     "TELEGRAM_CHANNEL_URL",
@@ -30,10 +28,17 @@ ADMIN_ID = os.environ.get(
     "ADMIN_TELEGRAM_ID"
 )
 
-
+# 2 punti per ogni amico verificato
 PUNTI_INVITO = 2
+
+# L'amico viene verificato dopo 7 giorni
 GIORNI_VERIFICA = 7
+
+# Massimo 5 amici premiati al mese
 MAX_INVITI_MESE = 5
+
+# Premio principale
+PREMIO_5_EURO_PUNTI = 10
 
 
 # =========================================================
@@ -42,13 +47,7 @@ MAX_INVITI_MESE = 5
 
 def connessione():
 
-    db = sqlite3.connect(
-        DB_PATH
-    )
-
-    db.execute(
-        "PRAGMA journal_mode=WAL"
-    )
+    db = sqlite3.connect(DB_PATH)
 
     return db
 
@@ -65,11 +64,7 @@ def inizializza_database():
     db = connessione()
     cur = db.cursor()
 
-
-    # =====================================================
     # UTENTI
-    # =====================================================
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS utenti (
             telegram_id INTEGER PRIMARY KEY,
@@ -82,11 +77,7 @@ def inizializza_database():
         )
     """)
 
-
-    # =====================================================
     # INVITI
-    # =====================================================
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS inviti (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,11 +89,7 @@ def inizializza_database():
         )
     """)
 
-
-    # =====================================================
     # PREMI
-    # =====================================================
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS premi (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,11 +101,7 @@ def inizializza_database():
         )
     """)
 
-
-    # =====================================================
-    # MOVIMENTI PUNTI
-    # =====================================================
-
+    # STORICO PUNTI
     cur.execute("""
         CREATE TABLE IF NOT EXISTS movimenti_punti (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,29 +112,17 @@ def inizializza_database():
         )
     """)
 
-
     db.commit()
 
-
-    # =====================================================
-    # MIGRAZIONE V1 -> V2
-    #
-    # Se qualcuno aveva già punti prima della V2,
-    # registriamo il saldo iniziale una sola volta.
-    # =====================================================
-
+    # Se esistono utenti della V1 che avevano già punti,
+    # registriamo una voce iniziale nello storico.
     cur.execute("""
-        SELECT
-            telegram_id,
-            punti
+        SELECT telegram_id, punti
         FROM utenti
         WHERE punti != 0
     """)
 
-    utenti_con_punti = (
-        cur.fetchall()
-    )
-
+    utenti_con_punti = cur.fetchall()
 
     for user_id, punti in utenti_con_punti:
 
@@ -159,9 +130,7 @@ def inizializza_database():
             SELECT COUNT(*)
             FROM movimenti_punti
             WHERE telegram_id = ?
-        """, (
-            user_id,
-        ))
+        """, (user_id,))
 
         numero = cur.fetchone()[0]
 
@@ -182,7 +151,6 @@ def inizializza_database():
                 ora(),
             ))
 
-
     db.commit()
     db.close()
 
@@ -196,10 +164,7 @@ def e_admin(user_id):
     if not ADMIN_ID:
         return False
 
-    return (
-        str(user_id)
-        == str(ADMIN_ID)
-    )
+    return str(user_id) == str(ADMIN_ID)
 
 
 async def verifica_admin(update):
@@ -213,13 +178,9 @@ async def verifica_admin(update):
 
         if update.callback_query:
 
-            await (
-                update
-                .callback_query
-                .answer(
-                    "⛔ Non autorizzato.",
-                    show_alert=True,
-                )
+            await update.callback_query.answer(
+                "⛔ Non autorizzato.",
+                show_alert=True,
             )
 
         return False
@@ -236,24 +197,17 @@ def utente_esiste(user_id):
     db = connessione()
     cur = db.cursor()
 
-    cur.execute(
-        """
+    cur.execute("""
         SELECT telegram_id
         FROM utenti
         WHERE telegram_id = ?
-        """,
-        (
-            user_id,
-        )
-    )
+    """, (user_id,))
 
     risultato = cur.fetchone()
 
     db.close()
 
-    return (
-        risultato is not None
-    )
+    return risultato is not None
 
 
 def registra_utente(
@@ -261,36 +215,23 @@ def registra_utente(
     invitato_da=None,
 ):
 
-    nuovo = (
-        not utente_esiste(
-            user.id
-        )
-    )
+    nuovo = not utente_esiste(user.id)
 
     db = connessione()
     cur = db.cursor()
 
-
     if nuovo:
 
         # Non può invitare se stesso
-        if (
-            invitato_da
-            == user.id
-        ):
+        if invitato_da == user.id:
             invitato_da = None
 
-
-        # L'invitante deve essere
-        # già registrato nel bot
+        # L'invitante deve essere già registrato
         if (
             invitato_da
-            and not utente_esiste(
-                invitato_da
-            )
+            and not utente_esiste(invitato_da)
         ):
             invitato_da = None
-
 
         cur.execute("""
             INSERT INTO utenti (
@@ -302,9 +243,7 @@ def registra_utente(
                 data_iscrizione,
                 attivita
             )
-            VALUES (
-                ?, ?, ?, 0, ?, ?, 1
-            )
+            VALUES (?, ?, ?, 0, ?, ?, 1)
         """, (
             user.id,
             user.username,
@@ -313,26 +252,21 @@ def registra_utente(
             ora(),
         ))
 
-
         if invitato_da:
 
             cur.execute("""
-                INSERT OR IGNORE
-                INTO inviti (
+                INSERT OR IGNORE INTO inviti (
                     invitante_id,
                     invitato_id,
                     data_invito,
                     stato
                 )
-                VALUES (
-                    ?, ?, ?, 'attesa'
-                )
+                VALUES (?, ?, ?, 'attesa')
             """, (
                 invitato_da,
                 user.id,
                 ora(),
             ))
-
 
     else:
 
@@ -349,7 +283,6 @@ def registra_utente(
             user.id,
         ))
 
-
     db.commit()
     db.close()
 
@@ -365,9 +298,7 @@ def aggiungi_attivita(user_id):
         UPDATE utenti
         SET attivita = attivita + 1
         WHERE telegram_id = ?
-    """, (
-        user_id,
-    ))
+    """, (user_id,))
 
     db.commit()
     db.close()
@@ -382,9 +313,7 @@ def get_punti(user_id):
         SELECT punti
         FROM utenti
         WHERE telegram_id = ?
-    """, (
-        user_id,
-    ))
+    """, (user_id,))
 
     risultato = cur.fetchone()
 
@@ -409,23 +338,18 @@ def modifica_punti(
     db = connessione()
     cur = db.cursor()
 
-
     cur.execute("""
         SELECT punti
         FROM utenti
         WHERE telegram_id = ?
-    """, (
-        user_id,
-    ))
+    """, (user_id,))
 
     risultato = cur.fetchone()
-
 
     if not risultato:
 
         db.close()
         return False
-
 
     saldo_attuale = risultato[0]
 
@@ -434,13 +358,11 @@ def modifica_punti(
         + variazione
     )
 
-
-    # Mai saldo negativo
+    # Il saldo non può diventare negativo
     if nuovo_saldo < 0:
 
         db.close()
         return False
-
 
     cur.execute("""
         UPDATE utenti
@@ -450,7 +372,6 @@ def modifica_punti(
         nuovo_saldo,
         user_id,
     ))
-
 
     cur.execute("""
         INSERT INTO movimenti_punti (
@@ -466,7 +387,6 @@ def modifica_punti(
         motivo,
         ora(),
     ))
-
 
     db.commit()
     db.close()
@@ -509,12 +429,10 @@ def menu_club():
 
 
 # =========================================================
-# VERIFICA INVITI
+# INVITI PREMIATI NEL MESE
 # =========================================================
 
-def inviti_premiati_questo_mese(
-    user_id
-):
+def inviti_premiati_questo_mese(user_id):
 
     oggi = datetime.now()
 
@@ -526,22 +444,16 @@ def inviti_premiati_questo_mese(
     db = connessione()
     cur = db.cursor()
 
-
     cur.execute("""
         SELECT COUNT(*)
         FROM inviti
         WHERE invitante_id = ?
-        AND stato = 'verificato'
-        AND substr(
-            data_verifica,
-            1,
-            7
-        ) = ?
+          AND stato = 'verificato'
+          AND substr(data_verifica, 1, 7) = ?
     """, (
         user_id,
         mese,
     ))
-
 
     numero = cur.fetchone()[0]
 
@@ -550,6 +462,10 @@ def inviti_premiati_questo_mese(
     return numero
 
 
+# =========================================================
+# VERIFICA INVITI
+# =========================================================
+
 async def verifica_inviti(
     bot,
     invitante_id,
@@ -557,7 +473,6 @@ async def verifica_inviti(
 
     db = connessione()
     cur = db.cursor()
-
 
     cur.execute("""
         SELECT
@@ -568,24 +483,18 @@ async def verifica_inviti(
         FROM inviti
 
         JOIN utenti
-        ON utenti.telegram_id
-           = inviti.invitato_id
+        ON utenti.telegram_id = inviti.invitato_id
 
         WHERE
             inviti.invitante_id = ?
             AND inviti.stato = 'attesa'
-    """, (
-        invitante_id,
-    ))
-
+    """, (invitante_id,))
 
     inviti = cur.fetchall()
 
     db.close()
 
-
     nuovi_punti = 0
-
 
     for (
         invito_id,
@@ -594,31 +503,25 @@ async def verifica_inviti(
         attivita,
     ) in inviti:
 
-
         data = datetime.fromisoformat(
             data_invito
         )
 
-
-        # Devono essere trascorsi
-        # almeno 7 giorni
+        # Devono essere trascorsi almeno 7 giorni
         if (
             datetime.now()
-            < data
-            + timedelta(
+            < data + timedelta(
                 days=GIORNI_VERIFICA
             )
         ):
             continue
 
-
-        # Deve aver utilizzato
-        # realmente il bot
+        # L'amico deve aver usato il bot
+        # almeno due volte.
         if attivita < 2:
             continue
 
-
-        # Massimo referral mensili
+        # Massimo 5 amici premiati al mese
         if (
             inviti_premiati_questo_mese(
                 invitante_id
@@ -627,18 +530,13 @@ async def verifica_inviti(
         ):
             break
 
-
-        # Controlliamo che
-        # sia ancora nel canale
+        # Deve essere ancora iscritto al canale
         try:
 
-            membro = (
-                await bot.get_chat_member(
-                    chat_id=CHANNEL_ID,
-                    user_id=invitato_id,
-                )
+            membro = await bot.get_chat_member(
+                chat_id=CHANNEL_ID,
+                user_id=invitato_id,
             )
-
 
             if membro.status not in (
                 "member",
@@ -647,34 +545,26 @@ async def verifica_inviti(
             ):
                 continue
 
-
         except Exception as errore:
 
             print(
                 "Errore verifica membro "
-                f"{invitato_id}: "
-                f"{errore}"
+                f"{invitato_id}: {errore}"
             )
 
             continue
 
-
         db = connessione()
         cur = db.cursor()
 
-
-        # Ricontrollo anti doppio accredito
+        # Anti doppio accredito
         cur.execute("""
             SELECT stato
             FROM inviti
             WHERE id = ?
-        """, (
-            invito_id,
-        ))
-
+        """, (invito_id,))
 
         stato = cur.fetchone()
-
 
         if (
             not stato
@@ -683,7 +573,6 @@ async def verifica_inviti(
 
             db.close()
             continue
-
 
         cur.execute("""
             UPDATE inviti
@@ -696,27 +585,21 @@ async def verifica_inviti(
             invito_id,
         ))
 
-
         db.commit()
         db.close()
-
 
         successo = modifica_punti(
             invitante_id,
             PUNTI_INVITO,
             (
-                "Referral verificato "
+                "Amico verificato "
                 f"(utente {invitato_id})"
             ),
         )
 
-
         if successo:
 
-            nuovi_punti += (
-                PUNTI_INVITO
-            )
-
+            nuovi_punti += PUNTI_INVITO
 
     return nuovi_punti
 
@@ -734,91 +617,113 @@ async def mostra_punti(
 
     await query.answer()
 
-
-    user_id = (
-        update
-        .effective_user
-        .id
-    )
-
+    user_id = update.effective_user.id
 
     aggiungi_attivita(
         user_id
     )
-
 
     nuovi = await verifica_inviti(
         context.bot,
         user_id,
     )
 
-
     punti = get_punti(
         user_id
     )
 
-
     db = connessione()
     cur = db.cursor()
 
-
+    # Inviti ancora in attesa
     cur.execute("""
         SELECT COUNT(*)
         FROM inviti
         WHERE
             invitante_id = ?
             AND stato = 'attesa'
-    """, (
-        user_id,
-    ))
+    """, (user_id,))
 
-    in_attesa = (
-        cur.fetchone()[0]
-    )
+    in_attesa = cur.fetchone()[0]
 
-
+    # Totale inviti verificati
     cur.execute("""
         SELECT COUNT(*)
         FROM inviti
         WHERE
             invitante_id = ?
             AND stato = 'verificato'
-    """, (
-        user_id,
-    ))
+    """, (user_id,))
 
-    verificati = (
-        cur.fetchone()[0]
-    )
-
+    verificati_totali = cur.fetchone()[0]
 
     db.close()
 
-
-    testo = (
-
-        "⭐ IL TUO SALDO\n\n"
-
-        f"💰 Punti disponibili: "
-        f"{punti}\n\n"
-
-        f"✅ Amici verificati: "
-        f"{verificati}\n"
-
-        f"⏳ Inviti in attesa: "
-        f"{in_attesa}\n"
-
+    # Quanti amici sono stati premiati questo mese
+    premiati_mese = inviti_premiati_questo_mese(
+        user_id
     )
 
+    # Quanti amici restano premiabili questo mese
+    amici_rimanenti = max(
+        0,
+        MAX_INVITI_MESE - premiati_mese
+    )
+
+    # Quanti punti può ancora ottenere questo mese
+    punti_ancora_mese = (
+        amici_rimanenti
+        * PUNTI_INVITO
+    )
+
+    # Quanto manca al buono da 5 €
+    punti_mancanti_premio = max(
+        0,
+        PREMIO_5_EURO_PUNTI - punti
+    )
+
+    testo = (
+        "⭐ I TUOI PUNTI\n\n"
+        f"💰 Saldo: {punti} punti\n\n"
+
+        f"👥 Amici premiati questo mese: "
+        f"{premiati_mese}/{MAX_INVITI_MESE}\n"
+
+        f"🎯 Puoi ottenere ancora "
+        f"{punti_ancora_mese} punti questo mese\n\n"
+
+        f"✅ Amici verificati totali: "
+        f"{verificati_totali}\n"
+
+        f"⏳ Amici in attesa: "
+        f"{in_attesa}\n\n"
+
+        "🎁 Prossimo premio:\n"
+        "Buono Amazon da 5 €\n"
+        f"⭐ Servono {PREMIO_5_EURO_PUNTI} punti"
+    )
+
+    if punti_mancanti_premio > 0:
+
+        testo += (
+            f"\n👉 Ti mancano "
+            f"{punti_mancanti_premio} punti"
+        )
+
+    else:
+
+        testo += (
+            "\n🎉 Hai abbastanza punti "
+            "per richiedere il premio!"
+        )
 
     if nuovi:
 
         testo += (
-            "\n🎉 Hai appena ricevuto "
+            f"\n\n🎉 Hai appena ricevuto "
             f"+{nuovi} punti per nuovi "
-            "inviti verificati!"
+            "amici verificati!"
         )
-
 
     await query.message.reply_text(
         testo,
@@ -839,21 +744,13 @@ async def invita_amici(
 
     await query.answer()
 
+    user_id = update.effective_user.id
 
     aggiungi_attivita(
-        update.effective_user.id
+        user_id
     )
 
-
-    bot_info = (
-        await context.bot.get_me()
-    )
-
-
-    user_id = (
-        update.effective_user.id
-    )
-
+    bot_info = await context.bot.get_me()
 
     link = (
         f"https://t.me/"
@@ -861,30 +758,46 @@ async def invita_amici(
         f"?start={user_id}"
     )
 
-
-    testo = (
-
-        "👥 INVITA UN AMICO\n\n"
-
-        "Condividi il tuo link personale:\n\n"
-
-        f"{link}\n\n"
-
-        f"🎁 Ricevi {PUNTI_INVITO} punti "
-        "quando l'amico viene verificato.\n\n"
-
-        f"⏳ La verifica avviene dopo "
-        f"{GIORNI_VERIFICA} giorni.\n\n"
-
-        "L'amico deve essere ancora "
-        "iscritto al canale e aver "
-        "utilizzato realmente il bot.\n\n"
-
-        f"📌 Massimo {MAX_INVITI_MESE} "
-        "inviti premiati al mese."
-
+    premiati_mese = inviti_premiati_questo_mese(
+        user_id
     )
 
+    amici_rimanenti = max(
+        0,
+        MAX_INVITI_MESE - premiati_mese
+    )
+
+    punti_ancora = (
+        amici_rimanenti
+        * PUNTI_INVITO
+    )
+
+    testo = (
+        "👥 INVITA AMICI\n\n"
+
+        "Condividi il tuo link personale:\n\n"
+        f"{link}\n\n"
+
+        f"🎁 Ogni amico valido ti fa guadagnare "
+        f"{PUNTI_INVITO} punti.\n\n"
+
+        f"📌 Puoi ricevere punti per massimo "
+        f"{MAX_INVITI_MESE} amici al mese.\n"
+
+        "Dal 6° amico in poi non vengono assegnati "
+        "altri punti durante quel mese.\n"
+        "Il conteggio riparte il mese successivo.\n\n"
+
+        f"👥 Questo mese: "
+        f"{premiati_mese}/{MAX_INVITI_MESE} amici premiati\n"
+
+        f"⭐ Puoi ottenere ancora "
+        f"{punti_ancora} punti questo mese.\n\n"
+
+        f"⏳ Un amico diventa valido dopo "
+        f"{GIORNI_VERIFICA} giorni, se è ancora "
+        "iscritto al canale e ha utilizzato il bot."
+    )
 
     await query.message.reply_text(
         testo,
@@ -905,32 +818,26 @@ async def mostra_premi(
 
     await query.answer()
 
-
-    user_id = (
-        update.effective_user.id
-    )
-
+    user_id = update.effective_user.id
 
     aggiungi_attivita(
         user_id
     )
 
-
     punti = get_punti(
         user_id
     )
 
-
     tastiera = InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
-                "🎁 5 € — 25 punti",
+                "🎁 5 € — 10 punti",
                 callback_data="premio_5",
             )
         ],
         [
             InlineKeyboardButton(
-                "🎁 10 € — 50 punti",
+                "🎁 10 € — 20 punti",
                 callback_data="premio_10",
             )
         ],
@@ -942,25 +849,14 @@ async def mostra_premi(
         ],
     ])
 
-
     await query.message.reply_text(
-
         "🎁 PREMI\n\n"
-
         f"⭐ Hai {punti} punti.\n\n"
-
         "Puoi richiedere:\n\n"
-
-        "🎫 Buono Amazon 5 € "
-        "→ 25 punti\n"
-
-        "🎫 Buono Amazon 10 € "
-        "→ 50 punti\n\n"
-
-        "Il premio verrà controllato "
-        "e inviato manualmente "
-        "dall'amministratore.",
-
+        "🎫 Buono Amazon 5 € → 10 punti\n"
+        "🎫 Buono Amazon 10 € → 20 punti\n\n"
+        "Il premio verrà controllato e inviato "
+        "manualmente dall'amministratore.",
         reply_markup=tastiera,
     )
 
@@ -978,31 +874,25 @@ async def richiedi_premio(
 
     await query.answer()
 
-
     user = update.effective_user
-
 
     if query.data == "premio_5":
 
         valore = 5
-        costo = 25
-
+        costo = 10
 
     elif query.data == "premio_10":
 
         valore = 10
-        costo = 50
-
+        costo = 20
 
     else:
 
         return
 
-
     punti = get_punti(
         user.id
     )
-
 
     if punti < costo:
 
@@ -1013,8 +903,6 @@ async def richiedi_premio(
 
         return
 
-
-    # Togliamo i punti
     successo = modifica_punti(
         user.id,
         -costo,
@@ -1023,7 +911,6 @@ async def richiedi_premio(
             f"{valore} €"
         ),
     )
-
 
     if not successo:
 
@@ -1034,10 +921,8 @@ async def richiedi_premio(
 
         return
 
-
     db = connessione()
     cur = db.cursor()
-
 
     cur.execute("""
         INSERT INTO premi (
@@ -1047,9 +932,7 @@ async def richiedi_premio(
             stato,
             data_richiesta
         )
-        VALUES (
-            ?, ?, ?, 'attesa', ?
-        )
+        VALUES (?, ?, ?, 'attesa', ?)
     """, (
         user.id,
         costo,
@@ -1057,36 +940,18 @@ async def richiedi_premio(
         ora(),
     ))
 
-
-    premio_id = (
-        cur.lastrowid
-    )
-
+    premio_id = cur.lastrowid
 
     db.commit()
     db.close()
 
-
     await query.message.reply_text(
-
         "🎉 RICHIESTA INVIATA!\n\n"
-
-        f"🎁 Premio: "
-        f"Buono Amazon {valore} €\n"
-
-        f"⭐ Punti utilizzati: "
-        f"{costo}\n\n"
-
+        f"🎁 Premio: Buono Amazon {valore} €\n"
+        f"⭐ Punti utilizzati: {costo}\n\n"
         "Riceverai il premio dopo "
-        "l'approvazione "
-        "dell'amministratore."
-
+        "l'approvazione dell'amministratore."
     )
-
-
-    # =====================================================
-    # NOTIFICA ADMIN
-    # =====================================================
 
     if ADMIN_ID:
 
@@ -1096,54 +961,35 @@ async def richiedi_premio(
             else "nessun username"
         )
 
-
-        tastiera_admin = (
-            InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "✅ APPROVA",
-                        callback_data=(
-                            "approva_premio_"
-                            f"{premio_id}"
-                        ),
+        tastiera_admin = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "✅ APPROVA",
+                    callback_data=(
+                        "approva_premio_"
+                        f"{premio_id}"
                     ),
-
-                    InlineKeyboardButton(
-                        "❌ RIFIUTA",
-                        callback_data=(
-                            "rifiuta_premio_"
-                            f"{premio_id}"
-                        ),
+                ),
+                InlineKeyboardButton(
+                    "❌ RIFIUTA",
+                    callback_data=(
+                        "rifiuta_premio_"
+                        f"{premio_id}"
                     ),
-                ]
-            ])
-        )
-
+                ),
+            ]
+        ])
 
         await context.bot.send_message(
-
-            chat_id=int(
-                ADMIN_ID
-            ),
-
+            chat_id=int(ADMIN_ID),
             text=(
-
                 "🎁 NUOVA RICHIESTA PREMIO\n\n"
-
                 f"👤 {user.first_name}\n"
-
                 f"🔗 {username}\n"
-
                 f"🆔 {user.id}\n\n"
-
-                f"🎫 Buono Amazon: "
-                f"{valore} €\n"
-
-                f"⭐ Punti utilizzati: "
-                f"{costo}"
-
+                f"🎫 Buono Amazon: {valore} €\n"
+                f"⭐ Punti utilizzati: {costo}"
             ),
-
             reply_markup=tastiera_admin,
         )
 
@@ -1159,31 +1005,20 @@ async def gestisci_premio_admin(
 
     query = update.callback_query
 
-
     if not await verifica_admin(
         update
     ):
         return
 
-
     await query.answer()
 
-
-    parti = (
-        query.data.split("_")
-    )
-
+    parti = query.data.split("_")
 
     azione = parti[0]
-
-    premio_id = int(
-        parti[-1]
-    )
-
+    premio_id = int(parti[-1])
 
     db = connessione()
     cur = db.cursor()
-
 
     cur.execute("""
         SELECT
@@ -1193,19 +1028,14 @@ async def gestisci_premio_admin(
             stato
         FROM premi
         WHERE id = ?
-    """, (
-        premio_id,
-    ))
-
+    """, (premio_id,))
 
     premio = cur.fetchone()
-
 
     if not premio:
 
         db.close()
         return
-
 
     (
         user_id,
@@ -1213,7 +1043,6 @@ async def gestisci_premio_admin(
         valore,
         stato,
     ) = premio
-
 
     if stato != "attesa":
 
@@ -1226,58 +1055,33 @@ async def gestisci_premio_admin(
 
         return
 
-
-    # =====================================================
-    # APPROVA
-    # =====================================================
-
     if azione == "approva":
 
         cur.execute("""
             UPDATE premi
             SET stato = 'approvato'
             WHERE id = ?
-        """, (
-            premio_id,
-        ))
-
+        """, (premio_id,))
 
         db.commit()
         db.close()
 
-
         await query.edit_message_text(
-
             "✅ PREMIO APPROVATO\n\n"
-
             f"🎫 Buono: {valore} €\n"
-
-            f"👤 Telegram ID: "
-            f"{user_id}\n\n"
-
+            f"👤 Telegram ID: {user_id}\n\n"
             "Ora puoi inviare il codice "
             "del buono all'utente."
-
         )
-
 
         try:
 
             await context.bot.send_message(
-
                 chat_id=user_id,
-
                 text=(
-
-                    "🎉 Il tuo premio è stato "
-                    "approvato!\n\n"
-
-                    f"🎁 Buono Amazon da "
-                    f"{valore} €\n\n"
-
-                    "L'amministratore ti "
-                    "invierà il premio."
-
+                    "🎉 Il tuo premio è stato approvato!\n\n"
+                    f"🎁 Buono Amazon da {valore} €\n\n"
+                    "L'amministratore ti invierà il premio."
                 ),
             )
 
@@ -1288,26 +1092,17 @@ async def gestisci_premio_admin(
                 f"{errore}"
             )
 
-
-    # =====================================================
-    # RIFIUTA
-    # =====================================================
-
     elif azione == "rifiuta":
 
         cur.execute("""
             UPDATE premi
             SET stato = 'rifiutato'
             WHERE id = ?
-        """, (
-            premio_id,
-        ))
+        """, (premio_id,))
 
         db.commit()
         db.close()
 
-
-        # Restituiamo i punti
         modifica_punti(
             user_id,
             punti,
@@ -1318,31 +1113,21 @@ async def gestisci_premio_admin(
             ),
         )
 
-
         await query.edit_message_text(
-
             "❌ PREMIO RIFIUTATO\n\n"
-
             f"⭐ {punti} punti "
             "restituiti all'utente."
-
         )
-
 
         try:
 
             await context.bot.send_message(
-
                 chat_id=user_id,
-
                 text=(
-
                     "❌ La richiesta premio "
                     "non è stata approvata.\n\n"
-
                     f"⭐ I tuoi {punti} punti "
                     "sono stati restituiti."
-
                 ),
             )
 
@@ -1367,18 +1152,13 @@ async def club_home(
 
     await query.answer()
 
-
     aggiungi_attivita(
         update.effective_user.id
     )
 
-
     await query.message.reply_text(
-
         "🔥 CLUB OFFERTE\n\n"
-
         "Cosa vuoi fare?",
-
         reply_markup=menu_club(),
     )
 
@@ -1404,17 +1184,13 @@ async def admin_club_menu(
     ):
         return
 
-
     query = update.callback_query
 
     await query.answer()
 
-
     db = connessione()
     cur = db.cursor()
 
-
-    # Utenti
     cur.execute("""
         SELECT COUNT(*)
         FROM utenti
@@ -1422,21 +1198,13 @@ async def admin_club_menu(
 
     utenti = cur.fetchone()[0]
 
-
-    # Punti totali
     cur.execute("""
-        SELECT
-            COALESCE(
-                SUM(punti),
-                0
-            )
+        SELECT COALESCE(SUM(punti), 0)
         FROM utenti
     """)
 
     punti = cur.fetchone()[0]
 
-
-    # Inviti totali
     cur.execute("""
         SELECT COUNT(*)
         FROM inviti
@@ -1444,8 +1212,6 @@ async def admin_club_menu(
 
     inviti = cur.fetchone()[0]
 
-
-    # Verificati
     cur.execute("""
         SELECT COUNT(*)
         FROM inviti
@@ -1454,8 +1220,6 @@ async def admin_club_menu(
 
     verificati = cur.fetchone()[0]
 
-
-    # In attesa
     cur.execute("""
         SELECT COUNT(*)
         FROM inviti
@@ -1464,21 +1228,15 @@ async def admin_club_menu(
 
     attesa = cur.fetchone()[0]
 
-
-    # Premi in attesa
     cur.execute("""
         SELECT COUNT(*)
         FROM premi
         WHERE stato = 'attesa'
     """)
 
-    premi_attesa = (
-        cur.fetchone()[0]
-    )
-
+    premi_attesa = cur.fetchone()[0]
 
     db.close()
-
 
     tastiera = InlineKeyboardMarkup([
         [
@@ -1507,29 +1265,14 @@ async def admin_club_menu(
         ],
     ])
 
-
     await query.message.reply_text(
-
         "📊 GESTIONE CLUB\n\n"
-
-        f"👤 Utenti registrati: "
-        f"{utenti}\n"
-
-        f"⭐ Punti in circolazione: "
-        f"{punti}\n"
-
-        f"👥 Inviti totali: "
-        f"{inviti}\n"
-
-        f"✅ Inviti verificati: "
-        f"{verificati}\n"
-
-        f"⏳ Inviti in attesa: "
-        f"{attesa}\n"
-
-        f"🎁 Premi in attesa: "
-        f"{premi_attesa}",
-
+        f"👤 Utenti registrati: {utenti}\n"
+        f"⭐ Punti in circolazione: {punti}\n"
+        f"👥 Inviti totali: {inviti}\n"
+        f"✅ Inviti verificati: {verificati}\n"
+        f"⏳ Inviti in attesa: {attesa}\n"
+        f"🎁 Premi in attesa: {premi_attesa}",
         reply_markup=tastiera,
     )
 
@@ -1548,15 +1291,12 @@ async def admin_club_utenti(
     ):
         return
 
-
     query = update.callback_query
 
     await query.answer()
 
-
     db = connessione()
     cur = db.cursor()
-
 
     cur.execute("""
         SELECT
@@ -1569,11 +1309,9 @@ async def admin_club_utenti(
         LIMIT 30
     """)
 
-
     utenti = cur.fetchall()
 
     db.close()
-
 
     if not utenti:
 
@@ -1583,9 +1321,7 @@ async def admin_club_utenti(
 
         return
 
-
     tastiera = []
-
 
     for (
         user_id,
@@ -1601,7 +1337,6 @@ async def admin_club_utenti(
             or str(user_id)
         )
 
-
         tastiera.append([
             InlineKeyboardButton(
                 (
@@ -1614,7 +1349,6 @@ async def admin_club_utenti(
             )
         ])
 
-
     tastiera.append([
         InlineKeyboardButton(
             "⬅️ GESTIONE CLUB",
@@ -1622,16 +1356,11 @@ async def admin_club_utenti(
         )
     ])
 
-
     await query.message.reply_text(
-
         "👤 UTENTI REGISTRATI\n\n"
         "Mostro gli ultimi 30:",
-
-        reply_markup=(
-            InlineKeyboardMarkup(
-                tastiera
-            )
+        reply_markup=InlineKeyboardMarkup(
+            tastiera
         ),
     )
 
@@ -1650,11 +1379,9 @@ async def admin_club_utente(
     ):
         return
 
-
     query = update.callback_query
 
     await query.answer()
-
 
     try:
 
@@ -1668,10 +1395,8 @@ async def admin_club_utente(
     except ValueError:
         return
 
-
     db = connessione()
     cur = db.cursor()
-
 
     cur.execute("""
         SELECT
@@ -1682,19 +1407,14 @@ async def admin_club_utente(
             attivita
         FROM utenti
         WHERE telegram_id = ?
-    """, (
-        user_id,
-    ))
-
+    """, (user_id,))
 
     utente = cur.fetchone()
-
 
     if not utente:
 
         db.close()
         return
-
 
     (
         nome,
@@ -1704,21 +1424,15 @@ async def admin_club_utente(
         attivita,
     ) = utente
 
-
     cur.execute("""
         SELECT COUNT(*)
         FROM inviti
         WHERE
             invitante_id = ?
             AND stato = 'verificato'
-    """, (
-        user_id,
-    ))
+    """, (user_id,))
 
-    verificati = (
-        cur.fetchone()[0]
-    )
-
+    verificati = cur.fetchone()[0]
 
     cur.execute("""
         SELECT COUNT(*)
@@ -1726,30 +1440,23 @@ async def admin_club_utente(
         WHERE
             invitante_id = ?
             AND stato = 'attesa'
-    """, (
-        user_id,
-    ))
+    """, (user_id,))
 
-    attesa = (
-        cur.fetchone()[0]
-    )
-
+    attesa = cur.fetchone()[0]
 
     cur.execute("""
         SELECT COUNT(*)
         FROM premi
         WHERE telegram_id = ?
-    """, (
-        user_id,
-    ))
+    """, (user_id,))
 
-    premi = (
-        cur.fetchone()[0]
-    )
-
+    premi = cur.fetchone()[0]
 
     db.close()
 
+    premiati_mese = inviti_premiati_questo_mese(
+        user_id
+    )
 
     username_testo = (
         f"@{username}"
@@ -1757,13 +1464,11 @@ async def admin_club_utente(
         else "—"
     )
 
-
     data_testo = (
         data_iscrizione[:10]
         if data_iscrizione
         else "—"
     )
-
 
     tastiera = InlineKeyboardMarkup([
         [
@@ -1773,7 +1478,6 @@ async def admin_club_utente(
                     f"adm_pts_{user_id}_1"
                 ),
             ),
-
             InlineKeyboardButton(
                 "➕ 5",
                 callback_data=(
@@ -1788,7 +1492,6 @@ async def admin_club_utente(
                     f"adm_pts_{user_id}_m1"
                 ),
             ),
-
             InlineKeyboardButton(
                 "➖ 5",
                 callback_data=(
@@ -1812,36 +1515,19 @@ async def admin_club_utente(
         ],
     ])
 
-
     await query.message.reply_text(
-
         "👤 SCHEDA UTENTE\n\n"
-
         f"Nome: {nome or '—'}\n"
-
-        f"Username: "
-        f"{username_testo}\n"
-
+        f"Username: {username_testo}\n"
         f"🆔 {user_id}\n\n"
-
-        f"⭐ Saldo: "
-        f"{punti} punti\n"
-
-        f"✅ Inviti verificati: "
-        f"{verificati}\n"
-
-        f"⏳ Inviti in attesa: "
-        f"{attesa}\n"
-
-        f"🎁 Premi richiesti: "
-        f"{premi}\n"
-
-        f"📱 Interazioni bot: "
-        f"{attivita}\n"
-
-        f"📅 Registrato: "
-        f"{data_testo}",
-
+        f"⭐ Saldo: {punti} punti\n"
+        f"👥 Amici premiati questo mese: "
+        f"{premiati_mese}/{MAX_INVITI_MESE}\n"
+        f"✅ Inviti verificati totali: {verificati}\n"
+        f"⏳ Inviti in attesa: {attesa}\n"
+        f"🎁 Premi richiesti: {premi}\n"
+        f"📱 Interazioni bot: {attivita}\n"
+        f"📅 Registrato: {data_testo}",
         reply_markup=tastiera,
     )
 
@@ -1860,14 +1546,11 @@ async def admin_modifica_punti(
     ):
         return
 
-
     query = update.callback_query
 
     await query.answer()
 
-
     parti = query.data.split("_")
-
 
     try:
 
@@ -1884,7 +1567,6 @@ async def admin_modifica_punti(
         IndexError,
     ):
         return
-
 
     if valore_testo == "m1":
 
@@ -1905,19 +1587,11 @@ async def admin_modifica_punti(
         except ValueError:
             return
 
-
     successo = modifica_punti(
-
         user_id,
-
         variazione,
-
-        (
-            "Modifica manuale "
-            "amministratore"
-        ),
+        "Modifica manuale amministratore",
     )
-
 
     if not successo:
 
@@ -1929,11 +1603,9 @@ async def admin_modifica_punti(
 
         return
 
-
     nuovo_saldo = get_punti(
         user_id
     )
-
 
     segno = (
         "+"
@@ -1941,16 +1613,10 @@ async def admin_modifica_punti(
         else ""
     )
 
-
     await query.message.reply_text(
-
         "✅ PUNTI AGGIORNATI\n\n"
-
         f"{segno}{variazione} punti\n"
-
-        f"⭐ Nuovo saldo: "
-        f"{nuovo_saldo}"
-
+        f"⭐ Nuovo saldo: {nuovo_saldo}"
     )
 
 
@@ -1968,11 +1634,9 @@ async def admin_storico_utente(
     ):
         return
 
-
     query = update.callback_query
 
     await query.answer()
-
 
     try:
 
@@ -1986,10 +1650,8 @@ async def admin_storico_utente(
     except ValueError:
         return
 
-
     db = connessione()
     cur = db.cursor()
-
 
     cur.execute("""
         SELECT
@@ -2000,18 +1662,11 @@ async def admin_storico_utente(
         WHERE telegram_id = ?
         ORDER BY id DESC
         LIMIT 20
-    """, (
-        user_id,
-    ))
+    """, (user_id,))
 
-
-    movimenti = (
-        cur.fetchall()
-    )
-
+    movimenti = cur.fetchall()
 
     db.close()
-
 
     if not movimenti:
 
@@ -2026,7 +1681,6 @@ async def admin_storico_utente(
             "📜 STORICO PUNTI\n"
         ]
 
-
         for (
             variazione,
             motivo,
@@ -2039,27 +1693,21 @@ async def admin_storico_utente(
                 else ""
             )
 
-
             data_breve = (
                 data
                 .replace("T", " ")
                 [:16]
             )
 
-
             righe.append(
-
                 f"{segno}{variazione} ⭐\n"
                 f"{motivo}\n"
                 f"📅 {data_breve}\n"
-
             )
-
 
         testo = "\n".join(
             righe
         )
-
 
     await query.message.reply_text(
         testo
@@ -2080,15 +1728,12 @@ async def admin_movimenti(
     ):
         return
 
-
     query = update.callback_query
 
     await query.answer()
 
-
     db = connessione()
     cur = db.cursor()
-
 
     cur.execute("""
         SELECT
@@ -2109,11 +1754,9 @@ async def admin_movimenti(
         LIMIT 30
     """)
 
-
     dati = cur.fetchall()
 
     db.close()
-
 
     if not dati:
 
@@ -2123,11 +1766,9 @@ async def admin_movimenti(
 
         return
 
-
     righe = [
         "⭐ ULTIMI MOVIMENTI\n"
     ]
-
 
     for (
         nome,
@@ -2144,13 +1785,11 @@ async def admin_movimenti(
             or "Utente"
         )
 
-
         segno = (
             "+"
             if variazione > 0
             else ""
         )
-
 
         data_breve = (
             data
@@ -2158,18 +1797,12 @@ async def admin_movimenti(
             [:16]
         )
 
-
         righe.append(
-
             f"👤 {persona}\n"
-
             f"{segno}{variazione} ⭐ "
             f"— {motivo}\n"
-
             f"📅 {data_breve}\n"
-
         )
-
 
     await query.message.reply_text(
         "\n".join(
@@ -2192,15 +1825,12 @@ async def admin_inviti(
     ):
         return
 
-
     query = update.callback_query
 
     await query.answer()
 
-
     db = connessione()
     cur = db.cursor()
-
 
     cur.execute("""
         SELECT
@@ -2213,23 +1843,19 @@ async def admin_inviti(
         FROM inviti i
 
         LEFT JOIN utenti u1
-        ON u1.telegram_id
-           = i.invitante_id
+        ON u1.telegram_id = i.invitante_id
 
         LEFT JOIN utenti u2
-        ON u2.telegram_id
-           = i.invitato_id
+        ON u2.telegram_id = i.invitato_id
 
         ORDER BY i.id DESC
 
         LIMIT 30
     """)
 
-
     dati = cur.fetchall()
 
     db.close()
-
 
     if not dati:
 
@@ -2239,11 +1865,9 @@ async def admin_inviti(
 
         return
 
-
     righe = [
         "👥 ULTIMI INVITI\n"
     ]
-
 
     for (
         invitante,
@@ -2260,13 +1884,11 @@ async def admin_inviti(
             else str(invitante)
         )
 
-
         a = (
             f"@{username2}"
             if username2
             else str(invitato)
         )
-
 
         simbolo = (
             "✅"
@@ -2274,17 +1896,11 @@ async def admin_inviti(
             else "⏳"
         )
 
-
         righe.append(
-
             f"{simbolo} {da}\n"
-
             f"↳ ha invitato {a}\n"
-
             f"Stato: {stato}\n"
-
         )
-
 
     await query.message.reply_text(
         "\n".join(
@@ -2307,15 +1923,12 @@ async def admin_premi(
     ):
         return
 
-
     query = update.callback_query
 
     await query.answer()
 
-
     db = connessione()
     cur = db.cursor()
-
 
     cur.execute("""
         SELECT
@@ -2329,19 +1942,16 @@ async def admin_premi(
         FROM premi
 
         LEFT JOIN utenti
-        ON utenti.telegram_id
-           = premi.telegram_id
+        ON utenti.telegram_id = premi.telegram_id
 
         ORDER BY premi.id DESC
 
         LIMIT 30
     """)
 
-
     dati = cur.fetchall()
 
     db.close()
-
 
     if not dati:
 
@@ -2351,11 +1961,9 @@ async def admin_premi(
 
         return
 
-
     righe = [
         "🎁 ULTIME RICHIESTE PREMIO\n"
     ]
-
 
     for (
         premio_id,
@@ -2374,32 +1982,22 @@ async def admin_premi(
             or "Utente"
         )
 
-
         if stato == "approvato":
-
             simbolo = "✅"
 
         elif stato == "rifiutato":
-
             simbolo = "❌"
 
         else:
-
             simbolo = "⏳"
 
-
         righe.append(
-
             f"{simbolo} #{premio_id} "
             f"{persona}\n"
-
             f"🎫 {valore} € "
             f"— {punti} punti\n"
-
             f"Stato: {stato}\n"
-
         )
-
 
     await query.message.reply_text(
         "\n".join(
