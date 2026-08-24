@@ -1,5 +1,8 @@
 import os
 import asyncio
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from collections import deque
 
 import requests
@@ -55,6 +58,8 @@ from club import (
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHANNEL_ID = os.environ["TELEGRAM_CHAT_ID"]
 ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
+DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
+ROMA_TZ = ZoneInfo("Europe/Rome")
 
 
 (
@@ -65,10 +70,219 @@ ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
     CONFERMA,
     RAPIDO,
     DATI_AUTOMATICI,
-) = range(7)
+    PROGRAMMA_DATA,
+    PROGRAMMA_ORA,
+) = range(9)
 
 
 ultime_offerte = deque(maxlen=10)
+
+
+
+# =========================================================
+# PROGRAMMAZIONE INVIO OFFERTE
+# =========================================================
+
+def inizializza_programmazioni():
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS programmazioni (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT,
+            messaggio TEXT NOT NULL,
+            link TEXT NOT NULL,
+            prezzo TEXT,
+            invio_previsto TEXT NOT NULL,
+            stato TEXT DEFAULT 'attesa',
+            data_creazione TEXT NOT NULL
+        )
+    """)
+
+    db.commit()
+    db.close()
+
+
+def salva_programmazione(
+    nome,
+    messaggio,
+    link,
+    prezzo,
+    invio_previsto_locale,
+):
+
+    # Salviamo in UTC per evitare problemi
+    # con ora legale/solare.
+    invio_previsto_utc = (
+        invio_previsto_locale
+        .astimezone(timezone.utc)
+    )
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        INSERT INTO programmazioni (
+            nome,
+            messaggio,
+            link,
+            prezzo,
+            invio_previsto,
+            stato,
+            data_creazione
+        )
+        VALUES (?, ?, ?, ?, ?, 'attesa', ?)
+    """, (
+        nome,
+        messaggio,
+        link,
+        prezzo,
+        invio_previsto_utc.isoformat(
+            timespec="seconds"
+        ),
+        datetime.now(
+            timezone.utc
+        ).isoformat(
+            timespec="seconds"
+        ),
+    ))
+
+    programmazione_id = cur.lastrowid
+
+    db.commit()
+    db.close()
+
+    return (
+        programmazione_id,
+        invio_previsto_locale
+    )
+
+
+async def invia_offerta_programmata(
+    bot,
+    programmazione,
+):
+
+    (
+        programmazione_id,
+        nome,
+        messaggio,
+        link,
+        prezzo,
+    ) = programmazione
+
+    messaggio_con_link = (
+        f"{messaggio}\n\n"
+        f"👉 {link}\n\n"
+        "⚡ Prezzo e disponibilità "
+        "possono variare."
+    )
+
+    bottone_offerta = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🛒 VEDI OFFERTA",
+                    url=link,
+                )
+            ]
+        ]
+    )
+
+    await bot.send_message(
+        chat_id=CHANNEL_ID,
+        text=messaggio_con_link,
+        reply_markup=bottone_offerta,
+    )
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        UPDATE programmazioni
+        SET stato = 'inviata'
+        WHERE id = ?
+    """, (
+        programmazione_id,
+    ))
+
+    db.commit()
+    db.close()
+
+    ultime_offerte.appendleft(
+        {
+            "nome": nome,
+            "link": link,
+            "prezzo": prezzo,
+        }
+    )
+
+
+async def controlla_programmazioni(app):
+
+    while True:
+
+        try:
+
+            db = sqlite3.connect(DB_PATH)
+            cur = db.cursor()
+
+            cur.execute("""
+                SELECT
+                    id,
+                    nome,
+                    messaggio,
+                    link,
+                    prezzo
+                FROM programmazioni
+                WHERE stato = 'attesa'
+                  AND invio_previsto <= ?
+                ORDER BY invio_previsto ASC
+            """, (
+                datetime.now(
+                    timezone.utc
+                ).isoformat(
+                    timespec="seconds"
+                ),
+            ))
+
+            programmazioni = cur.fetchall()
+
+            db.close()
+
+            for programmazione in programmazioni:
+
+                try:
+
+                    await invia_offerta_programmata(
+                        app.bot,
+                        programmazione,
+                    )
+
+                except Exception as errore:
+
+                    print(
+                        "Errore invio programmato: "
+                        f"{errore}"
+                    )
+
+        except Exception as errore:
+
+            print(
+                "Errore controllo programmazioni: "
+                f"{errore}"
+            )
+
+        await asyncio.sleep(30)
+
+
+async def avvia_programmazioni(app):
+
+    app.create_task(
+        controlla_programmazioni(app)
+    )
 
 
 # =========================================================
@@ -136,6 +350,12 @@ def menu_principale():
                     "📋 ULTIME",
                     callback_data="ultime",
                 ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "📅 PROGRAMMATI",
+                    callback_data="programmati",
+                )
             ],
             [
                 InlineKeyboardButton(
@@ -773,6 +993,255 @@ async def ricevi_rapido(
     )
 
 
+
+# =========================================================
+# RICEZIONE ORA PROGRAMMAZIONE
+# =========================================================
+
+async def ricevi_ora_programmazione(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(
+        update
+    ):
+        return ConversationHandler.END
+
+    testo = update.message.text.strip()
+
+    # Accettiamo anche 9:00 oltre a 09:00
+    formati = [
+        "%H:%M",
+    ]
+
+    ora_scelta = None
+
+    for formato in formati:
+
+        try:
+
+            ora_scelta = datetime.strptime(
+                testo,
+                formato,
+            ).time()
+
+            break
+
+        except ValueError:
+            pass
+
+    if ora_scelta is None:
+
+        await update.message.reply_text(
+            "❌ Orario non corretto.\n\n"
+            "Scrivilo così:\n"
+            "9:00\n"
+            "oppure\n"
+            "18:30"
+        )
+
+        return PROGRAMMA_ORA
+
+    data_iso = context.user_data.get(
+        "data_programmata"
+    )
+
+    if not data_iso:
+
+        await update.message.reply_text(
+            "❌ Giorno non trovato.\n"
+            "Riprova dalla programmazione."
+        )
+
+        return ConversationHandler.END
+
+    data_scelta = datetime.fromisoformat(
+        data_iso
+    ).date()
+
+    data_locale = datetime.combine(
+        data_scelta,
+        ora_scelta,
+        tzinfo=ROMA_TZ,
+    )
+
+    adesso = datetime.now(
+        ROMA_TZ
+    )
+
+    if data_locale <= adesso:
+
+        await update.message.reply_text(
+            "❌ Questo orario è già passato.\n\n"
+            "Inserisci un orario futuro."
+        )
+
+        return PROGRAMMA_ORA
+
+    messaggio = context.user_data.get(
+        "messaggio"
+    )
+    link = context.user_data.get(
+        "link"
+    )
+    nome = context.user_data.get(
+        "nome"
+    )
+    prezzo = context.user_data.get(
+        "prezzo"
+    )
+
+    if not messaggio or not link:
+
+        await update.message.reply_text(
+            "❌ Dati dell'offerta mancanti."
+        )
+
+        return ConversationHandler.END
+
+    (
+        programmazione_id,
+        invio_previsto,
+    ) = salva_programmazione(
+        nome,
+        messaggio,
+        link,
+        prezzo,
+        data_locale,
+    )
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "✅ OFFERTA PROGRAMMATA!\n\n"
+        f"📅 Data: "
+        f"{invio_previsto.strftime('%d/%m/%Y')}\n"
+        f"🕒 Ora: "
+        f"{invio_previsto.strftime('%H:%M')}\n"
+        f"📦 {nome}\n"
+        f"💰 {prezzo} €\n\n"
+        f"🆔 Programmazione: "
+        f"#{programmazione_id}",
+        reply_markup=menu_principale(),
+    )
+
+    return ConversationHandler.END
+
+
+# =========================================================
+# ELENCO POST PROGRAMMATI
+# =========================================================
+
+async def mostra_programmati(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(
+        update
+    ):
+        return
+
+    query = update.callback_query
+
+    if query:
+        await query.answer()
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        SELECT
+            id,
+            nome,
+            prezzo,
+            invio_previsto
+        FROM programmazioni
+        WHERE stato = 'attesa'
+        ORDER BY invio_previsto ASC
+        LIMIT 100
+    """)
+
+    righe_db = cur.fetchall()
+
+    db.close()
+
+    if not righe_db:
+
+        testo = (
+            "📅 PROGRAMMAZIONE\n\n"
+            "Non ci sono offerte programmate."
+        )
+
+    else:
+
+        righe = [
+            "📅 PROGRAMMAZIONE OFFERTE\n"
+        ]
+
+        for (
+            programmazione_id,
+            nome,
+            prezzo,
+            invio_previsto,
+        ) in righe_db:
+
+            try:
+
+                data_utc = datetime.fromisoformat(
+                    invio_previsto
+                )
+
+                if data_utc.tzinfo is None:
+                    data_utc = data_utc.replace(
+                        tzinfo=timezone.utc
+                    )
+
+                data_locale = (
+                    data_utc
+                    .astimezone(ROMA_TZ)
+                )
+
+                quando = data_locale.strftime(
+                    "%d/%m/%Y • %H:%M"
+                )
+
+            except Exception:
+
+                quando = invio_previsto
+
+            righe.append(
+                f"#{programmazione_id} "
+                f"📅 {quando}\n"
+                f"📦 {nome}\n"
+                f"💰 {prezzo} €\n"
+            )
+
+        righe.append(
+            f"\nTotale programmati: "
+            f"{len(righe_db)}"
+        )
+
+        testo = "\n".join(
+            righe
+        )
+
+    if update.message:
+
+        await update.message.reply_text(
+            testo,
+            reply_markup=menu_principale(),
+        )
+
+    else:
+
+        await query.message.reply_text(
+            testo,
+            reply_markup=menu_principale(),
+        )
+
+
 # =========================================================
 # CALCOLO SCONTO
 # =========================================================
@@ -928,8 +1397,14 @@ async def mostra_anteprima(
         [
             [
                 InlineKeyboardButton(
-                    "📤 PUBBLICA",
+                    "📤 PUBBLICA ORA",
                     callback_data="pubblica",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🕒 PROGRAMMA INVIO",
+                    callback_data="programma",
                 )
             ],
             [
@@ -987,6 +1462,90 @@ async def conferma(
     query = update.callback_query
 
     await query.answer()
+
+    # PROGRAMMA INVIO
+    if query.data == "programma":
+
+        tastiera = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "📅 OGGI",
+                        callback_data="prog_giorno_0",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "📅 DOMANI",
+                        callback_data="prog_giorno_1",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "📅 TRA 2 GIORNI",
+                        callback_data="prog_giorno_2",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "❌ ANNULLA",
+                        callback_data="annulla",
+                    )
+                ],
+            ]
+        )
+
+        await query.message.reply_text(
+            "📅 PROGRAMMA INVIO\n\n"
+            "Scegli il giorno:",
+            reply_markup=tastiera,
+        )
+
+        return CONFERMA
+
+    # GIORNO SCELTO
+    if query.data.startswith("prog_giorno_"):
+
+        try:
+
+            giorni = int(
+                query.data.replace(
+                    "prog_giorno_",
+                    "",
+                )
+            )
+
+        except ValueError:
+
+            return CONFERMA
+
+        data_scelta = (
+            datetime.now(ROMA_TZ).date()
+            + timedelta(days=giorni)
+        )
+
+        context.user_data[
+            "data_programmata"
+        ] = data_scelta.isoformat()
+
+        etichetta = (
+            "oggi"
+            if giorni == 0
+            else "domani"
+            if giorni == 1
+            else "tra 2 giorni"
+        )
+
+        await query.message.reply_text(
+            f"🕒 Hai scelto {etichetta}.\n\n"
+            "Ora scrivi solo l'orario.\n\n"
+            "Esempio:\n"
+            "9:00\n"
+            "oppure\n"
+            "18:30"
+        )
+
+        return PROGRAMMA_ORA
 
     # ANNULLA
     if query.data == "annulla":
@@ -1267,11 +1826,13 @@ async def annulla(
 def main():
 
     inizializza_database()
+    inizializza_programmazioni()
 
     app = (
         Application
         .builder()
         .token(TOKEN)
+        .post_init(avvia_programmazioni)
         .build()
     )
 
@@ -1317,6 +1878,14 @@ def main():
                 )
             ],
 
+            PROGRAMMA_ORA: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    ricevi_ora_programmazione,
+                )
+            ],
+
             NOME: [
                 MessageHandler(
                     filters.TEXT
@@ -1354,6 +1923,10 @@ def main():
                     conferma,
                     pattern=(
                         "^(pubblica|"
+                        "programma|"
+                        "prog_giorno_0|"
+                        "prog_giorno_1|"
+                        "prog_giorno_2|"
                         "annulla|"
                         "cambia_template|"
                         "tpl_pulito|"
@@ -1413,6 +1986,13 @@ def main():
         CallbackQueryHandler(
             ultime,
             pattern="^ultime$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            mostra_programmati,
+            pattern="^programmati$",
         )
     )
 
