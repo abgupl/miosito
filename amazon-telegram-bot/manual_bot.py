@@ -72,7 +72,8 @@ ROMA_TZ = ZoneInfo("Europe/Rome")
     DATI_AUTOMATICI,
     PROGRAMMA_DATA,
     PROGRAMMA_ORA,
-) = range(9)
+    CONFERMA_ORARIO,
+) = range(10)
 
 
 ultime_offerte = deque(maxlen=10)
@@ -1079,6 +1080,49 @@ async def ricevi_ora_programmazione(
 
         return PROGRAMMA_ORA
 
+    conflitti = trova_conflitto(
+        data_locale
+    )
+
+    if conflitti:
+
+        vicino = conflitti[0]
+
+        context.user_data[
+            "data_ora_da_confermare"
+        ] = data_locale.isoformat()
+
+        tastiera = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "✅ SÌ, PROGRAMMA",
+                    callback_data="conferma_orario_vicino",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔄 CAMBIA ORARIO",
+                    callback_data="cambia_orario",
+                )
+            ],
+        ])
+
+        await update.message.reply_text(
+            "⚠️ POST TROPPO VICINO\n\n"
+            f"Hai già un'offerta programmata "
+            f"alle "
+            f"{vicino['datetime'].strftime('%H:%M')}.\n\n"
+            f"📦 {vicino['nome']}\n"
+            f"💰 {vicino['prezzo']} €\n\n"
+            f"Ti consiglio di lasciare almeno "
+            f"{DISTANZA_MINIMA_MINUTI} minuti "
+            "tra due offerte.\n\n"
+            "Vuoi programmarla comunque?",
+            reply_markup=tastiera,
+        )
+
+        return CONFERMA_ORARIO
+
     messaggio = context.user_data.get(
         "messaggio"
     )
@@ -1114,6 +1158,325 @@ async def ricevi_ora_programmazione(
     context.user_data.clear()
 
     await update.message.reply_text(
+        "✅ OFFERTA PROGRAMMATA!\n\n"
+        f"📅 Data: "
+        f"{invio_previsto.strftime('%d/%m/%Y')}\n"
+        f"🕒 Ora: "
+        f"{invio_previsto.strftime('%H:%M')}\n"
+        f"📦 {nome}\n"
+        f"💰 {prezzo} €\n\n"
+        f"🆔 Programmazione: "
+        f"#{programmazione_id}",
+        reply_markup=menu_principale(),
+    )
+
+    return ConversationHandler.END
+
+
+
+# =========================================================
+# CONTROLLO SLOT PROGRAMMAZIONE
+# =========================================================
+
+DISTANZA_MINIMA_MINUTI = 45
+
+
+def programmazioni_del_giorno(data_locale):
+
+    inizio_locale = datetime.combine(
+        data_locale,
+        datetime.min.time(),
+        tzinfo=ROMA_TZ,
+    )
+
+    fine_locale = (
+        inizio_locale
+        + timedelta(days=1)
+    )
+
+    inizio_utc = (
+        inizio_locale
+        .astimezone(timezone.utc)
+        .isoformat(timespec="seconds")
+    )
+
+    fine_utc = (
+        fine_locale
+        .astimezone(timezone.utc)
+        .isoformat(timespec="seconds")
+    )
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        SELECT
+            id,
+            nome,
+            prezzo,
+            invio_previsto
+        FROM programmazioni
+        WHERE stato = 'attesa'
+          AND invio_previsto >= ?
+          AND invio_previsto < ?
+        ORDER BY invio_previsto ASC
+    """, (
+        inizio_utc,
+        fine_utc,
+    ))
+
+    dati = cur.fetchall()
+
+    db.close()
+
+    risultati = []
+
+    for (
+        programmazione_id,
+        nome,
+        prezzo,
+        invio_previsto,
+    ) in dati:
+
+        data_utc = datetime.fromisoformat(
+            invio_previsto
+        )
+
+        if data_utc.tzinfo is None:
+            data_utc = data_utc.replace(
+                tzinfo=timezone.utc
+            )
+
+        data_it = data_utc.astimezone(
+            ROMA_TZ
+        )
+
+        risultati.append(
+            {
+                "id": programmazione_id,
+                "nome": nome,
+                "prezzo": prezzo,
+                "datetime": data_it,
+            }
+        )
+
+    return risultati
+
+
+def trova_conflitto(
+    data_locale,
+):
+
+    eventi = programmazioni_del_giorno(
+        data_locale.date()
+    )
+
+    conflitti = []
+
+    for evento in eventi:
+
+        differenza = abs(
+            (
+                evento["datetime"]
+                - data_locale
+            ).total_seconds()
+            / 60
+        )
+
+        if differenza < DISTANZA_MINIMA_MINUTI:
+
+            conflitti.append(
+                {
+                    **evento,
+                    "differenza": int(
+                        differenza
+                    ),
+                }
+            )
+
+    conflitti.sort(
+        key=lambda x: x["differenza"]
+    )
+
+    return conflitti
+
+
+def suggerisci_prossimo_slot(
+    data_giorno,
+):
+
+    eventi = programmazioni_del_giorno(
+        data_giorno
+    )
+
+    # Orari consigliati di base
+    slot_base = [
+        "09:00",
+        "11:00",
+        "13:00",
+        "15:30",
+        "18:00",
+        "20:00",
+        "21:30",
+    ]
+
+    adesso = datetime.now(
+        ROMA_TZ
+    )
+
+    for slot in slot_base:
+
+        ora_slot = datetime.strptime(
+            slot,
+            "%H:%M",
+        ).time()
+
+        candidato = datetime.combine(
+            data_giorno,
+            ora_slot,
+            tzinfo=ROMA_TZ,
+        )
+
+        if candidato <= adesso:
+            continue
+
+        conflitti = trova_conflitto(
+            candidato
+        )
+
+        if not conflitti:
+            return candidato
+
+    # Se gli slot standard sono occupati,
+    # cerca ogni 45 minuti dalle 09:00 alle 22:30.
+    candidato = datetime.combine(
+        data_giorno,
+        datetime.strptime(
+            "09:00",
+            "%H:%M",
+        ).time(),
+        tzinfo=ROMA_TZ,
+    )
+
+    fine = datetime.combine(
+        data_giorno,
+        datetime.strptime(
+            "22:30",
+            "%H:%M",
+        ).time(),
+        tzinfo=ROMA_TZ,
+    )
+
+    if candidato <= adesso:
+        candidato = adesso.replace(
+            second=0,
+            microsecond=0,
+        )
+
+        minuto = candidato.minute
+
+        resto = minuto % 15
+
+        if resto:
+            candidato += timedelta(
+                minutes=(15 - resto)
+            )
+
+    while candidato <= fine:
+
+        conflitti = trova_conflitto(
+            candidato
+        )
+
+        if not conflitti:
+            return candidato
+
+        candidato += timedelta(
+            minutes=15
+        )
+
+    return None
+
+
+
+# =========================================================
+# CONFERMA ORARIO VICINO
+# =========================================================
+
+async def conferma_orario_vicino(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(
+        update
+    ):
+        return ConversationHandler.END
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if query.data == "cambia_orario":
+
+        await query.message.reply_text(
+            "🕒 Scrivi un nuovo orario.\n\n"
+            "Esempio: 17:00"
+        )
+
+        return PROGRAMMA_ORA
+
+    data_iso = context.user_data.get(
+        "data_ora_da_confermare"
+    )
+
+    if not data_iso:
+
+        await query.message.reply_text(
+            "❌ Dati programmazione mancanti."
+        )
+
+        return ConversationHandler.END
+
+    data_locale = datetime.fromisoformat(
+        data_iso
+    )
+
+    messaggio = context.user_data.get(
+        "messaggio"
+    )
+    link = context.user_data.get(
+        "link"
+    )
+    nome = context.user_data.get(
+        "nome"
+    )
+    prezzo = context.user_data.get(
+        "prezzo"
+    )
+
+    if not messaggio or not link:
+
+        await query.message.reply_text(
+            "❌ Dati dell'offerta mancanti."
+        )
+
+        return ConversationHandler.END
+
+    (
+        programmazione_id,
+        invio_previsto,
+    ) = salva_programmazione(
+        nome,
+        messaggio,
+        link,
+        prezzo,
+        data_locale,
+    )
+
+    context.user_data.clear()
+
+    await query.message.reply_text(
         "✅ OFFERTA PROGRAMMATA!\n\n"
         f"📅 Data: "
         f"{invio_previsto.strftime('%d/%m/%Y')}\n"
@@ -1536,8 +1899,46 @@ async def conferma(
             else "tra 2 giorni"
         )
 
+        eventi = programmazioni_del_giorno(
+            data_scelta
+        )
+
+        if eventi:
+
+            orari_occupati = ", ".join(
+                evento["datetime"].strftime(
+                    "%H:%M"
+                )
+                for evento in eventi
+            )
+
+        else:
+
+            orari_occupati = "nessuno"
+
+        suggerito = suggerisci_prossimo_slot(
+            data_scelta
+        )
+
+        if suggerito:
+
+            suggerimento_testo = (
+                "💡 Prossimo spazio consigliato: "
+                f"{suggerito.strftime('%H:%M')}\n\n"
+            )
+
+        else:
+
+            suggerimento_testo = (
+                "⚠️ Non trovo altri spazi "
+                "consigliati oggi.\n\n"
+            )
+
         await query.message.reply_text(
             f"🕒 Hai scelto {etichetta}.\n\n"
+            f"📅 Orari già programmati: "
+            f"{orari_occupati}\n\n"
+            f"{suggerimento_testo}"
             "Ora scrivi solo l'orario.\n\n"
             "Esempio:\n"
             "9:00\n"
@@ -1883,6 +2284,16 @@ def main():
                     filters.TEXT
                     & ~filters.COMMAND,
                     ricevi_ora_programmazione,
+                )
+            ],
+
+            CONFERMA_ORARIO: [
+                CallbackQueryHandler(
+                    conferma_orario_vicino,
+                    pattern=(
+                        "^(conferma_orario_vicino|"
+                        "cambia_orario)$"
+                    ),
                 )
             ],
 
