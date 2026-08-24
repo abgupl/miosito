@@ -624,6 +624,159 @@ def menu_principale():
     )
 
 
+
+def menu_utente_principale():
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🛍️ SCEGLI LA CATEGORIA",
+                    callback_data="categorie",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🎁 CLUB & PREMI",
+                    callback_data="club_home",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "👥 INVITA AMICI",
+                    callback_data="club_invita",
+                ),
+                InlineKeyboardButton(
+                    "⭐ I MIEI PUNTI",
+                    callback_data="club_punti",
+                ),
+            ],
+        ]
+    )
+
+
+def menu_categorie():
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🔌 ELETTRONICA",
+                    url="https://t.me/bestprice_2026",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🏠 CASA 🚧",
+                    callback_data="wip_casa",
+                ),
+                InlineKeyboardButton(
+                    "🌿 GIARDINO 🚧",
+                    callback_data="wip_giardino",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔧 FAI DA TE 🚧",
+                    callback_data="wip_faidate",
+                ),
+                InlineKeyboardButton(
+                    "👗 MODA 🚧",
+                    callback_data="wip_moda",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "💄 BELLEZZA 🚧",
+                    callback_data="wip_bellezza",
+                ),
+                InlineKeyboardButton(
+                    "🏋️ SPORT 🚧",
+                    callback_data="wip_sport",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🧸 BAMBINI 🚧",
+                    callback_data="wip_bambini",
+                ),
+                InlineKeyboardButton(
+                    "🐶 ANIMALI 🚧",
+                    callback_data="wip_animali",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🚗 AUTO & MOTO 🚧",
+                    callback_data="wip_auto",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ TORNA AL MENU",
+                    callback_data="menu_utente",
+                )
+            ],
+        ]
+    )
+
+
+async def mostra_categorie(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "🛍️ SCEGLI LA CATEGORIA\n\n"
+        "Segui solo le offerte che ti interessano 👇",
+        reply_markup=menu_categorie(),
+    )
+
+
+async def categoria_work_in_progress(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "🚧 COMING SOON\n\n"
+        "Stiamo preparando questo canale.\n"
+        "Torna presto per scoprire le nuove offerte! 🔥",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "⬅️ TORNA ALLE CATEGORIE",
+                        callback_data="categorie",
+                    )
+                ]
+            ]
+        ),
+    )
+
+
+async def torna_menu_utente(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "🔥 BESTPRICE24H\n\n"
+        "Meno offerte. Più affari.\n\n"
+        "Scegli cosa vuoi fare 👇",
+        reply_markup=menu_utente_principale(),
+    )
+
+
 # =========================================================
 # /START
 # =========================================================
@@ -650,7 +803,7 @@ async def start(
 
         return ConversationHandler.END
 
-    # UTENTE CLUB
+    # UTENTE
     invitato_da = None
 
     if context.args:
@@ -661,39 +814,27 @@ async def start(
         except (ValueError, TypeError):
             invitato_da = None
 
-    nuovo = registra_utente(
+    registra_utente(
         user,
         invitato_da
     )
 
     testo = (
-        "🔥 BENVENUTO NEL CLUB OFFERTE\n\n"
-        "Qui le offerte non sono l'unico vantaggio. 😉\n\n"
-        "Invita i tuoi amici, accumula punti "
-        "e sblocca premi!\n\n"
-        "👥 Ogni amico valido = 2 punti\n"
-        "🎁 10 punti = Buono Amazon da 5 €\n\n"
-    )
-
-    if nuovo and invitato_da:
-        testo += (
-            "👥 Sei entrato tramite "
-            "l'invito di un amico!\n\n"
-        )
-
-    testo += (
-        "⭐ Il tuo saldo: 0 punti\n"
-        "👥 Amici premiati questo mese: 0/5\n\n"
-        "I tuoi punti si accumulano e puoi "
-        "controllarli quando vuoi.\n\n"
-        "🚀 Porta i tuoi amici nel Club "
-        "e raggiungi il prossimo premio!\n\n"
-        "👇 Cosa vuoi fare?"
+        "🔥 BENVENUTO SU BESTPRICE24H\\n\\n"
+        "Meno offerte. Più affari.\\n\\n"
+        "Qui trovi una selezione delle migliori offerte Amazon, "
+        "organizzate per categoria, così puoi seguire solo quello "
+        "che ti interessa.\\n\\n"
+        "📲 Scegli i tuoi canali preferiti e non perderti "
+        "le occasioni migliori.\\n\\n"
+        "🎁 Con il Club BestPrice24h puoi invitare amici, "
+        "accumulare punti e ottenere premi.\\n\\n"
+        "👇 Da dove vuoi iniziare?"
     )
 
     await update.message.reply_text(
         testo,
-        reply_markup=menu_club(),
+        reply_markup=menu_utente_principale(),
     )
 
     return ConversationHandler.END
@@ -2674,6 +2815,28 @@ def main():
         CallbackQueryHandler(
             scegli_template_menu,
             pattern="^menu_tpl_",
+        )
+    )
+
+
+    app.add_handler(
+        CallbackQueryHandler(
+            mostra_categorie,
+            pattern="^categorie$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            categoria_work_in_progress,
+            pattern=r"^wip_",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            torna_menu_utente,
+            pattern="^menu_utente$",
         )
     )
 
