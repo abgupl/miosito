@@ -150,7 +150,7 @@ def estrai_vecchio_prezzo_da_messaggio(messaggio):
         return "NO"
 
     match = re.search(
-        r"(?:Prima|Listino):\\s*([^\\n€]+)",
+        r"(?:Prima|Listino):\s*([^\n€]+)",
         messaggio,
         flags=re.IGNORECASE,
     )
@@ -251,23 +251,39 @@ async def invia_recap_giornaliero(bot):
         return False
 
     righe = crea_righe_recap(offerte)
-    intestazione = "🔥 <b>RECAP OFFERTE DI OGGI</b>\\n\\n"
+
+    intestazione = (
+        "🔥 <b>RECAP OFFERTE DI OGGI</b>\n\n"
+    )
+
+    club_footer = (
+        "\n\n────────────────\n"
+        '🎁 <a href="https://t.me/BestPrice24h_bot">'
+        "<b>Entra nel Club</b></a>"
+        " → invita amici e accumula punti!\n"
+        "👥 Invita amici • ⭐ Accumula punti • 🎁 Ottieni premi"
+    )
 
     messaggi = []
     corrente = intestazione
 
     for riga in righe:
 
-        candidato = corrente + riga + "\\n"
+        candidato = corrente + riga + "\n"
 
-        if len(candidato) > 3900 and corrente != intestazione:
+        if (
+            len(candidato) + len(club_footer) > 3900
+            and corrente != intestazione
+        ):
             messaggi.append(corrente.rstrip())
-            corrente = intestazione + riga + "\\n"
+            corrente = intestazione + riga + "\n"
         else:
             corrente = candidato
 
     if corrente.strip():
-        messaggi.append(corrente.rstrip())
+        messaggi.append(
+            corrente.rstrip() + club_footer
+        )
 
     for testo in messaggi:
         await bot.send_message(
