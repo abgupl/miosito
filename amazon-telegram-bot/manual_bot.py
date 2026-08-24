@@ -1,6 +1,8 @@
 import os
 import asyncio
 import sqlite3
+import html
+import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from collections import deque
@@ -78,6 +80,233 @@ ROMA_TZ = ZoneInfo("Europe/Rome")
 
 ultime_offerte = deque(maxlen=10)
 
+
+
+# =========================================================
+# RECAP GIORNALIERO OFFERTE - ORE 22:01
+# =========================================================
+
+def inizializza_recap():
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS recap_offerte (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            link TEXT NOT NULL,
+            prezzo TEXT,
+            vecchio_prezzo TEXT,
+            pubblicata_il TEXT NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS recap_giorni (
+            data TEXT PRIMARY KEY,
+            inviato_il TEXT NOT NULL
+        )
+    """)
+
+    db.commit()
+    db.close()
+
+
+def salva_offerta_recap(nome, link, prezzo, vecchio_prezzo="NO"):
+
+    if not nome or not link:
+        return
+
+    adesso = datetime.now(ROMA_TZ)
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        INSERT INTO recap_offerte (
+            nome,
+            link,
+            prezzo,
+            vecchio_prezzo,
+            pubblicata_il
+        )
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        nome,
+        link,
+        prezzo or "",
+        vecchio_prezzo or "NO",
+        adesso.isoformat(timespec="seconds"),
+    ))
+
+    db.commit()
+    db.close()
+
+
+def estrai_vecchio_prezzo_da_messaggio(messaggio):
+
+    if not messaggio:
+        return "NO"
+
+    match = re.search(
+        r"(?:Prima|Listino):\\s*([^\\n€]+)",
+        messaggio,
+        flags=re.IGNORECASE,
+    )
+
+    if not match:
+        return "NO"
+
+    valore = match.group(1).strip()
+    return valore or "NO"
+
+
+def offerte_recap_di_oggi():
+
+    oggi = datetime.now(ROMA_TZ).date().isoformat()
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        SELECT
+            nome,
+            link,
+            prezzo,
+            vecchio_prezzo,
+            pubblicata_il
+        FROM recap_offerte
+        WHERE substr(pubblicata_il, 1, 10) = ?
+        ORDER BY pubblicata_il DESC
+    """, (oggi,))
+
+    risultati = cur.fetchall()
+    db.close()
+
+    return risultati
+
+
+def recap_gia_inviato(oggi):
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute(
+        "SELECT 1 FROM recap_giorni WHERE data = ?",
+        (oggi,),
+    )
+
+    trovato = cur.fetchone() is not None
+    db.close()
+
+    return trovato
+
+
+def segna_recap_inviato(oggi):
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        INSERT OR REPLACE INTO recap_giorni (data, inviato_il)
+        VALUES (?, ?)
+    """, (
+        oggi,
+        datetime.now(ROMA_TZ).isoformat(timespec="seconds"),
+    ))
+
+    db.commit()
+    db.close()
+
+
+def crea_righe_recap(offerte):
+
+    righe = []
+
+    for nome, link, prezzo, vecchio, _ in offerte:
+
+        nome_html = html.escape(str(nome))
+        link_html = html.escape(str(link), quote=True)
+        prezzo_html = html.escape(str(prezzo or "—"))
+
+        if vecchio and str(vecchio).upper() != "NO":
+            vecchio_html = html.escape(str(vecchio))
+        else:
+            vecchio_html = "—"
+
+        righe.append(
+            f'🛒 <a href="{link_html}">{nome_html}</a> | '
+            f'❌ {vecchio_html}€ → ✅ {prezzo_html}€'
+        )
+
+    return righe
+
+
+async def invia_recap_giornaliero(bot):
+
+    offerte = offerte_recap_di_oggi()
+
+    if not offerte:
+        return False
+
+    righe = crea_righe_recap(offerte)
+    intestazione = "🔥 <b>RECAP OFFERTE DI OGGI</b>\\n\\n"
+
+    messaggi = []
+    corrente = intestazione
+
+    for riga in righe:
+
+        candidato = corrente + riga + "\\n"
+
+        if len(candidato) > 3900 and corrente != intestazione:
+            messaggi.append(corrente.rstrip())
+            corrente = intestazione + riga + "\\n"
+        else:
+            corrente = candidato
+
+    if corrente.strip():
+        messaggi.append(corrente.rstrip())
+
+    for testo in messaggi:
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=testo,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+
+    return True
+
+
+async def controlla_recap(app):
+
+    while True:
+
+        try:
+            adesso = datetime.now(ROMA_TZ)
+            oggi = adesso.date().isoformat()
+
+            orario_recap_raggiunto = (
+                adesso.hour > 22
+                or (adesso.hour == 22 and adesso.minute >= 1)
+            )
+
+            if (
+                orario_recap_raggiunto
+                and not recap_gia_inviato(oggi)
+            ):
+                inviato = await invia_recap_giornaliero(app.bot)
+
+                # Segniamo la giornata solo se c'erano offerte.
+                if inviato:
+                    segna_recap_inviato(oggi)
+
+        except Exception as errore:
+            print(f"Errore recap giornaliero: {errore}")
+
+        await asyncio.sleep(30)
 
 
 # =========================================================
@@ -220,6 +449,13 @@ async def invia_offerta_programmata(
         }
     )
 
+    salva_offerta_recap(
+        nome,
+        link,
+        prezzo,
+        estrai_vecchio_prezzo_da_messaggio(messaggio),
+    )
+
 
 async def controlla_programmazioni(app):
 
@@ -283,6 +519,10 @@ async def avvia_programmazioni(app):
 
     app.create_task(
         controlla_programmazioni(app)
+    )
+
+    app.create_task(
+        controlla_recap(app)
     )
 
 
@@ -2054,6 +2294,13 @@ async def conferma(
             }
         )
 
+        salva_offerta_recap(
+            nome,
+            link,
+            context.user_data.get("prezzo"),
+            context.user_data.get("vecchio_prezzo", "NO"),
+        )
+
         context.user_data.clear()
 
         await query.edit_message_text(
@@ -2220,6 +2467,7 @@ def main():
 
     inizializza_database()
     inizializza_programmazioni()
+    inizializza_recap()
 
     app = (
         Application
