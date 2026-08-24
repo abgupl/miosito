@@ -1036,10 +1036,7 @@ async def ricevi_ora_programmazione(
 
         await update.message.reply_text(
             "❌ Orario non corretto.\n\n"
-            "Scrivilo così:\n"
-            "9:00\n"
-            "oppure\n"
-            "18:30"
+            "Inserisci l'orario nel formato HH:MM."
         )
 
         return PROGRAMMA_ORA
@@ -1420,8 +1417,7 @@ async def conferma_orario_vicino(
     if query.data == "cambia_orario":
 
         await query.message.reply_text(
-            "🕒 Scrivi un nuovo orario.\n\n"
-            "Esempio: 17:00"
+            "🕒 Scrivi un nuovo orario."
         )
 
         return PROGRAMMA_ORA
@@ -1939,11 +1935,7 @@ async def conferma(
             f"📅 Orari già programmati: "
             f"{orari_occupati}\n\n"
             f"{suggerimento_testo}"
-            "Ora scrivi solo l'orario.\n\n"
-            "Esempio:\n"
-            "9:00\n"
-            "oppure\n"
-            "18:30"
+            "Ora scrivi solo l'orario."
         )
 
         return PROGRAMMA_ORA
