@@ -421,8 +421,8 @@ def menu_club():
         ],
         [
             InlineKeyboardButton(
-                "🔥 VAI AL CANALE",
-                url=CHANNEL_URL,
+                "⬅️ TORNA INDIETRO",
+                callback_data="menu_utente",
             )
         ],
     ])
