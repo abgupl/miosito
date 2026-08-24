@@ -791,6 +791,58 @@ async def start(
     if not user:
         return ConversationHandler.END
 
+    # =====================================================
+    # ADMIN
+    # =====================================================
+    if autorizzato(update):
+
+        await update.message.reply_text(
+            "🔥 AMAZON OFFERTE BOT\n\n"
+            "🛠 Modalità amministratore\n\n"
+            "Cosa vuoi fare?",
+            reply_markup=menu_principale(),
+        )
+
+        return ConversationHandler.END
+
+    # =====================================================
+    # UTENTE NORMALE
+    # =====================================================
+    invitato_da = None
+
+    if context.args:
+
+        try:
+            invitato_da = int(context.args[0])
+
+        except (ValueError, TypeError):
+            invitato_da = None
+
+    registra_utente(
+        user,
+        invitato_da
+    )
+
+    testo = (
+        "🔥 BENVENUTO SU BESTPRICE24H\n\n"
+        "Meno offerte. Più affari.\n\n"
+        "Qui trovi una selezione delle migliori offerte Amazon, "
+        "organizzate per categoria, così puoi seguire solo quello "
+        "che ti interessa.\n\n"
+        "📲 Scegli i tuoi canali preferiti e non perderti "
+        "le occasioni migliori.\n\n"
+        "🎁 Con il Club BestPrice24h puoi invitare amici, "
+        "accumulare punti e ottenere premi.\n\n"
+        "👇 Da dove vuoi iniziare?"
+    )
+
+    await update.message.reply_text(
+        testo,
+        reply_markup=menu_utente_principale(),
+    )
+
+    return ConversationHandler.END
+
     # ADMIN
     if autorizzato(update):
 
