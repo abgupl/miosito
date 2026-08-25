@@ -287,14 +287,14 @@ async def invia_recap_giornaliero(bot):
 
     for riga in righe:
 
-        candidato = corrente + riga + "\n"
+        candidato = corrente + riga + "\n\n"
 
         if (
             len(candidato) + len(club_footer) > 3900
             and corrente != intestazione
         ):
             messaggi.append(corrente.rstrip())
-            corrente = intestazione + riga + "\n"
+            corrente = intestazione + riga + "\n\n"
         else:
             corrente = candidato
 
@@ -528,6 +528,10 @@ async def invia_offerta_programmata(
         [
             [
                 InlineKeyboardButton(
+                    "🎁 CLUB",
+                    url="https://t.me/BestPrice24h_bot",
+                ),
+                InlineKeyboardButton(
                     "🛒 VEDI OFFERTA",
                     url=link,
                 )
@@ -728,6 +732,45 @@ def menu_principale():
                 )
             ],
         ]
+    )
+
+
+def menu_dopo_pubblicazione():
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "➕ INVIA UN NUOVO POST",
+                    callback_data="nuova",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🏠 TORNA AL MENU PRINCIPALE",
+                    callback_data="menu_admin",
+                )
+            ],
+        ]
+    )
+
+
+async def torna_menu_admin(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(update):
+        return
+
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "🔥 AMAZON OFFERTE BOT\n\n"
+        "🛠 Modalità amministratore\n\n"
+        "Cosa vuoi fare?",
+        reply_markup=menu_principale(),
     )
 
 
@@ -3888,6 +3931,10 @@ async def conferma(
             [
                 [
                     InlineKeyboardButton(
+                        "🎁 CLUB",
+                        url="https://t.me/BestPrice24h_bot",
+                    ),
+                    InlineKeyboardButton(
                         "🛒 VEDI OFFERTA",
                         url=link,
                     )
@@ -3930,13 +3977,17 @@ async def conferma(
 
         context.user_data.clear()
 
-        await query.edit_message_text(
-            "✅ OFFERTA PUBBLICATA!"
-        )
+        chat_id = query.message.chat_id
 
-        await query.message.reply_text(
-            "Vuoi pubblicarne un'altra?",
-            reply_markup=menu_principale(),
+        await query.message.delete()
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "✅ OFFERTA PUBBLICATA!\n\n"
+                "Cosa vuoi fare adesso?"
+            ),
+            reply_markup=menu_dopo_pubblicazione(),
         )
 
         return ConversationHandler.END
@@ -4423,6 +4474,13 @@ def main():
         CallbackQueryHandler(
             scegli_template_menu,
             pattern="^menu_tpl_",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            torna_menu_admin,
+            pattern="^menu_admin$",
         )
     )
 
