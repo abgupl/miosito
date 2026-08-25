@@ -421,8 +421,8 @@ def menu_club():
         ],
         [
             InlineKeyboardButton(
-                "⬅️ TORNA INDIETRO",
-                callback_data="menu_utente",
+                "🔥 VAI AL CANALE",
+                url=CHANNEL_URL,
             )
         ],
     ])
@@ -1282,6 +1282,12 @@ async def admin_club_menu(
             InlineKeyboardButton(
                 "🎁 PREMI",
                 callback_data="adm_premi",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⬅️ TORNA AL MENU PRINCIPALE",
+                callback_data="menu_admin",
             )
         ],
     ])
