@@ -77,6 +77,24 @@ ROMA_TZ = ZoneInfo("Europe/Rome")
     CONFERMA_ORARIO,
 ) = range(10)
 
+(
+    PROG_SELEZIONE,
+    PROG_GESTIONE,
+    PROG_MODIFICA_MENU,
+    PROG_EDIT_NOME,
+    PROG_EDIT_PREZZO,
+    PROG_EDIT_VECCHIO,
+    PROG_EDIT_LINK,
+    PROG_EDIT_DATA_ORA,
+) = range(100, 108)
+
+(
+    FOTO_SCELTA,
+    FOTO_ATTESA,
+    PROG_IMMAGINE_MENU,
+    PROG_IMMAGINE_ATTESA,
+) = range(200, 204)
+
 
 ultime_offerte = deque(maxlen=10)
 
@@ -329,6 +347,32 @@ async def controlla_recap(app):
 # PROGRAMMAZIONE INVIO OFFERTE
 # =========================================================
 
+
+def salva_foto_programmazione(
+    programmazione_id,
+    foto_file_id,
+):
+
+    if not foto_file_id:
+        return
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        UPDATE programmazioni
+        SET foto_file_id = ?
+        WHERE id = ?
+    """, (
+        foto_file_id,
+        programmazione_id,
+    ))
+
+    db.commit()
+    db.close()
+
+
+
 def inizializza_programmazioni():
 
     db = sqlite3.connect(DB_PATH)
@@ -341,11 +385,39 @@ def inizializza_programmazioni():
             messaggio TEXT NOT NULL,
             link TEXT NOT NULL,
             prezzo TEXT,
+            vecchio_prezzo TEXT DEFAULT 'NO',
+            template TEXT DEFAULT 'pulito',
+            foto_file_id TEXT,
             invio_previsto TEXT NOT NULL,
             stato TEXT DEFAULT 'attesa',
             data_creazione TEXT NOT NULL
         )
     """)
+
+    # Migrazione automatica per database già esistenti.
+    cur.execute("PRAGMA table_info(programmazioni)")
+    colonne = {
+        riga[1]
+        for riga in cur.fetchall()
+    }
+
+    if "vecchio_prezzo" not in colonne:
+        cur.execute(
+            "ALTER TABLE programmazioni "
+            "ADD COLUMN vecchio_prezzo TEXT DEFAULT 'NO'"
+        )
+
+    if "template" not in colonne:
+        cur.execute(
+            "ALTER TABLE programmazioni "
+            "ADD COLUMN template TEXT DEFAULT 'pulito'"
+        )
+
+    if "foto_file_id" not in colonne:
+        cur.execute(
+            "ALTER TABLE programmazioni "
+            "ADD COLUMN foto_file_id TEXT"
+        )
 
     db.commit()
     db.close()
@@ -369,22 +441,47 @@ def salva_programmazione(
     db = sqlite3.connect(DB_PATH)
     cur = db.cursor()
 
+    vecchio_prezzo = (
+        estrai_vecchio_prezzo_da_messaggio(
+            messaggio
+        )
+    )
+
+    if messaggio.startswith(
+        "🚨 SUPER OFFERTA AMAZON"
+    ):
+        template = "aggressivo"
+
+    elif messaggio.startswith(
+        "⚡ TECH DEAL"
+    ):
+        template = "tech"
+
+    else:
+        template = "pulito"
+
     cur.execute("""
         INSERT INTO programmazioni (
             nome,
             messaggio,
             link,
             prezzo,
+            vecchio_prezzo,
+            template,
+            foto_file_id,
             invio_previsto,
             stato,
             data_creazione
         )
-        VALUES (?, ?, ?, ?, ?, 'attesa', ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'attesa', ?)
     """, (
         nome,
         messaggio,
         link,
         prezzo,
+        vecchio_prezzo,
+        template,
+        None,
         invio_previsto_utc.isoformat(
             timespec="seconds"
         ),
@@ -417,6 +514,7 @@ async def invia_offerta_programmata(
         messaggio,
         link,
         prezzo,
+        foto_file_id,
     ) = programmazione
 
     messaggio_con_link = (
@@ -437,11 +535,19 @@ async def invia_offerta_programmata(
         ]
     )
 
-    await bot.send_message(
-        chat_id=CHANNEL_ID,
-        text=messaggio_con_link,
-        reply_markup=bottone_offerta,
-    )
+    if foto_file_id:
+        await bot.send_photo(
+            chat_id=CHANNEL_ID,
+            photo=foto_file_id,
+            caption=messaggio_con_link,
+            reply_markup=bottone_offerta,
+        )
+    else:
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=messaggio_con_link,
+            reply_markup=bottone_offerta,
+        )
 
     db = sqlite3.connect(DB_PATH)
     cur = db.cursor()
@@ -488,7 +594,8 @@ async def controlla_programmazioni(app):
                     nome,
                     messaggio,
                     link,
-                    prezzo
+                    prezzo,
+                    foto_file_id
                 FROM programmazioni
                 WHERE stato = 'attesa'
                   AND invio_previsto <= ?
@@ -1212,7 +1319,7 @@ async def conferma_dati_automatici(
             "✅ Dati confermati."
         )
 
-        return await mostra_anteprima(
+        return await chiedi_immagine(
             update,
             context,
         )
@@ -1601,6 +1708,11 @@ async def ricevi_ora_programmazione(
         data_locale,
     )
 
+    salva_foto_programmazione(
+        programmazione_id,
+        context.user_data.get("foto_file_id"),
+    )
+
     context.user_data.clear()
 
     await update.message.reply_text(
@@ -1919,6 +2031,11 @@ async def conferma_orario_vicino(
         data_locale,
     )
 
+    salva_foto_programmazione(
+        programmazione_id,
+        context.user_data.get("foto_file_id"),
+    )
+
     context.user_data.clear()
 
     await query.message.reply_text(
@@ -1938,23 +2055,197 @@ async def conferma_orario_vicino(
 
 
 # =========================================================
-# ELENCO POST PROGRAMMATI
+# GESTIONE POST PROGRAMMATI
 # =========================================================
 
-async def mostra_programmati(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+def data_programmata_locale(invio_previsto):
+
+    try:
+
+        data_utc = datetime.fromisoformat(
+            invio_previsto
+        )
+
+        if data_utc.tzinfo is None:
+            data_utc = data_utc.replace(
+                tzinfo=timezone.utc
+            )
+
+        return data_utc.astimezone(
+            ROMA_TZ
+        )
+
+    except Exception:
+        return None
+
+
+def leggi_programmato(programmazione_id):
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        SELECT
+            id,
+            nome,
+            messaggio,
+            link,
+            prezzo,
+            COALESCE(vecchio_prezzo, 'NO'),
+            COALESCE(template, 'pulito'),
+            foto_file_id,
+            invio_previsto,
+            stato
+        FROM programmazioni
+        WHERE id = ?
+    """, (programmazione_id,))
+
+    riga = cur.fetchone()
+
+    db.close()
+
+    if not riga:
+        return None
+
+    return {
+        "id": riga[0],
+        "nome": riga[1],
+        "messaggio": riga[2],
+        "link": riga[3],
+        "prezzo": riga[4],
+        "vecchio_prezzo": riga[5] or "NO",
+        "template": riga[6] or "pulito",
+        "foto_file_id": riga[7],
+        "invio_previsto": riga[8],
+        "stato": riga[9],
+    }
+
+
+def crea_messaggio_programmato(
+    nome,
+    prezzo,
+    vecchio,
+    template,
 ):
 
-    if not await controlla_autorizzazione(
-        update
-    ):
-        return
+    vecchio = vecchio or "NO"
+    template = template or "pulito"
 
-    query = update.callback_query
+    sconto = None
 
-    if query:
-        await query.answer()
+    if str(vecchio).upper() != "NO":
+
+        sconto = calcola_sconto(
+            prezzo,
+            vecchio,
+        )
+
+    if template == "aggressivo":
+
+        testo = (
+            "🚨 SUPER OFFERTA AMAZON 🚨\n\n"
+            f"🔥 {nome}\n\n"
+        )
+
+        if str(vecchio).upper() != "NO":
+            testo += (
+                f"❌ Prima: {vecchio} €\n"
+            )
+
+        testo += f"✅ ORA: {prezzo} €\n"
+
+        if sconto is not None:
+            testo += (
+                f"\n💥 SCONTO {sconto}%"
+            )
+
+        testo += (
+            "\n\n⚡ Approfittane prima "
+            "che cambi il prezzo!"
+        )
+
+        return testo
+
+    if template == "tech":
+
+        testo = (
+            "⚡ TECH DEAL\n\n"
+            f"📱 {nome}\n\n"
+        )
+
+        if str(vecchio).upper() != "NO":
+            testo += (
+                f"🏷️ Listino: {vecchio} €\n"
+            )
+
+        testo += (
+            f"💰 Offerta: {prezzo} €\n"
+        )
+
+        if sconto is not None:
+            testo += f"📉 -{sconto}%"
+
+        return testo
+
+    testo = (
+        "🔥 OFFERTA AMAZON\n\n"
+        f"📦 {nome}\n\n"
+    )
+
+    if str(vecchio).upper() != "NO":
+        testo += (
+            f"❌ Prima: {vecchio} €\n"
+        )
+
+    testo += f"✅ Ora: {prezzo} €\n"
+
+    if sconto is not None:
+        testo += (
+            f"\n🔥 Sconto: {sconto}%"
+        )
+
+    return testo
+
+
+def aggiorna_messaggio_programmato(
+    programmazione_id,
+):
+
+    post = leggi_programmato(
+        programmazione_id
+    )
+
+    if not post:
+        return False
+
+    messaggio = crea_messaggio_programmato(
+        post["nome"],
+        post["prezzo"],
+        post["vecchio_prezzo"],
+        post["template"],
+    )
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        UPDATE programmazioni
+        SET messaggio = ?
+        WHERE id = ?
+    """, (
+        messaggio,
+        programmazione_id,
+    ))
+
+    db.commit()
+    db.close()
+
+    return True
+
+
+async def invia_lista_programmati(
+    messaggio,
+):
 
     db = sqlite3.connect(DB_PATH)
     cur = db.cursor()
@@ -1977,77 +2268,1079 @@ async def mostra_programmati(
 
     if not righe_db:
 
-        testo = (
-            "📅 PROGRAMMAZIONE\n\n"
-            "Non ci sono offerte programmate."
+        await messaggio.reply_text(
+            "📅 POST PROGRAMMATI\n\n"
+            "Non ci sono offerte programmate.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ MENU ADMIN",
+                            callback_data="prog_esci",
+                        )
+                    ]
+                ]
+            ),
         )
 
-    else:
+        return
 
-        righe = [
-            "📅 PROGRAMMAZIONE OFFERTE\n"
-        ]
+    righe = [
+        "📅 POST PROGRAMMATI\n"
+    ]
 
-        for (
-            programmazione_id,
-            nome,
-            prezzo,
-            invio_previsto,
-        ) in righe_db:
+    for (
+        programmazione_id,
+        nome,
+        prezzo,
+        invio_previsto,
+    ) in righe_db:
 
-            try:
+        data_locale = data_programmata_locale(
+            invio_previsto
+        )
 
-                data_utc = datetime.fromisoformat(
-                    invio_previsto
-                )
-
-                if data_utc.tzinfo is None:
-                    data_utc = data_utc.replace(
-                        tzinfo=timezone.utc
-                    )
-
-                data_locale = (
-                    data_utc
-                    .astimezone(ROMA_TZ)
-                )
-
-                quando = data_locale.strftime(
-                    "%d/%m/%Y • %H:%M"
-                )
-
-            except Exception:
-
-                quando = invio_previsto
-
-            righe.append(
-                f"#{programmazione_id} "
-                f"📅 {quando}\n"
-                f"📦 {nome}\n"
-                f"💰 {prezzo} €\n"
+        if data_locale:
+            quando = data_locale.strftime(
+                "%d/%m • %H:%M"
             )
+        else:
+            quando = invio_previsto
 
         righe.append(
-            f"\nTotale programmati: "
-            f"{len(righe_db)}"
+            f"#{programmazione_id} • {quando}\n"
+            f"📦 {nome} — {prezzo} €\n"
         )
 
-        testo = "\n".join(
-            righe
-        )
+    righe.append(
+        "\n🔢 Scrivi il numero # del post "
+        "che vuoi gestire.\n\n"
+        "Esempio: 15"
+    )
 
-    if update.message:
+    await messaggio.reply_text(
+        "\n".join(righe),
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "⬅️ MENU ADMIN",
+                        callback_data="prog_esci",
+                    )
+                ]
+            ]
+        ),
+    )
+
+
+async def mostra_programmati(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(
+        update
+    ):
+        return ConversationHandler.END
+
+    query = update.callback_query
+
+    if query:
+        await query.answer()
+        messaggio = query.message
+    else:
+        messaggio = update.message
+
+    context.user_data.pop(
+        "prog_id",
+        None,
+    )
+
+    await invia_lista_programmati(
+        messaggio
+    )
+
+    return PROG_SELEZIONE
+
+
+async def seleziona_programmato(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(
+        update
+    ):
+        return ConversationHandler.END
+
+    testo = update.message.text.strip()
+
+    testo = testo.replace("#", "").strip()
+
+    if not testo.isdigit():
 
         await update.message.reply_text(
-            testo,
-            reply_markup=menu_principale(),
+            "❌ Scrivi solo il numero del post.\n\n"
+            "Esempio: 15"
         )
 
+        return PROG_SELEZIONE
+
+    programmazione_id = int(testo)
+
+    post = leggi_programmato(
+        programmazione_id
+    )
+
+    if (
+        not post
+        or post["stato"] != "attesa"
+    ):
+
+        await update.message.reply_text(
+            "❌ Non trovo un post programmato "
+            f"attivo con ID #{programmazione_id}.\n\n"
+            "Scrivi un altro numero."
+        )
+
+        return PROG_SELEZIONE
+
+    context.user_data[
+        "prog_id"
+    ] = programmazione_id
+
+    await invia_scheda_programmato(
+        update.message,
+        programmazione_id,
+    )
+
+    return PROG_GESTIONE
+
+
+async def invia_scheda_programmato(
+    messaggio,
+    programmazione_id,
+):
+
+    post = leggi_programmato(
+        programmazione_id
+    )
+
+    if not post:
+        return
+
+    data_locale = data_programmata_locale(
+        post["invio_previsto"]
+    )
+
+    quando = (
+        data_locale.strftime(
+            "%d/%m/%Y • %H:%M"
+        )
+        if data_locale
+        else post["invio_previsto"]
+    )
+
+    testo = (
+        f"📅 POST PROGRAMMATO #{post['id']}\n"
+        f"🕒 {quando}\n\n"
+        "👀 ANTEPRIMA\n\n"
+        f"{post['messaggio']}\n\n"
+        f"👉 {post['link']}\n\n"
+        "⚡ Prezzo e disponibilità "
+        "possono variare."
+    )
+
+    tastiera = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🛒 VEDI OFFERTA",
+                    url=post["link"],
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✏️ MODIFICA",
+                    callback_data="prog_modifica",
+                ),
+                InlineKeyboardButton(
+                    "🗑 ELIMINA",
+                    callback_data="prog_elimina",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ TORNA AI PROGRAMMATI",
+                    callback_data="prog_indietro",
+                )
+            ],
+        ]
+    )
+
+    if post.get("foto_file_id"):
+        await messaggio.reply_photo(
+            photo=post["foto_file_id"],
+            caption=testo,
+            reply_markup=tastiera,
+        )
     else:
+        await messaggio.reply_text(
+            testo,
+            reply_markup=tastiera,
+        )
+
+
+async def gestisci_programmato(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(
+        update
+    ):
+        return ConversationHandler.END
+
+    query = update.callback_query
+    await query.answer()
+
+    programmazione_id = context.user_data.get(
+        "prog_id"
+    )
+
+    if not programmazione_id:
 
         await query.message.reply_text(
-            testo,
-            reply_markup=menu_principale(),
+            "❌ Post non selezionato."
         )
+
+        return PROG_SELEZIONE
+
+    if query.data == "prog_indietro":
+
+        context.user_data.pop(
+            "prog_id",
+            None,
+        )
+
+        await invia_lista_programmati(
+            query.message
+        )
+
+        return PROG_SELEZIONE
+
+    if query.data == "prog_elimina":
+
+        post = leggi_programmato(
+            programmazione_id
+        )
+
+        if not post:
+            return PROG_SELEZIONE
+
+        tastiera = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "✅ SÌ, ELIMINA",
+                        callback_data="prog_elimina_si",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "❌ ANNULLA",
+                        callback_data="prog_elimina_no",
+                    )
+                ],
+            ]
+        )
+
+        await query.message.reply_text(
+            "⚠️ ELIMINARE QUESTO POST?\n\n"
+            f"#{programmazione_id}\n"
+            f"📦 {post['nome']}\n"
+            f"💰 {post['prezzo']} €",
+            reply_markup=tastiera,
+        )
+
+        return PROG_GESTIONE
+
+    if query.data == "prog_modifica":
+
+        tastiera = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "📦 NOME",
+                        callback_data="prog_edit_nome",
+                    ),
+                    InlineKeyboardButton(
+                        "💰 PREZZO",
+                        callback_data="prog_edit_prezzo",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🏷 PREZZO PRIMA",
+                        callback_data="prog_edit_vecchio",
+                    ),
+                    InlineKeyboardButton(
+                        "🔗 LINK",
+                        callback_data="prog_edit_link",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🖼 IMMAGINE",
+                        callback_data="prog_edit_immagine",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🕒 DATA E ORA",
+                        callback_data="prog_edit_dataora",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🎨 TEMPLATE",
+                        callback_data="prog_edit_template",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "⬅️ INDIETRO",
+                        callback_data="prog_torna_scheda",
+                    )
+                ],
+            ]
+        )
+
+        await query.message.reply_text(
+            "✏️ COSA VUOI MODIFICARE?",
+            reply_markup=tastiera,
+        )
+
+        return PROG_MODIFICA_MENU
+
+    if query.data == "prog_elimina_no":
+
+        await invia_scheda_programmato(
+            query.message,
+            programmazione_id,
+        )
+
+        return PROG_GESTIONE
+
+    if query.data == "prog_elimina_si":
+
+        db = sqlite3.connect(DB_PATH)
+        cur = db.cursor()
+
+        cur.execute("""
+            UPDATE programmazioni
+            SET stato = 'annullata'
+            WHERE id = ?
+              AND stato = 'attesa'
+        """, (
+            programmazione_id,
+        ))
+
+        modificati = cur.rowcount
+
+        db.commit()
+        db.close()
+
+        if modificati:
+
+            await query.message.reply_text(
+                f"🗑 Post #{programmazione_id} "
+                "eliminato dalla programmazione."
+            )
+
+        else:
+
+            await query.message.reply_text(
+                "❌ Il post non è più disponibile."
+            )
+
+        context.user_data.pop(
+            "prog_id",
+            None,
+        )
+
+        await invia_lista_programmati(
+            query.message
+        )
+
+        return PROG_SELEZIONE
+
+    return PROG_GESTIONE
+
+
+async def menu_modifica_programmato(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(
+        update
+    ):
+        return ConversationHandler.END
+
+    query = update.callback_query
+    await query.answer()
+
+    programmazione_id = context.user_data.get(
+        "prog_id"
+    )
+
+    if not programmazione_id:
+        return PROG_SELEZIONE
+
+    if query.data == "prog_torna_scheda":
+
+        await invia_scheda_programmato(
+            query.message,
+            programmazione_id,
+        )
+
+        return PROG_GESTIONE
+
+    if query.data == "prog_edit_nome":
+
+        await query.message.reply_text(
+            "📦 Scrivi il nuovo nome del prodotto:"
+        )
+
+        return PROG_EDIT_NOME
+
+    if query.data == "prog_edit_prezzo":
+
+        await query.message.reply_text(
+            "💰 Scrivi il nuovo prezzo attuale.\n\n"
+            "Esempio: 39,99"
+        )
+
+        return PROG_EDIT_PREZZO
+
+    if query.data == "prog_edit_vecchio":
+
+        await query.message.reply_text(
+            "🏷 Scrivi il nuovo prezzo precedente.\n\n"
+            "Esempio: 59,99\n"
+            "Oppure scrivi NO."
+        )
+
+        return PROG_EDIT_VECCHIO
+
+    if query.data == "prog_edit_link":
+
+        await query.message.reply_text(
+            "🔗 Inviami il nuovo link Amazon:"
+        )
+
+        return PROG_EDIT_LINK
+
+    if query.data == "prog_edit_immagine":
+
+        post = leggi_programmato(
+            programmazione_id
+        )
+
+        if not post:
+            return PROG_GESTIONE
+
+        if post.get("foto_file_id"):
+
+            tastiera = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🔄 SOSTITUISCI IMMAGINE",
+                            callback_data="prog_img_sostituisci",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "🗑 RIMUOVI IMMAGINE",
+                            callback_data="prog_img_rimuovi",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ INDIETRO",
+                            callback_data="prog_img_indietro",
+                        )
+                    ],
+                ]
+            )
+
+        else:
+
+            tastiera = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "📷 AGGIUNGI IMMAGINE",
+                            callback_data="prog_img_aggiungi",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ INDIETRO",
+                            callback_data="prog_img_indietro",
+                        )
+                    ],
+                ]
+            )
+
+        await query.message.reply_text(
+            "🖼 GESTIONE IMMAGINE",
+            reply_markup=tastiera,
+        )
+
+        return PROG_IMMAGINE_MENU
+
+    if query.data == "prog_edit_dataora":
+
+        await query.message.reply_text(
+            "🕒 Scrivi nuova data e ora nel formato:\n\n"
+            "25/08/2026 18:30"
+        )
+
+        return PROG_EDIT_DATA_ORA
+
+    if query.data == "prog_edit_template":
+
+        tastiera = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "✨ PULITO",
+                        callback_data="prog_tpl_pulito",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🚨 AGGRESSIVO",
+                        callback_data="prog_tpl_aggressivo",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "⚡ TECH",
+                        callback_data="prog_tpl_tech",
+                    )
+                ],
+            ]
+        )
+
+        await query.message.reply_text(
+            "🎨 Scegli il nuovo template:",
+            reply_markup=tastiera,
+        )
+
+        return PROG_MODIFICA_MENU
+
+    if query.data.startswith("prog_tpl_"):
+
+        template = query.data.replace(
+            "prog_tpl_",
+            "",
+        )
+
+        db = sqlite3.connect(DB_PATH)
+        cur = db.cursor()
+
+        cur.execute("""
+            UPDATE programmazioni
+            SET template = ?
+            WHERE id = ?
+              AND stato = 'attesa'
+        """, (
+            template,
+            programmazione_id,
+        ))
+
+        db.commit()
+        db.close()
+
+        aggiorna_messaggio_programmato(
+            programmazione_id
+        )
+
+        await query.message.reply_text(
+            "✅ Template aggiornato."
+        )
+
+        await invia_scheda_programmato(
+            query.message,
+            programmazione_id,
+        )
+
+        return PROG_GESTIONE
+
+    return PROG_MODIFICA_MENU
+
+
+async def salva_modifica_testuale_programmato(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(
+        update
+    ):
+        return ConversationHandler.END
+
+    programmazione_id = context.user_data.get(
+        "prog_id"
+    )
+
+    if not programmazione_id:
+        return PROG_SELEZIONE
+
+    valore = update.message.text.strip()
+
+    stato = context.user_data.get(
+        "prog_edit_state"
+    )
+
+    # Lo stato viene impostato dai wrapper sotto.
+    if stato == "nome":
+
+        if not valore:
+
+            await update.message.reply_text(
+                "❌ Il nome non può essere vuoto."
+            )
+
+            return PROG_EDIT_NOME
+
+        colonna = "nome"
+        nuovo_valore = valore
+
+    elif stato == "prezzo":
+
+        nuovo_valore = pulisci_prezzo(
+            valore
+        )
+
+        if not nuovo_valore:
+
+            await update.message.reply_text(
+                "❌ Prezzo non valido."
+            )
+
+            return PROG_EDIT_PREZZO
+
+        colonna = "prezzo"
+
+    elif stato == "vecchio":
+
+        if valore.upper() == "NO":
+            nuovo_valore = "NO"
+        else:
+            nuovo_valore = pulisci_prezzo(
+                valore
+            )
+
+        colonna = "vecchio_prezzo"
+
+    elif stato == "link":
+
+        if (
+            "amazon." not in valore
+            and "amzn." not in valore
+        ):
+
+            await update.message.reply_text(
+                "❌ Non sembra un link Amazon.\n"
+                "Invia un link valido."
+            )
+
+            return PROG_EDIT_LINK
+
+        colonna = "link"
+        nuovo_valore = valore
+
+    else:
+        return PROG_GESTIONE
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute(
+        f"""
+        UPDATE programmazioni
+        SET {colonna} = ?
+        WHERE id = ?
+          AND stato = 'attesa'
+        """,
+        (
+            nuovo_valore,
+            programmazione_id,
+        ),
+    )
+
+    db.commit()
+    db.close()
+
+    if colonna in (
+        "nome",
+        "prezzo",
+        "vecchio_prezzo",
+    ):
+
+        aggiorna_messaggio_programmato(
+            programmazione_id
+        )
+
+    context.user_data.pop(
+        "prog_edit_state",
+        None,
+    )
+
+    await update.message.reply_text(
+        "✅ Post programmato aggiornato."
+    )
+
+    await invia_scheda_programmato(
+        update.message,
+        programmazione_id,
+    )
+
+    return PROG_GESTIONE
+
+
+async def edit_programmato_nome(
+    update,
+    context,
+):
+
+    context.user_data[
+        "prog_edit_state"
+    ] = "nome"
+
+    return await salva_modifica_testuale_programmato(
+        update,
+        context,
+    )
+
+
+async def edit_programmato_prezzo(
+    update,
+    context,
+):
+
+    context.user_data[
+        "prog_edit_state"
+    ] = "prezzo"
+
+    return await salva_modifica_testuale_programmato(
+        update,
+        context,
+    )
+
+
+async def edit_programmato_vecchio(
+    update,
+    context,
+):
+
+    context.user_data[
+        "prog_edit_state"
+    ] = "vecchio"
+
+    return await salva_modifica_testuale_programmato(
+        update,
+        context,
+    )
+
+
+async def edit_programmato_link(
+    update,
+    context,
+):
+
+    context.user_data[
+        "prog_edit_state"
+    ] = "link"
+
+    return await salva_modifica_testuale_programmato(
+        update,
+        context,
+    )
+
+
+async def edit_programmato_dataora(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(
+        update
+    ):
+        return ConversationHandler.END
+
+    programmazione_id = context.user_data.get(
+        "prog_id"
+    )
+
+    if not programmazione_id:
+        return PROG_SELEZIONE
+
+    valore = update.message.text.strip()
+
+    try:
+
+        data_locale = datetime.strptime(
+            valore,
+            "%d/%m/%Y %H:%M",
+        ).replace(
+            tzinfo=ROMA_TZ
+        )
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ Formato non valido.\n\n"
+            "Usa: 25/08/2026 18:30"
+        )
+
+        return PROG_EDIT_DATA_ORA
+
+    if data_locale <= datetime.now(
+        ROMA_TZ
+    ):
+
+        await update.message.reply_text(
+            "❌ La nuova data/ora deve "
+            "essere nel futuro."
+        )
+
+        return PROG_EDIT_DATA_ORA
+
+    conflitti = trova_conflitto(
+        data_locale
+    )
+
+    conflitti = [
+        evento
+        for evento in conflitti
+        if evento["id"] != programmazione_id
+    ]
+
+    if conflitti:
+
+        vicino = conflitti[0]
+
+        await update.message.reply_text(
+            "⚠️ Attenzione: c'è già un post "
+            "programmato vicino a questo orario.\n\n"
+            f"📦 {vicino['nome']}\n"
+            f"🕒 {vicino['datetime'].strftime('%H:%M')}\n\n"
+            "La modifica viene comunque salvata."
+        )
+
+    data_utc = data_locale.astimezone(
+        timezone.utc
+    )
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        UPDATE programmazioni
+        SET invio_previsto = ?
+        WHERE id = ?
+          AND stato = 'attesa'
+    """, (
+        data_utc.isoformat(
+            timespec="seconds"
+        ),
+        programmazione_id,
+    ))
+
+    db.commit()
+    db.close()
+
+    await update.message.reply_text(
+        "✅ Data e ora aggiornate."
+    )
+
+    await invia_scheda_programmato(
+        update.message,
+        programmazione_id,
+    )
+
+    return PROG_GESTIONE
+
+
+
+async def gestisci_immagine_programmata(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(
+        update
+    ):
+        return ConversationHandler.END
+
+    query = update.callback_query
+    await query.answer()
+
+    programmazione_id = context.user_data.get(
+        "prog_id"
+    )
+
+    if not programmazione_id:
+        return PROG_SELEZIONE
+
+    if query.data == "prog_img_indietro":
+
+        await query.message.reply_text(
+            "✏️ Torna alla modifica del post.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ MODIFICA POST",
+                            callback_data="prog_modifica",
+                        )
+                    ]
+                ]
+            ),
+        )
+
+        return PROG_GESTIONE
+
+    if query.data in (
+        "prog_img_aggiungi",
+        "prog_img_sostituisci",
+    ):
+
+        await query.message.reply_text(
+            "📷 Inviami la nuova immagine."
+        )
+
+        return PROG_IMMAGINE_ATTESA
+
+    if query.data == "prog_img_rimuovi":
+
+        db = sqlite3.connect(DB_PATH)
+        cur = db.cursor()
+
+        cur.execute("""
+            UPDATE programmazioni
+            SET foto_file_id = NULL
+            WHERE id = ?
+              AND stato = 'attesa'
+        """, (
+            programmazione_id,
+        ))
+
+        db.commit()
+        db.close()
+
+        await query.message.reply_text(
+            "✅ Immagine rimossa."
+        )
+
+        await invia_scheda_programmato(
+            query.message,
+            programmazione_id,
+        )
+
+        return PROG_GESTIONE
+
+    return PROG_IMMAGINE_MENU
+
+
+async def ricevi_immagine_programmata(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(
+        update
+    ):
+        return ConversationHandler.END
+
+    if not update.message.photo:
+
+        await update.message.reply_text(
+            "❌ Inviami una foto valida."
+        )
+
+        return PROG_IMMAGINE_ATTESA
+
+    programmazione_id = context.user_data.get(
+        "prog_id"
+    )
+
+    if not programmazione_id:
+        return PROG_SELEZIONE
+
+    foto_file_id = (
+        update.message.photo[-1].file_id
+    )
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        UPDATE programmazioni
+        SET foto_file_id = ?
+        WHERE id = ?
+          AND stato = 'attesa'
+    """, (
+        foto_file_id,
+        programmazione_id,
+    ))
+
+    db.commit()
+    db.close()
+
+    await update.message.reply_text(
+        "✅ Immagine aggiornata."
+    )
+
+    await invia_scheda_programmato(
+        update.message,
+        programmazione_id,
+    )
+
+    return PROG_GESTIONE
+
+
+async def esci_programmati(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data.pop(
+        "prog_id",
+        None,
+    )
+    context.user_data.pop(
+        "prog_edit_state",
+        None,
+    )
+
+    await query.message.reply_text(
+        "🔥 AMAZON OFFERTE BOT\n\n"
+        "🛠 Modalità amministratore\n\n"
+        "Cosa vuoi fare?",
+        reply_markup=menu_principale(),
+    )
+
+    return ConversationHandler.END
 
 
 # =========================================================
@@ -2181,6 +3474,96 @@ def crea_messaggio(context):
     return testo
 
 
+
+async def chiedi_immagine(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    tastiera = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📷 AGGIUNGI IMMAGINE",
+                    callback_data="foto_aggiungi",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "➡️ CONTINUA SENZA IMMAGINE",
+                    callback_data="foto_salta",
+                )
+            ],
+        ]
+    )
+
+    if update.message:
+        await update.message.reply_text(
+            "🖼 Vuoi aggiungere un'immagine al post?",
+            reply_markup=tastiera,
+        )
+    else:
+        await update.callback_query.message.reply_text(
+            "🖼 Vuoi aggiungere un'immagine al post?",
+            reply_markup=tastiera,
+        )
+
+    return FOTO_SCELTA
+
+
+async def scelta_immagine(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "foto_salta":
+        context.user_data.pop(
+            "foto_file_id",
+            None,
+        )
+    return await chiedi_immagine(
+        update,
+        context,
+    )
+
+    if query.data == "foto_aggiungi":
+        await query.message.reply_text(
+            "📷 Inviami la foto del prodotto."
+        )
+        return FOTO_ATTESA
+
+    return FOTO_SCELTA
+
+
+async def ricevi_immagine(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message.photo:
+        await update.message.reply_text(
+            "❌ Inviami una foto valida."
+        )
+        return FOTO_ATTESA
+
+    foto = update.message.photo[-1]
+    context.user_data[
+        "foto_file_id"
+    ] = foto.file_id
+
+    await update.message.reply_text(
+        "✅ Immagine aggiunta."
+    )
+
+    return await mostra_anteprima(
+        update,
+        context,
+    )
+
+
 # =========================================================
 # ANTEPRIMA
 # =========================================================
@@ -2238,19 +3621,37 @@ async def mostra_anteprima(
         "⚡ Prezzo e disponibilità possono variare."
     )
 
+    foto_file_id = context.user_data.get(
+        "foto_file_id"
+    )
+
     if update.message:
 
-        await update.message.reply_text(
-            testo,
-            reply_markup=tastiera,
-        )
+        if foto_file_id:
+            await update.message.reply_photo(
+                photo=foto_file_id,
+                caption=testo,
+                reply_markup=tastiera,
+            )
+        else:
+            await update.message.reply_text(
+                testo,
+                reply_markup=tastiera,
+            )
 
     else:
 
-        await update.callback_query.message.reply_text(
-            testo,
-            reply_markup=tastiera,
-        )
+        if foto_file_id:
+            await update.callback_query.message.reply_photo(
+                photo=foto_file_id,
+                caption=testo,
+                reply_markup=tastiera,
+            )
+        else:
+            await update.callback_query.message.reply_text(
+                testo,
+                reply_markup=tastiera,
+            )
 
     return CONFERMA
 
@@ -2452,10 +3853,10 @@ async def conferma(
             f"✅ Template selezionato: {template}"
         )
 
-        return await mostra_anteprima(
-            update,
-            context,
-        )
+    return await chiedi_immagine(
+        update,
+        context,
+    )
 
     # PUBBLICA
     if query.data == "pubblica":
@@ -2489,11 +3890,23 @@ async def conferma(
             ]
         )
 
-        await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=messaggio_con_link,
-            reply_markup=bottone_offerta,
+        foto_file_id = context.user_data.get(
+            "foto_file_id"
         )
+
+        if foto_file_id:
+            await context.bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=foto_file_id,
+                caption=messaggio_con_link,
+                reply_markup=bottone_offerta,
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=messaggio_con_link,
+                reply_markup=bottone_offerta,
+            )
 
         ultime_offerte.appendleft(
             {
@@ -2778,6 +4191,20 @@ def main():
                 )
             ],
 
+            FOTO_SCELTA: [
+                CallbackQueryHandler(
+                    scelta_immagine,
+                    pattern="^(foto_aggiungi|foto_salta)$",
+                )
+            ],
+
+            FOTO_ATTESA: [
+                MessageHandler(
+                    filters.PHOTO,
+                    ricevi_immagine,
+                )
+            ],
+
             CONFERMA: [
                 CallbackQueryHandler(
                     conferma,
@@ -2849,11 +4276,133 @@ def main():
         )
     )
 
+    gestione_programmati = ConversationHandler(
+
+        entry_points=[
+            CallbackQueryHandler(
+                mostra_programmati,
+                pattern="^programmati$",
+            )
+        ],
+
+        states={
+
+            PROG_SELEZIONE: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    seleziona_programmato,
+                ),
+                CallbackQueryHandler(
+                    esci_programmati,
+                    pattern="^prog_esci$",
+                ),
+            ],
+
+            PROG_GESTIONE: [
+                CallbackQueryHandler(
+                    gestisci_programmato,
+                    pattern=(
+                        "^(prog_modifica|"
+                        "prog_elimina|"
+                        "prog_elimina_si|"
+                        "prog_elimina_no|"
+                        "prog_indietro)$"
+                    ),
+                ),
+            ],
+
+            PROG_MODIFICA_MENU: [
+                CallbackQueryHandler(
+                    menu_modifica_programmato,
+                    pattern=(
+                        "^(prog_edit_nome|prog_edit_immagine|"
+                        "prog_edit_prezzo|"
+                        "prog_edit_vecchio|"
+                        "prog_edit_link|"
+                        "prog_edit_dataora|"
+                        "prog_edit_template|"
+                        "prog_tpl_pulito|"
+                        "prog_tpl_aggressivo|"
+                        "prog_tpl_tech|"
+                        "prog_torna_scheda)$"
+                    ),
+                ),
+            ],
+
+            PROG_EDIT_NOME: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    edit_programmato_nome,
+                )
+            ],
+
+            PROG_EDIT_PREZZO: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    edit_programmato_prezzo,
+                )
+            ],
+
+            PROG_EDIT_VECCHIO: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    edit_programmato_vecchio,
+                )
+            ],
+
+            PROG_EDIT_LINK: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    edit_programmato_link,
+                )
+            ],
+
+            PROG_EDIT_DATA_ORA: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    edit_programmato_dataora,
+                )
+            ],
+
+            PROG_IMMAGINE_MENU: [
+                CallbackQueryHandler(
+                    gestisci_immagine_programmata,
+                    pattern=(
+                        "^(prog_img_aggiungi|"
+                        "prog_img_sostituisci|"
+                        "prog_img_rimuovi|"
+                        "prog_img_indietro)$"
+                    ),
+                )
+            ],
+
+            PROG_IMMAGINE_ATTESA: [
+                MessageHandler(
+                    filters.PHOTO,
+                    ricevi_immagine_programmata,
+                )
+            ],
+
+        },
+
+        fallbacks=[
+            CommandHandler(
+                "annulla",
+                annulla,
+            )
+        ],
+
+        allow_reentry=True,
+    )
+
     app.add_handler(
-        CallbackQueryHandler(
-            mostra_programmati,
-            pattern="^programmati$",
-        )
+        gestione_programmati
     )
 
     app.add_handler(
