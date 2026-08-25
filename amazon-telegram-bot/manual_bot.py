@@ -3524,13 +3524,18 @@ async def scelta_immagine(
             "foto_file_id",
             None,
         )
-    return await chiedi_immagine(
-        update,
-        context,
-    )
+
+        await query.edit_message_text(
+            "➡️ Continuo senza immagine."
+        )
+
+        return await mostra_anteprima(
+            update,
+            context,
+        )
 
     if query.data == "foto_aggiungi":
-        await query.message.reply_text(
+        await query.edit_message_text(
             "📷 Inviami la foto del prodotto."
         )
         return FOTO_ATTESA
@@ -3853,10 +3858,10 @@ async def conferma(
             f"✅ Template selezionato: {template}"
         )
 
-    return await chiedi_immagine(
-        update,
-        context,
-    )
+        return await mostra_anteprima(
+            update,
+            context,
+        )
 
     # PUBBLICA
     if query.data == "pubblica":
@@ -3935,6 +3940,8 @@ async def conferma(
         )
 
         return ConversationHandler.END
+
+    return CONFERMA
 
 
 # =========================================================
