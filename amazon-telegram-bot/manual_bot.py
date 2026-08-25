@@ -532,7 +532,7 @@ async def invia_offerta_programmata(
                     url="https://t.me/BestPrice24h_bot",
                 ),
                 InlineKeyboardButton(
-                    "🛒 VEDI OFFERTA",
+                    "🛒 APRI",
                     url=link,
                 )
             ]
@@ -2498,7 +2498,7 @@ async def invia_scheda_programmato(
         [
             [
                 InlineKeyboardButton(
-                    "🛒 VEDI OFFERTA",
+                    "🛒 APRI",
                     url=post["link"],
                 )
             ],
@@ -3935,7 +3935,7 @@ async def conferma(
                         url="https://t.me/BestPrice24h_bot",
                     ),
                     InlineKeyboardButton(
-                        "🛒 VEDI OFFERTA",
+                        "🛒 APRI",
                         url=link,
                     )
                 ]
