@@ -813,61 +813,51 @@ def menu_categorie():
                 InlineKeyboardButton(
                     "🔌 ELETTRONICA",
                     url="https://t.me/bestprice_2026",
-                )
-            ],
-            [
+                ),
                 InlineKeyboardButton(
                     "🏠 CASA 🚧",
                     callback_data="wip_casa",
-                )
+                ),
             ],
             [
                 InlineKeyboardButton(
                     "🌿 GIARDINO 🚧",
                     callback_data="wip_giardino",
-                )
-            ],
-            [
+                ),
                 InlineKeyboardButton(
                     "🔨 FAI DA TE 🚧",
                     callback_data="wip_faidate",
-                )
+                ),
             ],
             [
                 InlineKeyboardButton(
                     "👕 MODA 🚧",
                     callback_data="wip_moda",
-                )
-            ],
-            [
+                ),
                 InlineKeyboardButton(
                     "💄 BELLEZZA 🚧",
                     callback_data="wip_bellezza",
-                )
+                ),
             ],
             [
                 InlineKeyboardButton(
                     "🏋️ SPORT 🚧",
                     callback_data="wip_sport",
-                )
-            ],
-            [
+                ),
                 InlineKeyboardButton(
                     "🧸 BAMBINI 🚧",
                     callback_data="wip_bambini",
-                )
+                ),
             ],
             [
                 InlineKeyboardButton(
                     "🐶 ANIMALI 🚧",
                     callback_data="wip_animali",
-                )
-            ],
-            [
+                ),
                 InlineKeyboardButton(
                     "🚗 AUTO & MOTO 🚧",
                     callback_data="wip_auto",
-                )
+                ),
             ],
             [
                 InlineKeyboardButton(
