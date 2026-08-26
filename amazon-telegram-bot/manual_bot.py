@@ -1270,10 +1270,27 @@ async def ricevi_link(
         )
     )
 
-    dati = await asyncio.to_thread(
-        leggi_prodotto_amazon,
-        link,
-    )
+    dati = None
+
+    # Prova fino a 3 volte a leggere automaticamente i dati Amazon.
+    # Tra un tentativo e l'altro aspetta un attimo, utile quando Amazon
+    # risponde in modo incompleto o temporaneamente blocca la richiesta.
+    for tentativo in range(1, 4):
+
+        dati = await asyncio.to_thread(
+            leggi_prodotto_amazon,
+            link,
+        )
+
+        if dati:
+            break
+
+        if tentativo < 3:
+            await messaggio_attesa.edit_text(
+                f"🔎 Tentativo {tentativo}/3 non riuscito.\n"
+                "Riprovo automaticamente..."
+            )
+            await asyncio.sleep(2)
 
     if not dati:
 
