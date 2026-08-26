@@ -747,7 +747,7 @@ def menu_dopo_pubblicazione():
             ],
             [
                 InlineKeyboardButton(
-                    "🏠 TORNA AL MENU PRINCIPALE",
+                    "⬅️ TORNA AL MENU PRINCIPALE",
                     callback_data="menu_admin",
                 )
             ],
@@ -1451,7 +1451,7 @@ async def ricevi_vecchio_prezzo(
             valore
         )
 
-    return await mostra_anteprima(
+    return await chiedi_immagine(
         update,
         context,
     )
@@ -1587,7 +1587,7 @@ async def ricevi_rapido(
     else:
         context.user_data["vecchio_prezzo"] = pulisci_prezzo(vecchio)
 
-    return await mostra_anteprima(
+    return await chiedi_immagine(
         update,
         context,
     )
@@ -2318,7 +2318,7 @@ async def invia_lista_programmati(
                 [
                     [
                         InlineKeyboardButton(
-                            "⬅️ MENU ADMIN",
+                            "⬅️ TORNA AL MENU PRINCIPALE",
                             callback_data="prog_esci",
                         )
                     ]
@@ -2367,7 +2367,7 @@ async def invia_lista_programmati(
             [
                 [
                     InlineKeyboardButton(
-                        "⬅️ MENU ADMIN",
+                        "⬅️ TORNA AL MENU PRINCIPALE",
                         callback_data="prog_esci",
                     )
                 ]
@@ -4031,7 +4031,7 @@ async def ultime(
                 f"— {offerta['prezzo']} €"
             )
 
-        testo = "\n".join(righe)
+        testo = "\n\n".join(righe)
 
     if update.message:
 
