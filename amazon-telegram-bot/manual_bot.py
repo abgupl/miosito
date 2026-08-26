@@ -819,41 +819,49 @@ def menu_categorie():
                 InlineKeyboardButton(
                     "🏠 CASA 🚧",
                     callback_data="wip_casa",
-                ),
-                InlineKeyboardButton(
-                    "🌿 GIARDINO 🚧",
-                    callback_data="wip_giardino",
-                ),
+                )
             ],
             [
                 InlineKeyboardButton(
-                    "🔧 FAI DA TE 🚧",
-                    callback_data="wip_faidate",
-                ),
+                    "🌿 GIARDINO 🚧",
+                    callback_data="wip_giardino",
+                )
+            ],
+            [
                 InlineKeyboardButton(
-                    "👗 MODA 🚧",
+                    "🔨 FAI DA TE 🚧",
+                    callback_data="wip_faidate",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "👕 MODA 🚧",
                     callback_data="wip_moda",
-                ),
+                )
             ],
             [
                 InlineKeyboardButton(
                     "💄 BELLEZZA 🚧",
                     callback_data="wip_bellezza",
-                ),
+                )
+            ],
+            [
                 InlineKeyboardButton(
                     "🏋️ SPORT 🚧",
                     callback_data="wip_sport",
-                ),
+                )
             ],
             [
                 InlineKeyboardButton(
                     "🧸 BAMBINI 🚧",
                     callback_data="wip_bambini",
-                ),
+                )
+            ],
+            [
                 InlineKeyboardButton(
                     "🐶 ANIMALI 🚧",
                     callback_data="wip_animali",
-                ),
+                )
             ],
             [
                 InlineKeyboardButton(
@@ -863,7 +871,7 @@ def menu_categorie():
             ],
             [
                 InlineKeyboardButton(
-                    "⬅️ TORNA AL MENU",
+                    "⬅️ TORNA AL MENU PRINCIPALE",
                     callback_data="menu_utente",
                 )
             ],
