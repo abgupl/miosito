@@ -1870,6 +1870,7 @@ async def ricevi_ora_programmazione(
         context.user_data.get("foto_file_id"),
     )
 
+    da_reinvio = context.user_data.get("programmazione_da_reinvio", False)
     context.user_data.clear()
 
     await update.message.reply_text(
@@ -1884,6 +1885,9 @@ async def ricevi_ora_programmazione(
         f"#{programmazione_id}",
         reply_markup=menu_principale(),
     )
+
+    if da_reinvio:
+        await invia_lista_programmati(update.message)
 
     return ConversationHandler.END
 
@@ -2193,6 +2197,7 @@ async def conferma_orario_vicino(
         context.user_data.get("foto_file_id"),
     )
 
+    da_reinvio = context.user_data.get("programmazione_da_reinvio", False)
     context.user_data.clear()
 
     await query.message.reply_text(
@@ -2207,6 +2212,9 @@ async def conferma_orario_vicino(
         f"#{programmazione_id}",
         reply_markup=menu_principale(),
     )
+
+    if da_reinvio:
+        await invia_lista_programmati(query.message)
 
     return ConversationHandler.END
 
@@ -4682,18 +4690,46 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def prepara_programmazione_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Collega INVIA DI NUOVO allo stesso flusso calendario dei post normali."""
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+
     query = update.callback_query
     await query.answer()
 
-    oggi = datetime.now(ROMA_TZ).date()
-    await query.message.reply_text(
-        "📅 Quando vuoi ripubblicarla?",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"OGGI · {oggi.strftime('%d/%m')}", callback_data="reinvia_giorno_0")],
-            [InlineKeyboardButton(f"DOMANI · {(oggi + timedelta(days=1)).strftime('%d/%m')}", callback_data="reinvia_giorno_1")],
-            [InlineKeyboardButton(f"TRA 2 GIORNI · {(oggi + timedelta(days=2)).strftime('%d/%m')}", callback_data="reinvia_giorno_2")],
-        ]),
+    draft = await _dati_reinvio(context)
+    if not draft:
+        await query.message.reply_text("❌ Dati dell'offerta mancanti. Riprova.")
+        return ConversationHandler.END
+
+    # Copia il draft nei campi standard usati dalla programmazione normale.
+    context.user_data["nome"] = draft["nome"]
+    context.user_data["link"] = draft["link"]
+    context.user_data["prezzo"] = draft["prezzo"]
+    context.user_data["vecchio_prezzo"] = draft.get("vecchio_prezzo", "NO")
+    context.user_data["template"] = draft.get("template", "pulito")
+    context.user_data["foto_file_id"] = draft.get("foto_file_id")
+    context.user_data["messaggio"] = _messaggio_reinvio(draft)
+    context.user_data["programmazione_da_reinvio"] = True
+
+    tastiera = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📅 OGGI", callback_data="prog_giorno_0")],
+            [InlineKeyboardButton("📅 DOMANI", callback_data="prog_giorno_1")],
+            [InlineKeyboardButton("📅 TRA 2 GIORNI", callback_data="prog_giorno_2")],
+            [InlineKeyboardButton("❌ ANNULLA", callback_data="annulla")],
+        ]
     )
+
+    await query.message.reply_text(
+        "📅 PROGRAMMA INVIO\n\n"
+        "Stai usando lo stesso calendario dei POST PROGRAMMATI.\n"
+        "Scegli il giorno:",
+        reply_markup=tastiera,
+    )
+
+    # Da qui prosegue esattamente negli stati standard CONFERMA -> PROGRAMMA_ORA.
+    return CONFERMA
 
 
 async def scegli_giorno_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4918,6 +4954,11 @@ def main():
                 rapido_da_pulsante,
                 pattern="^rapido$",
             ),
+
+            CallbackQueryHandler(
+                prepara_programmazione_reinvio,
+                pattern="^reinvia_programma$",
+            ),
         ],
 
         states={
@@ -5102,13 +5143,6 @@ def main():
 
     app.add_handler(
         CallbackQueryHandler(
-            prepara_programmazione_reinvio,
-            pattern="^reinvia_programma$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
             menu_modifica_reinvio,
             pattern="^reinvia_modifica$",
         )
@@ -5126,12 +5160,6 @@ def main():
         )
     )
 
-    app.add_handler(
-        CallbackQueryHandler(
-            scegli_giorno_reinvio,
-            pattern=r"^reinvia_giorno_[0-2]$",
-        )
-    )
 
     gestione_programmati = ConversationHandler(
 
