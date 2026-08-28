@@ -127,11 +127,32 @@ def inizializza_recap():
         )
     """)
 
+    # Campi aggiuntivi per poter reinviare rapidamente i post storici.
+    cur.execute("PRAGMA table_info(recap_offerte)")
+    colonne_recap = {riga[1] for riga in cur.fetchall()}
+
+    if "messaggio" not in colonne_recap:
+        cur.execute("ALTER TABLE recap_offerte ADD COLUMN messaggio TEXT")
+
+    if "foto_file_id" not in colonne_recap:
+        cur.execute("ALTER TABLE recap_offerte ADD COLUMN foto_file_id TEXT")
+
+    if "template" not in colonne_recap:
+        cur.execute("ALTER TABLE recap_offerte ADD COLUMN template TEXT DEFAULT 'pulito'")
+
     db.commit()
     db.close()
 
 
-def salva_offerta_recap(nome, link, prezzo, vecchio_prezzo="NO"):
+def salva_offerta_recap(
+    nome,
+    link,
+    prezzo,
+    vecchio_prezzo="NO",
+    messaggio=None,
+    foto_file_id=None,
+    template="pulito",
+):
 
     if not nome or not link:
         return
@@ -147,15 +168,21 @@ def salva_offerta_recap(nome, link, prezzo, vecchio_prezzo="NO"):
             link,
             prezzo,
             vecchio_prezzo,
-            pubblicata_il
+            pubblicata_il,
+            messaggio,
+            foto_file_id,
+            template
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         nome,
         link,
         prezzo or "",
         vecchio_prezzo or "NO",
         adesso.isoformat(timespec="seconds"),
+        messaggio,
+        foto_file_id,
+        template or "pulito",
     ))
 
     db.commit()
@@ -580,6 +607,8 @@ async def invia_offerta_programmata(
         link,
         prezzo,
         estrai_vecchio_prezzo_da_messaggio(messaggio),
+        messaggio=messaggio,
+        foto_file_id=foto_file_id,
     )
 
 
@@ -718,6 +747,12 @@ def menu_principale():
                     "📋 ULTIME",
                     callback_data="ultime",
                 ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔁 INVIA DI NUOVO",
+                    callback_data="reinvia_menu",
+                )
             ],
             [
                 InlineKeyboardButton(
@@ -1315,7 +1350,7 @@ async def ricevi_link(
 
         return NOME
 
-    context.user_data["nome"] = nome
+    context.user_data["nome"] = accorcia_nome_articolo(nome)
     context.user_data["prezzo"] = pulisci_prezzo(prezzo)
 
     if vecchio:
@@ -1413,13 +1448,12 @@ async def ricevi_nome(
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
 
-    context.user_data["nome"] = (
+    context.user_data["nome"] = accorcia_nome_articolo(
         update.message.text.strip()
     )
 
     await update.message.reply_text(
-        "💰 Qual è il prezzo attuale?\n\n"
-        "Esempio: 39,99"
+        "💰 Qual è il prezzo attuale?"
     )
 
     return PREZZO
@@ -1439,7 +1473,6 @@ async def ricevi_prezzo(
 
     await update.message.reply_text(
         "🏷️ Qual era il prezzo precedente?\n\n"
-        "Esempio: 59,99\n\n"
         "Oppure scrivi: NO"
     )
 
@@ -1476,6 +1509,73 @@ async def ricevi_vecchio_prezzo(
 # PULIZIA PREZZO
 # =========================================================
 
+def accorcia_nome_articolo(nome):
+    """Semplifica i titoli Amazon mantenendo le informazioni più utili."""
+    if not nome:
+        return ""
+
+    nome = " ".join(str(nome).split()).strip()
+
+    # Elimina ciò che segue separatori tipicamente usati per descrizioni secondarie.
+    for separatore in [" | ", " – ", " — "]:
+        if separatore in nome:
+            parte = nome.split(separatore, 1)[0].strip()
+            if len(parte.split()) >= 3:
+                nome = parte
+                break
+
+    # Espressioni commerciali/accessorie che appesantiscono spesso i titoli Amazon.
+    frasi_inutili = [
+        r"\bideale per\b",
+        r"\bperfetto per\b",
+        r"\balta qualità\b",
+        r"\bnuovo modello\b",
+        r"\bcon tecnologia\b",
+        r"\bcompatibile con\b",
+        r"\bcompatibile per\b",
+        r"\balexa integrata\b",
+        r"\bassistente vocale\b",
+    ]
+
+    # Se una di queste frasi introduce la parte accessoria finale, la rimuove.
+    for frase in frasi_inutili:
+        m = re.search(frase, nome, flags=re.IGNORECASE)
+        if m and m.start() > 20:
+            nome = nome[:m.start()].rstrip(" ,;-")
+            break
+
+    # Divide sulle virgole: conserva il nucleo iniziale e solo specifiche brevi/utili.
+    parti = [p.strip() for p in nome.split(",") if p.strip()]
+    if len(parti) <= 1:
+        return nome.rstrip(" ,;-")
+
+    risultato = parti[0]
+    parole_chiave = re.compile(
+        r"(\b\d+\s?(?:GB|TB|MB|W|mAh|Hz|kHz|MP|L|ml|cm|mm)\b|"
+        r"\b\d+(?:[.,]\d+)?[\"”″]\b|"
+        r"\b\d+(?:[.,]\d+)?\s?(?:pollici|litri)\b|"
+        r"\b4K\b|\b8K\b|\bUHD\b|\bOLED\b|\bQLED\b|\bAMOLED\b|"
+        r"\b5G\b|\bWi-?Fi\b|\bBluetooth\b|\bWireless\b|\bUSB-C\b|"
+        r"\bPro\b|\bMax\b|\bPlus\b|\bUltra\b|"
+        r"\bNero\b|\bBianco\b|\bGrafite\b|\bNavy\b|\bBlu\b|\bRosso\b|\bVerde\b)",
+        re.IGNORECASE
+    )
+
+    aggiunte = 0
+    for parte in parti[1:]:
+        if parole_chiave.search(parte):
+            candidato = f"{risultato} {parte}".strip()
+            if len(candidato) <= 100:
+                risultato = candidato
+                aggiunte += 1
+        if aggiunte >= 2:
+            break
+
+    # Nessun puntino di sospensione: restituisce sempre un titolo completo.
+    return re.sub(r"\s{2,}", " ", risultato).strip(" ,;-")
+
+
+
 def pulisci_prezzo(prezzo):
 
     if not prezzo:
@@ -1508,7 +1608,6 @@ async def rapido_da_comando(
         "⚡ MODALITÀ RAPIDA\n\n"
         "Mandami tutto in una sola riga:\n\n"
         "LINK - NOME - PREZZO - PREZZO PRIMA\n\n"
-        "Esempio:\n"
         "https://www.amazon.it/dp/XXXX "
         "- AirPods Pro "
         "- 199,99 "
@@ -1537,7 +1636,6 @@ async def rapido_da_pulsante(
         "⚡ MODALITÀ RAPIDA\n\n"
         "Invia tutto in una sola riga:\n\n"
         "LINK - NOME - PREZZO - PREZZO PRIMA\n\n"
-        "Esempio:\n"
         "https://www.amazon.it/dp/XXXX "
         "- AirPods Pro "
         "- 199,99 "
@@ -1594,7 +1692,7 @@ async def ricevi_rapido(
         return RAPIDO
 
     context.user_data["link"] = link
-    context.user_data["nome"] = nome
+    context.user_data["nome"] = accorcia_nome_articolo(nome)
     context.user_data["prezzo"] = pulisci_prezzo(prezzo)
 
     if vecchio.upper() == "NO":
@@ -1794,7 +1892,7 @@ async def ricevi_ora_programmazione(
 # CONTROLLO SLOT PROGRAMMAZIONE
 # =========================================================
 
-DISTANZA_MINIMA_MINUTI = 45
+DISTANZA_MINIMA_MINUTI = 29
 
 
 def programmazioni_del_giorno(data_locale):
@@ -1964,7 +2062,7 @@ def suggerisci_prossimo_slot(
             return candidato
 
     # Se gli slot standard sono occupati,
-    # cerca ogni 45 minuti dalle 09:00 alle 22:30.
+    # cerca slot liberi dalle 09:00 alle 22:30.
     candidato = datetime.combine(
         data_giorno,
         datetime.strptime(
@@ -2373,7 +2471,6 @@ async def invia_lista_programmati(
     righe.append(
         "\n🔢 Scrivi il numero # del post "
         "che vuoi gestire.\n\n"
-        "Esempio: 15"
     )
 
     await messaggio.reply_text(
@@ -2439,8 +2536,7 @@ async def seleziona_programmato(
 
         await update.message.reply_text(
             "❌ Scrivi solo il numero del post.\n\n"
-            "Esempio: 15"
-        )
+            )
 
         return PROG_SELEZIONE
 
@@ -2777,7 +2873,6 @@ async def menu_modifica_programmato(
 
         await query.message.reply_text(
             "💰 Scrivi il nuovo prezzo attuale.\n\n"
-            "Esempio: 39,99"
         )
 
         return PROG_EDIT_PREZZO
@@ -2786,7 +2881,6 @@ async def menu_modifica_programmato(
 
         await query.message.reply_text(
             "🏷 Scrivi il nuovo prezzo precedente.\n\n"
-            "Esempio: 59,99\n"
             "Oppure scrivi NO."
         )
 
@@ -3720,6 +3814,52 @@ async def mostra_anteprima(
 
 
 # =========================================================
+# CONTROLLO DISTANZA INVII MANUALI
+# =========================================================
+
+def minuti_rimanenti_prima_del_prossimo_invio():
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        SELECT pubblicata_il
+        FROM recap_offerte
+        ORDER BY pubblicata_il DESC
+        LIMIT 1
+    """)
+
+    riga = cur.fetchone()
+    db.close()
+
+    if not riga or not riga[0]:
+        return 0
+
+    try:
+        ultimo_invio = datetime.fromisoformat(riga[0])
+
+        if ultimo_invio.tzinfo is None:
+            ultimo_invio = ultimo_invio.replace(tzinfo=ROMA_TZ)
+        else:
+            ultimo_invio = ultimo_invio.astimezone(ROMA_TZ)
+
+        trascorsi = (
+            datetime.now(ROMA_TZ) - ultimo_invio
+        ).total_seconds() / 60
+
+        rimanenti = DISTANZA_MINIMA_MINUTI - trascorsi
+
+        if rimanenti <= 0:
+            return 0
+
+        # Arrotondiamo per eccesso: a 30 minuti con limite 31 mostra 1 minuto.
+        return max(1, int(rimanenti) + (0 if rimanenti.is_integer() else 1))
+
+    except Exception:
+        return 0
+
+
+# =========================================================
 # CONFERMA / PUBBLICAZIONE
 # =========================================================
 
@@ -3855,19 +3995,7 @@ async def conferma(
 
     # ANNULLA
     if query.data == "annulla":
-
-        context.user_data.clear()
-
-        await query.edit_message_text(
-            "❌ Pubblicazione annullata."
-        )
-
-        await query.message.reply_text(
-            "Cosa vuoi fare?",
-            reply_markup=menu_principale(),
-        )
-
-        return ConversationHandler.END
+        return await annulla(update, context)
 
     # CAMBIA TEMPLATE
     if query.data == "cambia_template":
@@ -3923,6 +4051,16 @@ async def conferma(
 
     # PUBBLICA
     if query.data == "pubblica":
+
+        minuti_rimanenti = minuti_rimanenti_prima_del_prossimo_invio()
+
+        if minuti_rimanenti > 0:
+            await query.message.reply_text(
+                f"⏳ È ancora presto. Attendi ancora {minuti_rimanenti} minuto/i.\n\n"
+                f"Tra un post e l'altro devono passare almeno "
+                f"{DISTANZA_MINIMA_MINUTI} minuti."
+            )
+            return CONFERMA
 
         messaggio = context.user_data.get("messaggio")
         link = context.user_data.get("link")
@@ -3988,6 +4126,9 @@ async def conferma(
             link,
             context.user_data.get("prezzo"),
             context.user_data.get("vecchio_prezzo", "NO"),
+            messaggio=messaggio,
+            foto_file_id=foto_file_id,
+            template=context.user_data.get("template", "pulito"),
         )
 
         context.user_data.clear()
@@ -4061,6 +4202,387 @@ async def ultime(
         await update.callback_query.message.reply_text(
             testo
         )
+
+
+# =========================================================
+# INVIA DI NUOVO - STORICO ULTIMI 3 GIORNI
+# =========================================================
+
+REINVIO_PER_PAGINA = 6
+
+
+def leggi_offerte_da_reinviare():
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    limite = (
+        datetime.now(timezone.utc) - timedelta(days=3)
+    ).isoformat(timespec="seconds")
+
+    cur.execute("""
+        SELECT id, nome, link, prezzo,
+               COALESCE(vecchio_prezzo, 'NO'),
+               pubblicata_il, messaggio, foto_file_id,
+               COALESCE(template, 'pulito')
+        FROM recap_offerte
+        WHERE pubblicata_il >= ?
+        ORDER BY pubblicata_il DESC
+    """, (limite,))
+
+    righe = cur.fetchall()
+    db.close()
+    return righe
+
+
+def leggi_offerta_da_reinviare(offerta_id):
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        SELECT id, nome, link, prezzo,
+               COALESCE(vecchio_prezzo, 'NO'),
+               pubblicata_il, messaggio, foto_file_id,
+               COALESCE(template, 'pulito')
+        FROM recap_offerte
+        WHERE id = ?
+    """, (offerta_id,))
+
+    riga = cur.fetchone()
+    db.close()
+    return riga
+
+
+async def mostra_reinvio_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not await controlla_autorizzazione(update):
+        return
+
+    query = update.callback_query
+    await query.answer()
+
+    pagina = 0
+    if query.data.startswith("reinvia_pagina_"):
+        try:
+            pagina = int(query.data.rsplit("_", 1)[1])
+        except ValueError:
+            pagina = 0
+
+    offerte = leggi_offerte_da_reinviare()
+
+    if not offerte:
+        await query.message.reply_text(
+            "📭 Non ci sono offerte pubblicate negli ultimi 3 giorni.",
+            reply_markup=menu_principale(),
+        )
+        return
+
+    totale_pagine = max(
+        1,
+        (len(offerte) + REINVIO_PER_PAGINA - 1) // REINVIO_PER_PAGINA,
+    )
+    pagina = max(0, min(pagina, totale_pagine - 1))
+
+    inizio = pagina * REINVIO_PER_PAGINA
+    offerte_pagina = offerte[inizio:inizio + REINVIO_PER_PAGINA]
+
+    righe = []
+    tastiera = []
+
+    for posizione, offerta in enumerate(offerte_pagina, start=1):
+        numero = inizio + posizione
+        offerta_id, nome, _, prezzo, _, pubblicata_il, *_ = offerta
+
+        try:
+            data = datetime.fromisoformat(pubblicata_il)
+            if data.tzinfo is None:
+                data = data.replace(tzinfo=timezone.utc)
+            data = data.astimezone(ROMA_TZ)
+            data_testo = data.strftime("%d/%m %H:%M")
+        except Exception:
+            data_testo = ""
+
+        righe.append(
+            f"#{numero}  {nome}\n"
+            f"💰 {prezzo} € · 🕒 {data_testo}"
+        )
+
+        tastiera.append([
+            InlineKeyboardButton(
+                f"#{numero} · SELEZIONA",
+                callback_data=f"reinvia_scegli_{offerta_id}_{numero}",
+            )
+        ])
+
+    nav = []
+    if pagina > 0:
+        nav.append(
+            InlineKeyboardButton(
+                "⬅️",
+                callback_data=f"reinvia_pagina_{pagina - 1}",
+            )
+        )
+
+    nav.append(
+        InlineKeyboardButton(
+            f"📄 {pagina + 1}/{totale_pagine}",
+            callback_data="reinvia_nop",
+        )
+    )
+
+    if pagina < totale_pagine - 1:
+        nav.append(
+            InlineKeyboardButton(
+                "➡️",
+                callback_data=f"reinvia_pagina_{pagina + 1}",
+            )
+        )
+
+    tastiera.append(nav)
+    tastiera.append([
+        InlineKeyboardButton("⬅️ TORNA AL MENU", callback_data="menu_admin")
+    ])
+
+    await query.message.reply_text(
+        "🔁 INVIA DI NUOVO\n\n"
+        "📅 Ultimi 3 giorni · 6 articoli per pagina\n\n"
+        + "\n\n".join(righe)
+        + "\n\n👇 Scegli il numero dell'articolo.",
+        reply_markup=InlineKeyboardMarkup(tastiera),
+    )
+
+
+async def reinvia_nop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+
+
+async def scegli_offerta_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not await controlla_autorizzazione(update):
+        return
+
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        _, _, offerta_id, numero = query.data.split("_")
+        offerta_id = int(offerta_id)
+        numero = int(numero)
+    except Exception:
+        return
+
+    riga = leggi_offerta_da_reinviare(offerta_id)
+    if not riga:
+        await query.message.reply_text("❌ Offerta non trovata.")
+        return
+
+    context.user_data["reinvia_offerta_id"] = offerta_id
+    context.user_data["reinvia_numero"] = numero
+
+    _, nome, _, prezzo, *_ = riga
+
+    await query.message.reply_text(
+        f"🔁 ARTICOLO #{numero}\n\n"
+        f"📦 {nome}\n"
+        f"💰 {prezzo} €\n\n"
+        "Cosa vuoi fare?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📤 RIPUBBLICA ORA", callback_data="reinvia_ora")],
+            [InlineKeyboardButton("🕒 PROGRAMMA", callback_data="reinvia_programma")],
+            [InlineKeyboardButton("⬅️ TORNA ALLO STORICO", callback_data="reinvia_pagina_0")],
+        ]),
+    )
+
+
+async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not await controlla_autorizzazione(update):
+        return
+
+    query = update.callback_query
+    await query.answer()
+
+    minuti_rimanenti = minuti_rimanenti_prima_del_prossimo_invio()
+    if minuti_rimanenti > 0:
+        await query.message.reply_text(
+            f"⏳ Attendi ancora {minuti_rimanenti} minuto/i.\n\n"
+            f"Tra un post e l'altro devono passare almeno "
+            f"{DISTANZA_MINIMA_MINUTI} minuti."
+        )
+        return
+
+    offerta_id = context.user_data.get("reinvia_offerta_id")
+    riga = leggi_offerta_da_reinviare(offerta_id)
+
+    if not riga:
+        await query.message.reply_text("❌ Offerta non trovata.")
+        return
+
+    _, nome, link, prezzo, vecchio_prezzo, _, messaggio_salvato, foto_file_id, template = riga
+
+    messaggio = messaggio_salvato or crea_messaggio_programmato(
+        nome, prezzo, vecchio_prezzo, template
+    )
+
+    messaggio_con_link = (
+        f"{messaggio}\n\n👉 {link}\n\n"
+        "⚡ Prezzo e disponibilità possono variare."
+    )
+
+    bottoni = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
+        InlineKeyboardButton("🛒 APRI", url=link),
+    ]])
+
+    if foto_file_id:
+        await context.bot.send_photo(
+            chat_id=CHANNEL_ID,
+            photo=foto_file_id,
+            caption=messaggio_con_link,
+            reply_markup=bottoni,
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=messaggio_con_link,
+            reply_markup=bottoni,
+        )
+
+    salva_offerta_recap(
+        nome, link, prezzo, vecchio_prezzo,
+        messaggio=messaggio,
+        foto_file_id=foto_file_id,
+        template=template,
+    )
+
+    numero = context.user_data.get("reinvia_numero")
+    context.user_data.pop("reinvia_offerta_id", None)
+    context.user_data.pop("reinvia_numero", None)
+
+    await query.message.reply_text(
+        f"✅ OFFERTA #{numero} INVIATA DI NUOVO!",
+        reply_markup=menu_dopo_pubblicazione(),
+    )
+
+
+async def prepara_programmazione_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    oggi = datetime.now(ROMA_TZ).date()
+
+    await query.message.reply_text(
+        "📅 Quando vuoi ripubblicarla?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                f"OGGI · {oggi.strftime('%d/%m')}",
+                callback_data="reinvia_giorno_0"
+            )],
+            [InlineKeyboardButton(
+                f"DOMANI · {(oggi + timedelta(days=1)).strftime('%d/%m')}",
+                callback_data="reinvia_giorno_1"
+            )],
+            [InlineKeyboardButton(
+                f"TRA 2 GIORNI · {(oggi + timedelta(days=2)).strftime('%d/%m')}",
+                callback_data="reinvia_giorno_2"
+            )],
+        ]),
+    )
+
+
+async def scegli_giorno_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    giorni = int(query.data.rsplit("_", 1)[1])
+    data = datetime.now(ROMA_TZ).date() + timedelta(days=giorni)
+
+    context.user_data["reinvia_data"] = data.isoformat()
+    context.user_data["attesa_ora_reinvio"] = True
+
+    await query.message.reply_text(
+        f"📅 {data.strftime('%d/%m/%Y')}\n\n"
+        "🕒 Scrivi l'orario nel formato HH:MM."
+    )
+
+
+async def ricevi_ora_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not context.user_data.get("attesa_ora_reinvio"):
+        return
+
+    if not await controlla_autorizzazione(update):
+        return
+
+    try:
+        ora = datetime.strptime(update.message.text.strip(), "%H:%M").time()
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Orario non corretto. Scrivilo nel formato HH:MM."
+        )
+        return
+
+    offerta_id = context.user_data.get("reinvia_offerta_id")
+    data_iso = context.user_data.get("reinvia_data")
+    riga = leggi_offerta_da_reinviare(offerta_id)
+
+    if not riga or not data_iso:
+        await update.message.reply_text("❌ Dati mancanti. Riprova.")
+        return
+
+    data = datetime.fromisoformat(data_iso).date()
+    data_locale = datetime.combine(data, ora, tzinfo=ROMA_TZ)
+
+    if data_locale <= datetime.now(ROMA_TZ):
+        await update.message.reply_text(
+            "❌ Questo orario è già passato. Inserisci un orario futuro."
+        )
+        return
+
+    conflitti = trova_conflitto(data_locale)
+    if conflitti:
+        vicino = conflitti[0]
+        await update.message.reply_text(
+            "⚠️ POST TROPPO VICINO\n\n"
+            f"Hai già un'offerta alle {vicino['datetime'].strftime('%H:%M')}.\n"
+            f"Scegli un orario distante almeno "
+            f"{DISTANZA_MINIMA_MINUTI} minuti."
+        )
+        return
+
+    _, nome, link, prezzo, vecchio_prezzo, _, messaggio_salvato, foto_file_id, template = riga
+
+    messaggio = messaggio_salvato or crea_messaggio_programmato(
+        nome, prezzo, vecchio_prezzo, template
+    )
+
+    programmazione_id, invio_previsto = salva_programmazione(
+        nome, messaggio, link, prezzo, data_locale
+    )
+
+    salva_foto_programmazione(programmazione_id, foto_file_id)
+
+    numero = context.user_data.get("reinvia_numero")
+    for chiave in (
+        "reinvia_offerta_id",
+        "reinvia_numero",
+        "reinvia_data",
+        "attesa_ora_reinvio",
+    ):
+        context.user_data.pop(chiave, None)
+
+    await update.message.reply_text(
+        f"✅ OFFERTA #{numero} PROGRAMMATA!\n\n"
+        f"📅 {invio_previsto.strftime('%d/%m/%Y')}\n"
+        f"🕒 {invio_previsto.strftime('%H:%M')}\n"
+        f"📦 {nome}\n"
+        f"💰 {prezzo} €\n\n"
+        f"🆔 Programmazione: #{programmazione_id}",
+        reply_markup=menu_principale(),
+    )
 
 
 # =========================================================
@@ -4146,10 +4668,26 @@ async def annulla(
 
     context.user_data.clear()
 
-    await update.message.reply_text(
-        "❌ Operazione annullata.",
-        reply_markup=menu_principale(),
-    )
+    # Funziona sia con /annulla sia con il pulsante inline ANNULLA.
+    if update.callback_query:
+        query = update.callback_query
+
+        try:
+            await query.edit_message_text(
+                "❌ Operazione annullata.",
+                reply_markup=menu_principale(),
+            )
+        except Exception:
+            await query.message.reply_text(
+                "❌ Operazione annullata.",
+                reply_markup=menu_principale(),
+            )
+
+    elif update.message:
+        await update.message.reply_text(
+            "❌ Operazione annullata.",
+            reply_markup=menu_principale(),
+        )
 
     return ConversationHandler.END
 
@@ -4346,6 +4884,55 @@ def main():
         CallbackQueryHandler(
             ultime,
             pattern="^ultime$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            mostra_reinvio_menu,
+            pattern=r"^(reinvia_menu|reinvia_pagina_[0-9]+)$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            reinvia_nop,
+            pattern="^reinvia_nop$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            scegli_offerta_reinvio,
+            pattern=r"^reinvia_scegli_[0-9]+_[0-9]+$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            reinvia_offerta_storica,
+            pattern="^reinvia_ora$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            prepara_programmazione_reinvio,
+            pattern="^reinvia_programma$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            scegli_giorno_reinvio,
+            pattern=r"^reinvia_giorno_[0-2]$",
+        )
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            ricevi_ora_reinvio,
         )
     )
 
