@@ -271,7 +271,8 @@ def crea_righe_recap(offerte):
 
     for nome, link, prezzo, vecchio, _ in offerte:
 
-        nome_html = html.escape(str(nome))
+        nome_breve = accorcia_nome_articolo(nome)
+        nome_html = html.escape(str(nome_breve))
         link_html = html.escape(str(link), quote=True)
         prezzo_html = html.escape(str(prezzo or "—"))
 
@@ -1350,7 +1351,7 @@ async def ricevi_link(
 
         return NOME
 
-    context.user_data["nome"] = accorcia_nome_articolo(nome)
+    context.user_data["nome"] = " ".join(str(nome).split()).strip()
     context.user_data["prezzo"] = pulisci_prezzo(prezzo)
 
     if vecchio:
@@ -1448,8 +1449,8 @@ async def ricevi_nome(
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
 
-    context.user_data["nome"] = accorcia_nome_articolo(
-        update.message.text.strip()
+    context.user_data["nome"] = " ".join(
+        update.message.text.strip().split()
     )
 
     await update.message.reply_text(
@@ -1692,7 +1693,7 @@ async def ricevi_rapido(
         return RAPIDO
 
     context.user_data["link"] = link
-    context.user_data["nome"] = accorcia_nome_articolo(nome)
+    context.user_data["nome"] = " ".join(str(nome).split()).strip()
     context.user_data["prezzo"] = pulisci_prezzo(prezzo)
 
     if vecchio.upper() == "NO":
@@ -4289,6 +4290,7 @@ async def mostra_reinvio_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     righe = []
     tastiera = []
+    pulsanti_numerici = []
 
     for posizione, offerta in enumerate(offerte_pagina, start=1):
         numero = inizio + posizione
@@ -4303,17 +4305,22 @@ async def mostra_reinvio_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception:
             data_testo = ""
 
+        nome_breve = accorcia_nome_articolo(nome)
+
         righe.append(
-            f"#{numero}  {nome}\n"
+            f"#{numero}  {nome_breve}\n"
             f"💰 {prezzo} € · 🕒 {data_testo}"
         )
 
-        tastiera.append([
+        pulsanti_numerici.append(
             InlineKeyboardButton(
-                f"#{numero} · SELEZIONA",
+                f"#{numero}",
                 callback_data=f"reinvia_scegli_{offerta_id}_{numero}",
             )
-        ])
+        )
+
+    for i in range(0, len(pulsanti_numerici), 3):
+        tastiera.append(pulsanti_numerici[i:i + 3])
 
     nav = []
     if pagina > 0:
@@ -4381,10 +4388,11 @@ async def scegli_offerta_reinvio(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data["reinvia_numero"] = numero
 
     _, nome, _, prezzo, *_ = riga
+    nome_breve = accorcia_nome_articolo(nome)
 
     await query.message.reply_text(
         f"🔁 ARTICOLO #{numero}\n\n"
-        f"📦 {nome}\n"
+        f"📦 {nome_breve}\n"
         f"💰 {prezzo} €\n\n"
         "Cosa vuoi fare?",
         reply_markup=InlineKeyboardMarkup([
@@ -4929,13 +4937,6 @@ def main():
         )
     )
 
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            ricevi_ora_reinvio,
-        )
-    )
-
     gestione_programmati = ConversationHandler(
 
         entry_points=[
@@ -5063,6 +5064,15 @@ def main():
 
     app.add_handler(
         gestione_programmati
+    )
+
+    # Deve stare dopo gestione_programmati: altrimenti intercetta
+    # il numero digitato per modificare un post programmato.
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            ricevi_ora_reinvio,
+        )
     )
 
     app.add_handler(
