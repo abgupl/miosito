@@ -2520,6 +2520,18 @@ async def mostra_programmati(
         None,
     )
 
+    # Pulisce eventuali stati rimasti dal flusso "Invia di nuovo".
+    # Così il numero digitato qui viene sempre interpretato come ID
+    # del post programmato da gestire/modificare, mai come un orario.
+    for chiave in (
+        "attesa_ora_reinvio",
+        "reinvia_data",
+        "reinvia_edit_state",
+        "reinvia_attesa_foto",
+        "programmazione_da_reinvio",
+    ):
+        context.user_data.pop(chiave, None)
+
     await invia_lista_programmati(
         messaggio
     )
@@ -4751,6 +4763,11 @@ async def ricevi_ora_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if not context.user_data.get("attesa_ora_reinvio"):
+        return
+
+    # Se è stato selezionato un post programmato, questo handler non deve
+    # mai interpretare il testo come orario.
+    if context.user_data.get("prog_id"):
         return
 
     if not await controlla_autorizzazione(update):
