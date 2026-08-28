@@ -4364,8 +4364,86 @@ async def reinvia_nop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
 
 
-async def scegli_offerta_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _dati_reinvio(context):
+    draft = context.user_data.get("reinvia_draft")
+    if draft:
+        return draft
 
+    offerta_id = context.user_data.get("reinvia_offerta_id")
+    riga = leggi_offerta_da_reinviare(offerta_id)
+    if not riga:
+        return None
+
+    _, nome, link, prezzo, vecchio_prezzo, _, messaggio_salvato, foto_file_id, template = riga
+    draft = {
+        "nome": nome,
+        "link": link,
+        "prezzo": prezzo,
+        "vecchio_prezzo": vecchio_prezzo,
+        "messaggio_salvato": messaggio_salvato,
+        "foto_file_id": foto_file_id,
+        "template": template or "pulito",
+        "modificato": False,
+    }
+    context.user_data["reinvia_draft"] = draft
+    return draft
+
+
+def _messaggio_reinvio(draft):
+    if not draft:
+        return ""
+    if not draft.get("modificato") and draft.get("messaggio_salvato"):
+        return draft["messaggio_salvato"]
+    return crea_messaggio_programmato(
+        draft.get("nome", ""),
+        draft.get("prezzo", ""),
+        draft.get("vecchio_prezzo", "NO"),
+        draft.get("template", "pulito"),
+    )
+
+
+async def mostra_anteprima_reinvio(messaggio, context):
+    draft = await _dati_reinvio(context)
+    if not draft:
+        await messaggio.reply_text("❌ Offerta non trovata.")
+        return
+
+    numero = context.user_data.get("reinvia_numero", "")
+    testo_post = _messaggio_reinvio(draft)
+    anteprima = (
+        f"🔁 ANTEPRIMA ARTICOLO #{numero}\n\n"
+        f"{testo_post}\n\n"
+        f"👉 {draft['link']}\n\n"
+        "⚡ Prezzo e disponibilità possono variare."
+    )
+
+    tastiera = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📤 RIPUBBLICA ORA", callback_data="reinvia_ora"),
+            InlineKeyboardButton("🕒 PROGRAMMA", callback_data="reinvia_programma"),
+        ],
+        [
+            InlineKeyboardButton("✏️ MODIFICA", callback_data="reinvia_modifica"),
+        ],
+        [
+            InlineKeyboardButton("⬅️ TORNA ALLO STORICO", callback_data="reinvia_pagina_0"),
+        ],
+    ])
+
+    if draft.get("foto_file_id"):
+        await messaggio.reply_photo(
+            photo=draft["foto_file_id"],
+            caption=anteprima,
+            reply_markup=tastiera,
+        )
+    else:
+        await messaggio.reply_text(
+            anteprima,
+            reply_markup=tastiera,
+        )
+
+
+async def scegli_offerta_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return
 
@@ -4379,32 +4457,170 @@ async def scegli_offerta_reinvio(update: Update, context: ContextTypes.DEFAULT_T
     except Exception:
         return
 
-    riga = leggi_offerta_da_reinviare(offerta_id)
-    if not riga:
+    context.user_data["reinvia_offerta_id"] = offerta_id
+    context.user_data["reinvia_numero"] = numero
+    context.user_data.pop("reinvia_draft", None)
+    context.user_data.pop("reinvia_edit_state", None)
+
+    if not leggi_offerta_da_reinviare(offerta_id):
         await query.message.reply_text("❌ Offerta non trovata.")
         return
 
-    context.user_data["reinvia_offerta_id"] = offerta_id
-    context.user_data["reinvia_numero"] = numero
+    await mostra_anteprima_reinvio(query.message, context)
 
-    _, nome, _, prezzo, *_ = riga
-    nome_breve = accorcia_nome_articolo(nome)
+
+async def menu_modifica_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
     await query.message.reply_text(
-        f"🔁 ARTICOLO #{numero}\n\n"
-        f"📦 {nome_breve}\n"
-        f"💰 {prezzo} €\n\n"
-        "Cosa vuoi fare?",
+        "✏️ COSA VUOI MODIFICARE?",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 RIPUBBLICA ORA", callback_data="reinvia_ora")],
-            [InlineKeyboardButton("🕒 PROGRAMMA", callback_data="reinvia_programma")],
-            [InlineKeyboardButton("⬅️ TORNA ALLO STORICO", callback_data="reinvia_pagina_0")],
+            [
+                InlineKeyboardButton("📦 NOME", callback_data="reinvia_edit_nome"),
+                InlineKeyboardButton("💰 PREZZO", callback_data="reinvia_edit_prezzo"),
+            ],
+            [
+                InlineKeyboardButton("🏷 PREZZO PRIMA", callback_data="reinvia_edit_vecchio"),
+                InlineKeyboardButton("🔗 LINK", callback_data="reinvia_edit_link"),
+            ],
+            [InlineKeyboardButton("🖼 IMMAGINE", callback_data="reinvia_edit_immagine")],
+            [InlineKeyboardButton("🎨 TEMPLATE", callback_data="reinvia_edit_template")],
+            [InlineKeyboardButton("⬅️ TORNA ALL'ANTEPRIMA", callback_data="reinvia_anteprima")],
         ]),
     )
 
 
-async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def gestisci_modifica_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    draft = await _dati_reinvio(context)
+    if not draft:
+        return
 
+    if data == "reinvia_anteprima":
+        context.user_data.pop("reinvia_edit_state", None)
+        await mostra_anteprima_reinvio(query.message, context)
+        return
+
+    if data == "reinvia_edit_nome":
+        context.user_data["reinvia_edit_state"] = "nome"
+        await query.message.reply_text("📦 Scrivi il nuovo nome del prodotto:")
+        return
+
+    if data == "reinvia_edit_prezzo":
+        context.user_data["reinvia_edit_state"] = "prezzo"
+        await query.message.reply_text("💰 Scrivi il nuovo prezzo attuale:")
+        return
+
+    if data == "reinvia_edit_vecchio":
+        context.user_data["reinvia_edit_state"] = "vecchio"
+        await query.message.reply_text("🏷 Scrivi il nuovo prezzo precedente oppure NO:")
+        return
+
+    if data == "reinvia_edit_link":
+        context.user_data["reinvia_edit_state"] = "link"
+        await query.message.reply_text("🔗 Inviami il nuovo link Amazon:")
+        return
+
+    if data == "reinvia_edit_immagine":
+        if draft.get("foto_file_id"):
+            kb = [
+                [InlineKeyboardButton("🔄 SOSTITUISCI IMMAGINE", callback_data="reinvia_img_sostituisci")],
+                [InlineKeyboardButton("🗑 RIMUOVI IMMAGINE", callback_data="reinvia_img_rimuovi")],
+                [InlineKeyboardButton("⬅️ INDIETRO", callback_data="reinvia_modifica")],
+            ]
+        else:
+            kb = [
+                [InlineKeyboardButton("📷 AGGIUNGI IMMAGINE", callback_data="reinvia_img_aggiungi")],
+                [InlineKeyboardButton("⬅️ INDIETRO", callback_data="reinvia_modifica")],
+            ]
+        await query.message.reply_text("🖼 GESTIONE IMMAGINE", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if data in ("reinvia_img_aggiungi", "reinvia_img_sostituisci"):
+        context.user_data["reinvia_attesa_foto"] = True
+        await query.message.reply_text("📷 Inviami la nuova immagine.")
+        return
+
+    if data == "reinvia_img_rimuovi":
+        draft["foto_file_id"] = None
+        draft["modificato"] = True
+        await query.message.reply_text("✅ Immagine rimossa.")
+        await mostra_anteprima_reinvio(query.message, context)
+        return
+
+    if data == "reinvia_edit_template":
+        await query.message.reply_text(
+            "🎨 Scegli il nuovo template:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✨ PULITO", callback_data="reinvia_tpl_pulito")],
+                [InlineKeyboardButton("🚨 AGGRESSIVO", callback_data="reinvia_tpl_aggressivo")],
+                [InlineKeyboardButton("⚡ TECH", callback_data="reinvia_tpl_tech")],
+            ]),
+        )
+        return
+
+    if data.startswith("reinvia_tpl_"):
+        draft["template"] = data.replace("reinvia_tpl_", "")
+        draft["modificato"] = True
+        await query.message.reply_text("✅ Template aggiornato.")
+        await mostra_anteprima_reinvio(query.message, context)
+
+
+async def ricevi_modifica_testo_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    stato = context.user_data.get("reinvia_edit_state")
+    if not stato:
+        return
+
+    if not await controlla_autorizzazione(update):
+        return
+
+    draft = await _dati_reinvio(context)
+    if not draft:
+        return
+
+    valore = update.message.text.strip()
+    if stato == "nome":
+        if not valore:
+            await update.message.reply_text("❌ Il nome non può essere vuoto.")
+            return
+        draft["nome"] = valore
+    elif stato == "prezzo":
+        draft["prezzo"] = pulisci_prezzo(valore)
+    elif stato == "vecchio":
+        draft["vecchio_prezzo"] = "NO" if valore.upper() == "NO" else pulisci_prezzo(valore)
+    elif stato == "link":
+        if "amazon." not in valore and "amzn." not in valore:
+            await update.message.reply_text("❌ Mandami un link Amazon valido.")
+            return
+        draft["link"] = valore
+
+    draft["modificato"] = True
+    context.user_data.pop("reinvia_edit_state", None)
+    await update.message.reply_text("✅ Modifica salvata.")
+    await mostra_anteprima_reinvio(update.message, context)
+
+
+async def ricevi_foto_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("reinvia_attesa_foto"):
+        return
+    if not await controlla_autorizzazione(update):
+        return
+
+    draft = await _dati_reinvio(context)
+    if not draft:
+        return
+
+    draft["foto_file_id"] = update.message.photo[-1].file_id
+    draft["modificato"] = True
+    context.user_data.pop("reinvia_attesa_foto", None)
+    await update.message.reply_text("✅ Immagine aggiornata.")
+    await mostra_anteprima_reinvio(update.message, context)
+
+
+async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return
 
@@ -4415,38 +4631,29 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
     if minuti_rimanenti > 0:
         await query.message.reply_text(
             f"⏳ Attendi ancora {minuti_rimanenti} minuto/i.\n\n"
-            f"Tra un post e l'altro devono passare almeno "
-            f"{DISTANZA_MINIMA_MINUTI} minuti."
+            f"Tra un post e l'altro devono passare almeno {DISTANZA_MINIMA_MINUTI} minuti."
         )
         return
 
-    offerta_id = context.user_data.get("reinvia_offerta_id")
-    riga = leggi_offerta_da_reinviare(offerta_id)
-
-    if not riga:
+    draft = await _dati_reinvio(context)
+    if not draft:
         await query.message.reply_text("❌ Offerta non trovata.")
         return
 
-    _, nome, link, prezzo, vecchio_prezzo, _, messaggio_salvato, foto_file_id, template = riga
-
-    messaggio = messaggio_salvato or crea_messaggio_programmato(
-        nome, prezzo, vecchio_prezzo, template
-    )
-
+    messaggio = _messaggio_reinvio(draft)
     messaggio_con_link = (
-        f"{messaggio}\n\n👉 {link}\n\n"
+        f"{messaggio}\n\n👉 {draft['link']}\n\n"
         "⚡ Prezzo e disponibilità possono variare."
     )
-
     bottoni = InlineKeyboardMarkup([[
         InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
-        InlineKeyboardButton("🛒 APRI", url=link),
+        InlineKeyboardButton("🛒 APRI", url=draft["link"]),
     ]])
 
-    if foto_file_id:
+    if draft.get("foto_file_id"):
         await context.bot.send_photo(
             chat_id=CHANNEL_ID,
-            photo=foto_file_id,
+            photo=draft["foto_file_id"],
             caption=messaggio_con_link,
             reply_markup=bottoni,
         )
@@ -4458,15 +4665,15 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
         )
 
     salva_offerta_recap(
-        nome, link, prezzo, vecchio_prezzo,
+        draft["nome"], draft["link"], draft["prezzo"], draft.get("vecchio_prezzo", "NO"),
         messaggio=messaggio,
-        foto_file_id=foto_file_id,
-        template=template,
+        foto_file_id=draft.get("foto_file_id"),
+        template=draft.get("template", "pulito"),
     )
 
     numero = context.user_data.get("reinvia_numero")
-    context.user_data.pop("reinvia_offerta_id", None)
-    context.user_data.pop("reinvia_numero", None)
+    for chiave in ("reinvia_offerta_id", "reinvia_numero", "reinvia_draft", "reinvia_edit_state", "reinvia_attesa_foto"):
+        context.user_data.pop(chiave, None)
 
     await query.message.reply_text(
         f"✅ OFFERTA #{numero} INVIATA DI NUOVO!",
@@ -4475,49 +4682,37 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def prepara_programmazione_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     query = update.callback_query
     await query.answer()
 
     oggi = datetime.now(ROMA_TZ).date()
-
     await query.message.reply_text(
         "📅 Quando vuoi ripubblicarla?",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                f"OGGI · {oggi.strftime('%d/%m')}",
-                callback_data="reinvia_giorno_0"
-            )],
-            [InlineKeyboardButton(
-                f"DOMANI · {(oggi + timedelta(days=1)).strftime('%d/%m')}",
-                callback_data="reinvia_giorno_1"
-            )],
-            [InlineKeyboardButton(
-                f"TRA 2 GIORNI · {(oggi + timedelta(days=2)).strftime('%d/%m')}",
-                callback_data="reinvia_giorno_2"
-            )],
+            [InlineKeyboardButton(f"OGGI · {oggi.strftime('%d/%m')}", callback_data="reinvia_giorno_0")],
+            [InlineKeyboardButton(f"DOMANI · {(oggi + timedelta(days=1)).strftime('%d/%m')}", callback_data="reinvia_giorno_1")],
+            [InlineKeyboardButton(f"TRA 2 GIORNI · {(oggi + timedelta(days=2)).strftime('%d/%m')}", callback_data="reinvia_giorno_2")],
         ]),
     )
 
 
 async def scegli_giorno_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     query = update.callback_query
     await query.answer()
-
     giorni = int(query.data.rsplit("_", 1)[1])
     data = datetime.now(ROMA_TZ).date() + timedelta(days=giorni)
-
     context.user_data["reinvia_data"] = data.isoformat()
     context.user_data["attesa_ora_reinvio"] = True
-
     await query.message.reply_text(
-        f"📅 {data.strftime('%d/%m/%Y')}\n\n"
-        "🕒 Scrivi l'orario nel formato HH:MM."
+        f"📅 {data.strftime('%d/%m/%Y')}\n\n🕒 Scrivi l'orario nel formato HH:MM."
     )
 
 
 async def ricevi_ora_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Prima gestisce eventuali modifiche testuali dell'offerta storica.
+    if context.user_data.get("reinvia_edit_state"):
+        await ricevi_modifica_testo_reinvio(update, context)
+        return
 
     if not context.user_data.get("attesa_ora_reinvio"):
         return
@@ -4528,16 +4723,12 @@ async def ricevi_ora_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         ora = datetime.strptime(update.message.text.strip(), "%H:%M").time()
     except ValueError:
-        await update.message.reply_text(
-            "❌ Orario non corretto. Scrivilo nel formato HH:MM."
-        )
+        await update.message.reply_text("❌ Orario non corretto. Scrivilo nel formato HH:MM.")
         return
 
-    offerta_id = context.user_data.get("reinvia_offerta_id")
     data_iso = context.user_data.get("reinvia_data")
-    riga = leggi_offerta_da_reinviare(offerta_id)
-
-    if not riga or not data_iso:
+    draft = await _dati_reinvio(context)
+    if not draft or not data_iso:
         await update.message.reply_text("❌ Dati mancanti. Riprova.")
         return
 
@@ -4545,9 +4736,7 @@ async def ricevi_ora_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE)
     data_locale = datetime.combine(data, ora, tzinfo=ROMA_TZ)
 
     if data_locale <= datetime.now(ROMA_TZ):
-        await update.message.reply_text(
-            "❌ Questo orario è già passato. Inserisci un orario futuro."
-        )
+        await update.message.reply_text("❌ Questo orario è già passato. Inserisci un orario futuro.")
         return
 
     conflitti = trova_conflitto(data_locale)
@@ -4556,38 +4745,26 @@ async def ricevi_ora_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(
             "⚠️ POST TROPPO VICINO\n\n"
             f"Hai già un'offerta alle {vicino['datetime'].strftime('%H:%M')}.\n"
-            f"Scegli un orario distante almeno "
-            f"{DISTANZA_MINIMA_MINUTI} minuti."
+            f"Scegli un orario distante almeno {DISTANZA_MINIMA_MINUTI} minuti."
         )
         return
 
-    _, nome, link, prezzo, vecchio_prezzo, _, messaggio_salvato, foto_file_id, template = riga
-
-    messaggio = messaggio_salvato or crea_messaggio_programmato(
-        nome, prezzo, vecchio_prezzo, template
-    )
-
+    messaggio = _messaggio_reinvio(draft)
     programmazione_id, invio_previsto = salva_programmazione(
-        nome, messaggio, link, prezzo, data_locale
+        draft["nome"], messaggio, draft["link"], draft["prezzo"], data_locale
     )
-
-    salva_foto_programmazione(programmazione_id, foto_file_id)
+    salva_foto_programmazione(programmazione_id, draft.get("foto_file_id"))
 
     numero = context.user_data.get("reinvia_numero")
-    for chiave in (
-        "reinvia_offerta_id",
-        "reinvia_numero",
-        "reinvia_data",
-        "attesa_ora_reinvio",
-    ):
+    for chiave in ("reinvia_offerta_id", "reinvia_numero", "reinvia_draft", "reinvia_data", "attesa_ora_reinvio", "reinvia_edit_state", "reinvia_attesa_foto"):
         context.user_data.pop(chiave, None)
 
     await update.message.reply_text(
         f"✅ OFFERTA #{numero} PROGRAMMATA!\n\n"
         f"📅 {invio_previsto.strftime('%d/%m/%Y')}\n"
         f"🕒 {invio_previsto.strftime('%H:%M')}\n"
-        f"📦 {nome}\n"
-        f"💰 {prezzo} €\n\n"
+        f"📦 {draft['nome']}\n"
+        f"💰 {draft['prezzo']} €\n\n"
         f"🆔 Programmazione: #{programmazione_id}",
         reply_markup=menu_principale(),
     )
@@ -4932,6 +5109,25 @@ def main():
 
     app.add_handler(
         CallbackQueryHandler(
+            menu_modifica_reinvio,
+            pattern="^reinvia_modifica$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            gestisci_modifica_reinvio,
+            pattern=(
+                r"^(reinvia_anteprima|reinvia_edit_nome|reinvia_edit_prezzo|"
+                r"reinvia_edit_vecchio|reinvia_edit_link|reinvia_edit_immagine|"
+                r"reinvia_img_aggiungi|reinvia_img_sostituisci|reinvia_img_rimuovi|"
+                r"reinvia_edit_template|reinvia_tpl_pulito|reinvia_tpl_aggressivo|reinvia_tpl_tech)$"
+            ),
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
             scegli_giorno_reinvio,
             pattern=r"^reinvia_giorno_[0-2]$",
         )
@@ -5072,6 +5268,13 @@ def main():
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             ricevi_ora_reinvio,
+        )
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.PHOTO,
+            ricevi_foto_reinvio,
         )
     )
 
