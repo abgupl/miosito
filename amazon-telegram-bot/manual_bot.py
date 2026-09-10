@@ -77,6 +77,15 @@ AUTO_CATEGORIE = {
     "persona": ("🧴 Cura personale", ["offerte cura della persona", "beauty offerte", "offerte rasoi asciugacapelli"]),
 }
 
+AUTO_HASHTAG = {
+    "elettronica": "#Elettronica",
+    "informatica": "#Informatica",
+    "casa": "#CasaECucina",
+    "gaming": "#Gaming",
+    "sport": "#Sport",
+    "persona": "#CuraPersonale",
+}
+
 
 (
     LINK,
@@ -1067,7 +1076,8 @@ def estrai_prodotto_creators(item):
         if not offerte:
             return None
 
-        prezzo_api = offerte[0].price
+        offerta = offerte[0]
+        prezzo_api = offerta.price
         denaro = prezzo_api.money
         if not denaro or denaro.amount is None:
             return None
@@ -1091,6 +1101,10 @@ def estrai_prodotto_creators(item):
         if not all((titolo, immagine, link, asin)):
             return None
 
+        venditore = None
+        if offerta.merchant_info and offerta.merchant_info.name:
+            venditore = offerta.merchant_info.name.strip()
+
         return {
             "asin": asin,
             "nome": titolo,
@@ -1101,9 +1115,18 @@ def estrai_prodotto_creators(item):
             "sconto": sconto,
             "immagine": immagine,
             "link": link,
+            "venditore": venditore,
         }
     except (AttributeError, IndexError, TypeError, ValueError):
         return None
+
+
+def riga_venditore_categoria(prodotto, categoria):
+    hashtag = AUTO_HASHTAG.get(categoria, "#OfferteAmazon")
+    venditore = prodotto.get("venditore")
+    if venditore and "amazon" in venditore.lower():
+        return f"Venduto e spedito da <i>Amazon</i> - Categoria: {hashtag}"
+    return f"Categoria: {hashtag}"
 
 
 async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1141,6 +1164,7 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
             return
 
         prodotto = max(prodotti, key=lambda x: x["sconto"])
+        prodotto["categoria"] = categoria
         await attesa.delete()
         tipo_offerta = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
         vecchio = (
@@ -1149,11 +1173,13 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
         )
         testo = (
             f"🧪 <b>ANTEPRIMA TEST — {tipo_offerta}</b>\n\n"
-            f"🛒 <b>{html.escape(prodotto['nome'])}</b>\n"
+            f"🛒 {html.escape(prodotto['nome'])}\n\n"
             f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
             f"{vecchio}\n"
             f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
-            f"Categoria: {html.escape(etichetta)}"
+            f"{riga_venditore_categoria(prodotto, categoria)}\n\n"
+            f"👉 <a href=\"{html.escape(prodotto['link'], quote=True)}\">Link affiliato all’offerta</a>\n\n"
+            "Anteprima non pubblicata"
         )
         tastiera = InlineKeyboardMarkup([[
             InlineKeyboardButton("🛒 APRI", url=prodotto["link"]),
@@ -1323,13 +1349,18 @@ async def pubblica_offerta_automatica(bot, prodotto):
         if prodotto["vecchio_prezzo"] else ""
     )
     tipo_offerta = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
+    link_html = html.escape(prodotto["link"], quote=True)
+    riga_venditore = riga_venditore_categoria(prodotto, prodotto.get("categoria"))
     messaggio = (
         f"<b>{tipo_offerta}</b>\n\n"
-        f"🛒 <b>{html.escape(nome)}</b>\n\n"
+        f"🛒 {html.escape(nome)}\n\n"
         f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
         f"{prima}\n"
         f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
-        "⚡ Prezzo e disponibilità possono variare."
+        f"{riga_venditore}\n\n"
+        f"👉 <a href=\"{link_html}\">Link affiliato all’offerta</a>\n\n"
+        "⚡ Prezzo e disponibilità possono variare.\n\n"
+        "Meno offerte. Più affari."
     )
     tastiera = InlineKeyboardMarkup([[
         InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
