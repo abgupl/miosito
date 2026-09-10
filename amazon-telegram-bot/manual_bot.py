@@ -69,12 +69,12 @@ ROMA_TZ = ZoneInfo("Europe/Rome")
 AUTO_ORARI = 300
 
 AUTO_CATEGORIE = {
-    "elettronica": ("📱 Elettronica", ["offerte elettronica", "accessori smartphone"]),
-    "informatica": ("💻 Informatica", ["offerte informatica", "accessori PC"]),
-    "casa": ("🏠 Casa e cucina", ["offerte casa e cucina", "elettrodomestici cucina"]),
-    "gaming": ("🎮 Gaming", ["offerte gaming", "accessori gaming"]),
-    "sport": ("🏋️ Sport", ["offerte sport fitness", "attrezzatura sportiva"]),
-    "persona": ("🧴 Cura personale", ["offerte cura della persona", "beauty offerte"]),
+    "elettronica": ("📱 Elettronica", ["offerte elettronica", "accessori smartphone", "offerte cuffie bluetooth"]),
+    "informatica": ("💻 Informatica", ["offerte informatica", "accessori PC", "offerte computer tablet"]),
+    "casa": ("🏠 Casa e cucina", ["offerte casa e cucina", "elettrodomestici cucina", "offerte pulizia casa"]),
+    "gaming": ("🎮 Gaming", ["offerte gaming", "accessori gaming", "offerte videogiochi console"]),
+    "sport": ("🏋️ Sport", ["offerte sport fitness", "attrezzatura sportiva", "offerte abbigliamento sportivo"]),
+    "persona": ("🧴 Cura personale", ["offerte cura della persona", "beauty offerte", "offerte rasoi asciugacapelli"]),
 }
 
 
@@ -696,6 +696,10 @@ async def avvia_programmazioni(app):
         controlla_recap(app)
     )
 
+    app.create_task(
+        controlla_invii_automatici(app)
+    )
+
 
 # =========================================================
 # SICUREZZA ADMIN
@@ -1031,6 +1035,7 @@ def estrai_prodotto_creators(item):
             "prezzo": prezzo,
             "prezzo_valore": prezzo_valore,
             "vecchio_prezzo": vecchio_prezzo,
+            "vecchio_valore": vecchio_valore,
             "sconto": sconto,
             "immagine": immagine,
             "link": link,
@@ -1104,6 +1109,256 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
             "Nessun post è stato pubblicato.",
             parse_mode="HTML",
         )
+
+
+# =========================================================
+# INVIO AUTOMATICO - MOTORE
+# =========================================================
+
+def _slot_automatico_gia_gestito(data_slot, ora_slot):
+    db = sqlite3.connect(DB_PATH)
+    riga = db.execute(
+        "SELECT stato FROM invii_automatici WHERE slot_data = ? AND slot_ora = ?",
+        (data_slot, ora_slot),
+    ).fetchone()
+    db.close()
+    return bool(riga)
+
+
+def _prenota_slot_automatico(data_slot, ora_slot, categoria):
+    db = sqlite3.connect(DB_PATH)
+    try:
+        db.execute(
+            """
+            INSERT INTO invii_automatici (
+                categoria, slot_data, slot_ora, stato, creato_il
+            ) VALUES (?, ?, ?, 'ricerca', ?)
+            """,
+            (
+                categoria,
+                data_slot,
+                ora_slot,
+                datetime.now(ROMA_TZ).isoformat(timespec="seconds"),
+            ),
+        )
+        db.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        db.close()
+
+
+def _aggiorna_slot_automatico(data_slot, ora_slot, stato, prodotto=None):
+    prodotto = prodotto or {}
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        """
+        UPDATE invii_automatici
+        SET stato = ?, asin = ?, nome = ?, link = ?, sconto = ?
+        WHERE slot_data = ? AND slot_ora = ?
+        """,
+        (
+            stato,
+            prodotto.get("asin"),
+            prodotto.get("nome"),
+            prodotto.get("link"),
+            prodotto.get("sconto"),
+            data_slot,
+            ora_slot,
+        ),
+    )
+    db.commit()
+    db.close()
+
+
+def _asin_gia_pubblicato(asin):
+    if not asin:
+        return True
+    db = sqlite3.connect(DB_PATH)
+    riga = db.execute(
+        "SELECT 1 FROM invii_automatici WHERE asin = ? AND stato = 'pubblicata' LIMIT 1",
+        (asin,),
+    ).fetchone()
+    db.close()
+    return bool(riga)
+
+
+def _numero_slot_del_giorno(data_slot):
+    db = sqlite3.connect(DB_PATH)
+    numero = db.execute(
+        "SELECT COUNT(*) FROM invii_automatici WHERE slot_data = ?",
+        (data_slot,),
+    ).fetchone()[0]
+    db.close()
+    return numero
+
+
+def _prezzo_italiano(valore):
+    return f"{float(valore):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+async def _notifica_admin_automazione(bot, testo):
+    if not ADMIN_ID:
+        return
+    try:
+        await bot.send_message(chat_id=ADMIN_ID, text=testo)
+    except Exception as errore:
+        print(f"Errore notifica automazione: {errore}")
+
+
+async def cerca_offerta_automatica(configurazione, categoria_iniziale):
+    categorie = list(configurazione["categorie"])
+    if categoria_iniziale in categorie:
+        indice = categorie.index(categoria_iniziale)
+        categorie = categorie[indice:] + categorie[:indice]
+
+    tentativi = []
+    for numero in range(3):
+        categoria = categorie[numero % len(categorie)]
+        termini = AUTO_CATEGORIE[categoria][1]
+        termine = termini[numero % len(termini)]
+        tentativi.append((categoria, termine))
+
+    candidati = []
+    for numero, (categoria, termine) in enumerate(tentativi, start=1):
+        print(f"Ricerca automatica {numero}/3: {categoria} - {termine}")
+        try:
+            items = await asyncio.to_thread(search_items, termine, "All", 10)
+            for item in items:
+                prodotto = estrai_prodotto_creators(item)
+                if not prodotto:
+                    continue
+                if prodotto["sconto"] < configurazione["sconto_minimo"]:
+                    continue
+                if _asin_gia_pubblicato(prodotto["asin"]):
+                    continue
+                prodotto["categoria"] = categoria
+                candidati.append(prodotto)
+        except Exception as errore:
+            print(f"Errore tentativo automatico {numero}: {errore}")
+        if numero < len(tentativi):
+            await asyncio.sleep(1.2)
+
+    if not candidati:
+        return None
+    candidati.sort(key=lambda x: (x["sconto"], -x["prezzo_valore"]), reverse=True)
+    return candidati[0]
+
+
+async def pubblica_offerta_automatica(bot, prodotto):
+    nome = prodotto["nome"]
+    prezzo_numero = _prezzo_italiano(prodotto["prezzo_valore"])
+    vecchio_numero = None
+    if prodotto["vecchio_prezzo"]:
+        base = prodotto.get("vecchio_valore")
+        if base is not None:
+            vecchio_numero = _prezzo_italiano(base)
+
+    prima = (
+        f"\n❌ Prima: <s>{html.escape(prodotto['vecchio_prezzo'])}</s>"
+        if prodotto["vecchio_prezzo"] else ""
+    )
+    messaggio = (
+        "🔥 <b>OFFERTA AMAZON</b>\n\n"
+        f"🛒 <b>{html.escape(nome)}</b>\n\n"
+        f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
+        f"{prima}\n"
+        f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
+        "⚡ Prezzo e disponibilità possono variare."
+    )
+    tastiera = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
+        InlineKeyboardButton("🛒 APRI", url=prodotto["link"]),
+    ]])
+    await bot.send_photo(
+        chat_id=CHANNEL_ID,
+        photo=prodotto["immagine"],
+        caption=messaggio,
+        parse_mode="HTML",
+        reply_markup=tastiera,
+    )
+    ultime_offerte.appendleft({
+        "nome": nome,
+        "link": prodotto["link"],
+        "prezzo": prezzo_numero,
+    })
+    salva_offerta_recap(
+        nome,
+        prodotto["link"],
+        prezzo_numero,
+        vecchio_numero or "NO",
+        messaggio=messaggio,
+        foto_file_id=prodotto["immagine"],
+        template="automatico",
+    )
+
+
+async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
+    categorie = configurazione["categorie"]
+    if not categorie:
+        return
+    indice = _numero_slot_del_giorno(data_slot) % len(categorie)
+    categoria = categorie[indice]
+    if not _prenota_slot_automatico(data_slot, ora_slot, categoria):
+        return
+
+    try:
+        if minuti_rimanenti_prima_del_prossimo_invio() > 0:
+            _aggiorna_slot_automatico(data_slot, ora_slot, "saltata_distanza")
+            await _notifica_admin_automazione(
+                app.bot,
+                f"⏭ Invio automatico delle {ora_slot} saltato: troppo vicino a un altro post.",
+            )
+            return
+
+        prodotto = await cerca_offerta_automatica(configurazione, categoria)
+        if not prodotto:
+            _aggiorna_slot_automatico(data_slot, ora_slot, "nessuna_offerta")
+            await _notifica_admin_automazione(
+                app.bot,
+                f"ℹ️ Alle {ora_slot} non ho trovato offerte nuove con almeno "
+                f"il {configurazione['sconto_minimo']}% di sconto dopo 3 tentativi.",
+            )
+            return
+
+        await pubblica_offerta_automatica(app.bot, prodotto)
+        _aggiorna_slot_automatico(data_slot, ora_slot, "pubblicata", prodotto)
+        await _notifica_admin_automazione(
+            app.bot,
+            f"✅ Offerta automatica pubblicata alle {ora_slot}:\n"
+            f"{prodotto['nome']}\nSconto: -{prodotto['sconto']}%",
+        )
+    except Exception as errore:
+        _aggiorna_slot_automatico(data_slot, ora_slot, "errore")
+        print(f"Errore invio automatico: {errore}")
+        await _notifica_admin_automazione(
+            app.bot,
+            f"❌ Errore invio automatico delle {ora_slot}:\n{str(errore)[:700]}",
+        )
+
+
+async def controlla_invii_automatici(app):
+    while True:
+        try:
+            configurazione = leggi_config_automatica()
+            if configurazione["attiva"]:
+                adesso = datetime.now(ROMA_TZ)
+                data_slot = adesso.date().isoformat()
+                ora_slot = adesso.strftime("%H:%M")
+                if (
+                    ora_slot in configurazione["orari"]
+                    and not _slot_automatico_gia_gestito(data_slot, ora_slot)
+                ):
+                    await esegui_slot_automatico(
+                        app,
+                        configurazione,
+                        data_slot,
+                        ora_slot,
+                    )
+        except Exception as errore:
+            print(f"Errore controllo automazione: {errore}")
+        await asyncio.sleep(20)
 
 
 # =========================================================
