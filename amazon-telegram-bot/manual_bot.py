@@ -11,7 +11,7 @@ from collections import deque
 import requests
 from bs4 import BeautifulSoup
 
-from amazon_client import search_items
+from amazon_client import get_items, search_items
 
 from telegram import (
     Update,
@@ -69,21 +69,33 @@ ROMA_TZ = ZoneInfo("Europe/Rome")
 AUTO_INTERVALLO, AUTO_FASCIA = range(300, 302)
 
 AUTO_CATEGORIE = {
-    "elettronica": ("📱 Elettronica", ["offerte elettronica", "accessori smartphone", "offerte cuffie bluetooth"]),
-    "informatica": ("💻 Informatica", ["offerte informatica", "accessori PC", "offerte computer tablet"]),
-    "casa": ("🏠 Casa e cucina", ["offerte casa e cucina", "elettrodomestici cucina", "offerte pulizia casa"]),
-    "gaming": ("🎮 Gaming", ["offerte gaming", "accessori gaming", "offerte videogiochi console"]),
-    "sport": ("🏋️ Sport", ["offerte sport fitness", "attrezzatura sportiva", "offerte abbigliamento sportivo"]),
-    "persona": ("🧴 Cura personale", ["offerte cura della persona", "beauty offerte", "offerte rasoi asciugacapelli"]),
+    "elettronica": ("📱 Elettronica", ["offerte elettronica", "cuffie bluetooth", "dispositivi smart home"]),
+    "informatica": ("💻 Informatica", ["offerte informatica", "accessori PC", "computer e tablet"]),
+    "smartphone": ("📲 Smartphone", ["smartphone in offerta", "accessori smartphone", "caricabatterie powerbank"]),
+    "tvaudio": ("📺 TV e audio", ["smart TV in offerta", "soundbar altoparlanti", "cuffie auricolari"]),
+    "gaming": ("🎮 Gaming", ["offerte gaming", "accessori gaming", "videogiochi e console"]),
+    "casa": ("🏠 Casa e cucina", ["offerte casa e cucina", "accessori cucina", "pulizia casa"]),
+    "elettrodomestici": ("🔌 Elettrodomestici", ["piccoli elettrodomestici", "elettrodomestici cucina", "aspirapolvere in offerta"]),
+    "persona": ("🧴 Cura personale", ["cura della persona", "rasoi elettrici", "asciugacapelli piastre"]),
+    "bellezza": ("💄 Bellezza", ["prodotti bellezza", "skincare in offerta", "profumi e cosmetici"]),
+    "sport": ("🏋️ Sport", ["offerte sport fitness", "attrezzatura sportiva", "abbigliamento sportivo"]),
+    "faidate": ("🛠 Fai da te", ["offerte fai da te", "utensili elettrici", "attrezzi bricolage"]),
+    "giocattoli": ("🧸 Giochi e giocattoli", ["giocattoli in offerta", "giochi da tavolo", "LEGO in offerta"]),
 }
 
 AUTO_HASHTAG = {
     "elettronica": "#Elettronica",
     "informatica": "#Informatica",
+    "smartphone": "#Smartphone",
+    "tvaudio": "#TVeAudio",
     "casa": "#CasaECucina",
     "gaming": "#Gaming",
+    "elettrodomestici": "#Elettrodomestici",
     "sport": "#Sport",
     "persona": "#CuraPersonale",
+    "bellezza": "#Bellezza",
+    "faidate": "#FaiDaTe",
+    "giocattoli": "#GiochiEGiocattoli",
 }
 
 
@@ -709,6 +721,10 @@ async def avvia_programmazioni(app):
         controlla_invii_automatici(app)
     )
 
+    app.create_task(
+        controlla_offerte_terminate(app)
+    )
+
 
 # =========================================================
 # SICUREZZA ADMIN
@@ -779,6 +795,17 @@ def inizializza_automazione():
             UNIQUE(slot_data, slot_ora)
         )
     """)
+    cur.execute("PRAGMA table_info(invii_automatici)")
+    colonne_invii = {riga[1] for riga in cur.fetchall()}
+    nuove_colonne = {
+        "telegram_message_id": "INTEGER",
+        "soglia_sconto": "INTEGER",
+        "verifiche_fallite": "INTEGER DEFAULT 0",
+        "terminata_il": "TEXT",
+    }
+    for colonna, definizione in nuove_colonne.items():
+        if colonna not in colonne_invii:
+            cur.execute(f"ALTER TABLE invii_automatici ADD COLUMN {colonna} {definizione}")
     defaults = {
         "attiva": "0",
         "intervallo_minuti": "120",
@@ -1238,13 +1265,22 @@ def _prenota_slot_automatico(data_slot, ora_slot, categoria):
         db.close()
 
 
-def _aggiorna_slot_automatico(data_slot, ora_slot, stato, prodotto=None):
+def _aggiorna_slot_automatico(
+    data_slot,
+    ora_slot,
+    stato,
+    prodotto=None,
+    telegram_message_id=None,
+    soglia_sconto=None,
+):
     prodotto = prodotto or {}
     db = sqlite3.connect(DB_PATH)
     db.execute(
         """
         UPDATE invii_automatici
-        SET stato = ?, asin = ?, nome = ?, link = ?, sconto = ?
+        SET stato = ?, asin = ?, nome = ?, link = ?, sconto = ?,
+            telegram_message_id = COALESCE(?, telegram_message_id),
+            soglia_sconto = COALESCE(?, soglia_sconto)
         WHERE slot_data = ? AND slot_ora = ?
         """,
         (
@@ -1253,6 +1289,8 @@ def _aggiorna_slot_automatico(data_slot, ora_slot, stato, prodotto=None):
             prodotto.get("nome"),
             prodotto.get("link"),
             prodotto.get("sconto"),
+            telegram_message_id,
+            soglia_sconto,
             data_slot,
             ora_slot,
         ),
@@ -1366,7 +1404,7 @@ async def pubblica_offerta_automatica(bot, prodotto):
         InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
         InlineKeyboardButton("🛒 APRI", url=prodotto["link"]),
     ]])
-    await bot.send_photo(
+    messaggio_telegram = await bot.send_photo(
         chat_id=CHANNEL_ID,
         photo=prodotto["immagine"],
         caption=messaggio,
@@ -1387,6 +1425,7 @@ async def pubblica_offerta_automatica(bot, prodotto):
         foto_file_id=prodotto["immagine"],
         template="automatico",
     )
+    return messaggio_telegram.message_id
 
 
 async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
@@ -1417,8 +1456,15 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
             )
             return
 
-        await pubblica_offerta_automatica(app.bot, prodotto)
-        _aggiorna_slot_automatico(data_slot, ora_slot, "pubblicata", prodotto)
+        message_id = await pubblica_offerta_automatica(app.bot, prodotto)
+        _aggiorna_slot_automatico(
+            data_slot,
+            ora_slot,
+            "pubblicata",
+            prodotto,
+            telegram_message_id=message_id,
+            soglia_sconto=configurazione["sconto_minimo"],
+        )
         await _notifica_admin_automazione(
             app.bot,
             f"✅ Offerta automatica pubblicata alle {ora_slot}:\n"
@@ -1507,6 +1553,140 @@ async def controlla_invii_automatici(app):
         except Exception as errore:
             print(f"Errore controllo automazione: {errore}")
         await asyncio.sleep(20)
+
+
+# =========================================================
+# CONTROLLO OFFERTE TERMINATE
+# =========================================================
+
+def _offerte_da_verificare():
+    limite = datetime.now(ROMA_TZ) - timedelta(hours=24)
+    db = sqlite3.connect(DB_PATH)
+    righe = db.execute(
+        """
+        SELECT id, asin, nome, categoria, telegram_message_id,
+               COALESCE(soglia_sconto, 0), COALESCE(verifiche_fallite, 0)
+        FROM invii_automatici
+        WHERE stato = 'pubblicata'
+          AND telegram_message_id IS NOT NULL
+          AND creato_il >= ?
+        ORDER BY creato_il DESC
+        """,
+        (limite.isoformat(timespec="seconds"),),
+    ).fetchall()
+    db.close()
+    return righe
+
+
+def _aggiorna_verifica_offerta(invio_id, fallita):
+    db = sqlite3.connect(DB_PATH)
+    if fallita:
+        db.execute(
+            """
+            UPDATE invii_automatici
+            SET verifiche_fallite = COALESCE(verifiche_fallite, 0) + 1
+            WHERE id = ?
+            """,
+            (invio_id,),
+        )
+    else:
+        db.execute(
+            "UPDATE invii_automatici SET verifiche_fallite = 0 WHERE id = ?",
+            (invio_id,),
+        )
+    db.commit()
+    valore = db.execute(
+        "SELECT COALESCE(verifiche_fallite, 0) FROM invii_automatici WHERE id = ?",
+        (invio_id,),
+    ).fetchone()
+    db.close()
+    return valore[0] if valore else 0
+
+
+def _segna_offerta_terminata(invio_id):
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        """
+        UPDATE invii_automatici
+        SET stato = 'terminata', terminata_il = ?
+        WHERE id = ?
+        """,
+        (datetime.now(ROMA_TZ).isoformat(timespec="seconds"), invio_id),
+    )
+    db.commit()
+    db.close()
+
+
+async def _modifica_post_terminato(bot, invio_id, nome, categoria, message_id):
+    hashtag = AUTO_HASHTAG.get(categoria, "#OfferteAmazon")
+    didascalia = (
+        "⛔ <b>OFFERTA TERMINATA</b>\n\n"
+        f"🛒 {html.escape(nome)}\n\n"
+        "Questa promozione non risulta più disponibile.\n\n"
+        f"Categoria: {hashtag}\n\n"
+        "Continua a seguirci per le prossime offerte.\n\n"
+        "Meno offerte. Più affari."
+    )
+    await bot.edit_message_caption(
+        chat_id=CHANNEL_ID,
+        message_id=message_id,
+        caption=didascalia,
+        parse_mode="HTML",
+    )
+    await bot.edit_message_reply_markup(
+        chat_id=CHANNEL_ID,
+        message_id=message_id,
+        reply_markup=None,
+    )
+    _segna_offerta_terminata(invio_id)
+
+
+async def controlla_offerte_terminate(app):
+    while True:
+        try:
+            offerte = _offerte_da_verificare()
+            for posizione in range(0, len(offerte), 10):
+                gruppo = offerte[posizione:posizione + 10]
+                asins = [riga[1] for riga in gruppo if riga[1]]
+                if not asins:
+                    continue
+                try:
+                    items = await asyncio.to_thread(get_items, asins)
+                except Exception as errore:
+                    print(f"Errore verifica disponibilità Creator API: {errore}")
+                    continue
+
+                prodotti = {}
+                for item in items:
+                    asin = getattr(item, "asin", None)
+                    if asin:
+                        prodotti[asin] = estrai_prodotto_creators(item)
+
+                for invio_id, asin, nome, categoria, message_id, soglia, _ in gruppo:
+                    prodotto = prodotti.get(asin)
+                    non_valida = not prodotto or prodotto["sconto"] < soglia
+                    fallimenti = _aggiorna_verifica_offerta(invio_id, non_valida)
+                    if non_valida and fallimenti >= 2:
+                        try:
+                            await _modifica_post_terminato(
+                                app.bot,
+                                invio_id,
+                                nome,
+                                categoria,
+                                message_id,
+                            )
+                            await _notifica_admin_automazione(
+                                app.bot,
+                                f"⛔ Offerta terminata aggiornata nel canale:\n{nome}",
+                            )
+                        except Exception as errore:
+                            print(f"Errore modifica post terminato: {errore}")
+
+                await asyncio.sleep(1.2)
+        except Exception as errore:
+            print(f"Errore controllo offerte terminate: {errore}")
+
+        await asyncio.sleep(1800)
 
 
 # =========================================================
