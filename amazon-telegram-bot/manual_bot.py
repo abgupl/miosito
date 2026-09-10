@@ -775,6 +775,7 @@ def inizializza_automazione():
         "intervallo_minuti": "120",
         "ora_inizio": "09:00",
         "ora_fine": "21:00",
+        "prossimo_invio": "",
         "sconto_minimo": "20",
     }
     for chiave, valore in defaults.items():
@@ -785,12 +786,12 @@ def inizializza_automazione():
     versione = cur.execute(
         "SELECT valore FROM configurazione_automatica WHERE chiave = 'versione_config'"
     ).fetchone()
-    if not versione or versione[0] != "2":
+    if not versione or versione[0] != "3":
         cur.execute(
             "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES ('attiva', '0')"
         )
         cur.execute(
-            "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES ('versione_config', '2')"
+            "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES ('versione_config', '3')"
         )
     db.commit()
     db.close()
@@ -809,6 +810,7 @@ def leggi_config_automatica():
         "intervallo_minuti": int(valori.get("intervallo_minuti", "120")),
         "ora_inizio": valori.get("ora_inizio", "09:00"),
         "ora_fine": valori.get("ora_fine", "21:00"),
+        "prossimo_invio": valori.get("prossimo_invio", ""),
         "sconto_minimo": int(valori.get("sconto_minimo", "20")),
         "categorie": categorie,
     }
@@ -850,11 +852,11 @@ def testo_automazione(configurazione):
     categorie = [AUTO_CATEGORIE[x][0] for x in configurazione["categorie"] if x in AUTO_CATEGORIE]
     return (
         "🤖 INVIO AUTOMATICO\n\n"
-        f"STATO: {'🟢 ATTIVO' if configurazione['attiva'] else '🔴 DISATTIVATO'}\n"
-        f"INTERVALLO: {configurazione['intervallo_minuti']} MINUTI\n"
-        f"ORARIO: {configurazione['ora_inizio']}–{configurazione['ora_fine']}\n"
-        f"SCONTO MINIMO: {configurazione['sconto_minimo']}%\n"
-        f"CATEGORIE: {', '.join(categorie).upper() if categorie else 'NESSUNA'}"
+        f"Stato: {'🟢 Attivo' if configurazione['attiva'] else '🔴 Disattivato'}\n"
+        f"Intervallo: {configurazione['intervallo_minuti']} minuti\n"
+        f"Orario: {configurazione['ora_inizio']}–{configurazione['ora_fine']}\n"
+        f"Sconto minimo: {configurazione['sconto_minimo']}%\n"
+        f"Categorie: {', '.join(categorie) if categorie else 'nessuna'}"
     )
 
 
@@ -887,7 +889,7 @@ async def mostra_categorie_automatiche(query):
         ])
     tastiera.append([InlineKeyboardButton("✅ FATTO", callback_data="auto_menu")])
     await query.edit_message_text(
-        "🗂 SELEZIONA LE CATEGORIE DA PUBBLICARE:",
+        "🗂 Seleziona le categorie da pubblicare:",
         reply_markup=InlineKeyboardMarkup(tastiera),
     )
 
@@ -901,12 +903,39 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
     configurazione = leggi_config_automatica()
 
     if azione == "auto_toggle":
-        if not configurazione["attiva"]:
-            if not configurazione["categorie"]:
-                await query.message.reply_text("❌ SELEZIONA ALMENO UNA CATEGORIA.")
-                return
-        salva_config_automatica("attiva", "0" if configurazione["attiva"] else "1")
-        return await aggiorna_menu_automazione(query)
+        if configurazione["attiva"]:
+            salva_config_automatica("attiva", 0)
+            salva_config_automatica("prossimo_invio", "")
+            return await aggiorna_menu_automazione(query)
+
+        if not configurazione["categorie"]:
+            await query.message.reply_text("❌ Seleziona almeno una categoria.")
+            return
+
+        adesso = datetime.now(ROMA_TZ)
+        salva_config_automatica("attiva", 1)
+        configurazione = leggi_config_automatica()
+
+        if _dentro_fascia_automatica(configurazione, adesso):
+            prossimo = _calcola_prossimo_invio(configurazione, adesso)
+            salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"))
+            await aggiorna_menu_automazione(query)
+            await query.message.reply_text("🚀 Automazione attivata. Cerco subito la prima offerta…")
+            await esegui_slot_automatico(
+                context.application,
+                configurazione,
+                adesso.date().isoformat(),
+                adesso.strftime("%H:%M"),
+            )
+            return
+
+        prossimo = _prossimo_inizio_fascia(configurazione, adesso)
+        salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"))
+        await aggiorna_menu_automazione(query)
+        await query.message.reply_text(
+            f"✅ Automazione attivata. Il primo tentativo partirà alle {prossimo.strftime('%H:%M')}."
+        )
+        return
 
     if azione == "auto_sconto":
         valori = (10, 15, 20, 25, 30, 40, 50)
@@ -915,7 +944,7 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
             [InlineKeyboardButton(f"{v}%", callback_data=f"auto_disc_{v}") for v in valori[4:]],
             [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
         ]
-        await query.edit_message_text("📉 SELEZIONA LO SCONTO MINIMO:", reply_markup=InlineKeyboardMarkup(tastiera))
+        await query.edit_message_text("📉 Seleziona lo sconto minimo:", reply_markup=InlineKeyboardMarkup(tastiera))
         return
 
     if azione.startswith("auto_disc_"):
@@ -949,10 +978,10 @@ async def richiedi_intervallo_automatico(update: Update, context: ContextTypes.D
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "⏱ INTERVALLO TRA I POST\n\n"
-        "SCRIVI QUANTI MINUTI DEVONO PASSARE TRA UN POST E L’ALTRO.\n\n"
-        "ESEMPIO: 120\n\n"
-        "IL MINIMO CONSENTITO È 29 MINUTI."
+        "⏱ Intervallo tra i post\n\n"
+        "Scrivi quanti minuti devono passare tra un post e l’altro.\n\n"
+        "Esempio: 120\n\n"
+        "Il minimo consentito è 29 minuti."
     )
     return AUTO_INTERVALLO
 
@@ -963,17 +992,17 @@ async def ricevi_intervallo_automatico(update: Update, context: ContextTypes.DEF
     try:
         minuti = int(update.message.text.strip())
     except ValueError:
-        await update.message.reply_text("❌ SCRIVI SOLTANTO IL NUMERO DEI MINUTI, PER ESEMPIO 120.")
+        await update.message.reply_text("❌ Scrivi soltanto il numero dei minuti, per esempio 120.")
         return AUTO_INTERVALLO
     if minuti < 29 or minuti > 1440:
-        await update.message.reply_text("❌ INSERISCI UN VALORE TRA 29 E 1440 MINUTI.")
+        await update.message.reply_text("❌ Inserisci un valore tra 29 e 1440 minuti.")
         return AUTO_INTERVALLO
     salva_config_automatica("intervallo_minuti", minuti)
     salva_config_automatica("attiva", 0)
     configurazione = leggi_config_automatica()
     await update.message.reply_text(
-        f"✅ INTERVALLO SALVATO: {minuti} MINUTI.\n\n"
-        "L’AUTOMAZIONE RESTA DISATTIVATA FINCHÉ NON LA RIATTIVI.",
+        f"✅ Intervallo salvato: {minuti} minuti.\n\n"
+        "L’automazione resta disattivata finché non la riattivi.",
         reply_markup=tastiera_automazione(configurazione),
     )
     return ConversationHandler.END
@@ -985,10 +1014,10 @@ async def richiedi_fascia_automatica(update: Update, context: ContextTypes.DEFAU
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "🕒 ORARIO DI ATTIVITÀ\n\n"
-        "SCRIVI L’ORARIO DI INIZIO E QUELLO DI FINE SEPARATI DA UN TRATTINO.\n\n"
-        "ESEMPIO: 09:00-21:00\n\n"
-        "ALLE 21:00 IL BOT SI FERMERÀ."
+        "🕒 Orario di attività\n\n"
+        "Scrivi l’orario di inizio e quello di fine separati da un trattino.\n\n"
+        "Esempio: 09:00-21:00\n\n"
+        "Alle 21:00 il bot si fermerà."
     )
     return AUTO_FASCIA
 
@@ -999,18 +1028,18 @@ async def ricevi_fascia_automatica(update: Update, context: ContextTypes.DEFAULT
     testo = update.message.text.strip().replace("–", "-").replace("—", "-")
     parti = [x.strip() for x in testo.split("-")]
     if len(parti) != 2:
-        await update.message.reply_text("❌ USA IL FORMATO 09:00-21:00.")
+        await update.message.reply_text("❌ Usa il formato 09:00-21:00.")
         return AUTO_FASCIA
     try:
         inizio = datetime.strptime(parti[0], "%H:%M")
         fine = datetime.strptime(parti[1], "%H:%M")
     except ValueError:
-        await update.message.reply_text("❌ ORARIO NON CORRETTO. USA IL FORMATO 09:00-21:00.")
+        await update.message.reply_text("❌ Orario non corretto. Usa il formato 09:00-21:00.")
         return AUTO_FASCIA
     inizio_minuti = inizio.hour * 60 + inizio.minute
     fine_minuti = fine.hour * 60 + fine.minute
     if fine_minuti <= inizio_minuti:
-        await update.message.reply_text("❌ L’ORARIO FINALE DEVE ESSERE SUCCESSIVO A QUELLO INIZIALE.")
+        await update.message.reply_text("❌ L’orario finale deve essere successivo a quello iniziale.")
         return AUTO_FASCIA
     ora_inizio = inizio.strftime("%H:%M")
     ora_fine = fine.strftime("%H:%M")
@@ -1019,8 +1048,8 @@ async def ricevi_fascia_automatica(update: Update, context: ContextTypes.DEFAULT
     salva_config_automatica("attiva", 0)
     configurazione = leggi_config_automatica()
     await update.message.reply_text(
-        f"✅ ORARIO SALVATO: DALLE {ora_inizio} ALLE {ora_fine}.\n\n"
-        f"ALLE {ora_fine} IL BOT SI FERMERÀ.",
+        f"✅ Orario salvato: dalle {ora_inizio} alle {ora_fine}.\n\n"
+        f"Alle {ora_fine} il bot si fermerà.",
         reply_markup=tastiera_automazione(configurazione),
     )
     return ConversationHandler.END
@@ -1373,17 +1402,37 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
         )
 
 
-def _orario_automatico_previsto(configurazione, adesso):
-    ora_corrente_minuti = adesso.hour * 60 + adesso.minute
-    inizio = datetime.strptime(configurazione["ora_inizio"], "%H:%M")
-    fine = datetime.strptime(configurazione["ora_fine"], "%H:%M")
-    inizio_minuti = inizio.hour * 60 + inizio.minute
-    fine_minuti = fine.hour * 60 + fine.minute
+def _limiti_fascia_automatica(configurazione, giorno):
+    inizio_ora = datetime.strptime(configurazione["ora_inizio"], "%H:%M").time()
+    fine_ora = datetime.strptime(configurazione["ora_fine"], "%H:%M").time()
     return (
-        inizio_minuti <= ora_corrente_minuti < fine_minuti
-        and (ora_corrente_minuti - inizio_minuti)
-        % configurazione["intervallo_minuti"] == 0
+        datetime.combine(giorno, inizio_ora, tzinfo=ROMA_TZ),
+        datetime.combine(giorno, fine_ora, tzinfo=ROMA_TZ),
     )
+
+
+def _dentro_fascia_automatica(configurazione, adesso):
+    inizio, fine = _limiti_fascia_automatica(configurazione, adesso.date())
+    return inizio <= adesso < fine
+
+
+def _prossimo_inizio_fascia(configurazione, adesso):
+    inizio, fine = _limiti_fascia_automatica(configurazione, adesso.date())
+    if adesso < inizio:
+        return inizio
+    if adesso >= fine:
+        domani = adesso.date() + timedelta(days=1)
+        return _limiti_fascia_automatica(configurazione, domani)[0]
+    return adesso
+
+
+def _calcola_prossimo_invio(configurazione, riferimento):
+    candidato = riferimento + timedelta(minutes=configurazione["intervallo_minuti"])
+    _, fine = _limiti_fascia_automatica(configurazione, riferimento.date())
+    if candidato < fine:
+        return candidato
+    domani = riferimento.date() + timedelta(days=1)
+    return _limiti_fascia_automatica(configurazione, domani)[0]
 
 
 async def controlla_invii_automatici(app):
@@ -1392,19 +1441,38 @@ async def controlla_invii_automatici(app):
             configurazione = leggi_config_automatica()
             if configurazione["attiva"]:
                 adesso = datetime.now(ROMA_TZ)
-                data_slot = adesso.date().isoformat()
-                ora_slot = adesso.strftime("%H:%M")
-                nello_slot = _orario_automatico_previsto(configurazione, adesso)
-                if (
-                    nello_slot
-                    and not _slot_automatico_gia_gestito(data_slot, ora_slot)
-                ):
-                    await esegui_slot_automatico(
-                        app,
-                        configurazione,
-                        data_slot,
-                        ora_slot,
-                    )
+                prossimo_testo = configurazione.get("prossimo_invio")
+                prossimo = None
+                if prossimo_testo:
+                    try:
+                        prossimo = datetime.fromisoformat(prossimo_testo)
+                        if prossimo.tzinfo is None:
+                            prossimo = prossimo.replace(tzinfo=ROMA_TZ)
+                        else:
+                            prossimo = prossimo.astimezone(ROMA_TZ)
+                    except ValueError:
+                        prossimo = None
+
+                if prossimo is None:
+                    prossimo = _prossimo_inizio_fascia(configurazione, adesso)
+                    salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"))
+
+                if adesso >= prossimo:
+                    if not _dentro_fascia_automatica(configurazione, adesso):
+                        prossimo = _prossimo_inizio_fascia(configurazione, adesso)
+                        salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"))
+                    else:
+                        successivo = _calcola_prossimo_invio(configurazione, adesso)
+                        salva_config_automatica("prossimo_invio", successivo.isoformat(timespec="seconds"))
+                        data_slot = adesso.date().isoformat()
+                        ora_slot = adesso.strftime("%H:%M")
+                        if not _slot_automatico_gia_gestito(data_slot, ora_slot):
+                            await esegui_slot_automatico(
+                                app,
+                                configurazione,
+                                data_slot,
+                                ora_slot,
+                            )
         except Exception as errore:
             print(f"Errore controllo automazione: {errore}")
         await asyncio.sleep(20)
