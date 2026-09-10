@@ -1175,18 +1175,19 @@ def crea_immagine_brandizzata(image_url):
     prodotto = Image.open(BytesIO(risposta.content)).convert("RGB")
     canvas = Image.new("RGB", (1080, 1080), "white")
 
-    # La foto occupa tutto lo spazio interno, anche sotto al logo.
-    foto = ImageOps.fit(
+    # Margine bianco uniforme del 20% su tutti i lati del prodotto.
+    area_prodotto = (648, 648)
+    margine_prodotto = 216
+    foto = ImageOps.contain(
         prodotto,
-        (1020, 1020),
+        area_prodotto,
         method=Image.Resampling.LANCZOS,
-        centering=(0.5, 0.5),
     )
-    maschera_foto = Image.new("L", (1020, 1020), 0)
-    ImageDraw.Draw(maschera_foto).rounded_rectangle(
-        (0, 0, 1019, 1019), radius=28, fill=255
+    posizione_foto = (
+        margine_prodotto + (area_prodotto[0] - foto.width) // 2,
+        margine_prodotto + (area_prodotto[1] - foto.height) // 2,
     )
-    canvas.paste(foto, (30, 30), maschera_foto)
+    canvas.paste(foto, posizione_foto)
 
     # Cornice rossa sottile, profilo nero e nessuna ombra esterna.
     disegno = ImageDraw.Draw(canvas)
@@ -1194,7 +1195,7 @@ def crea_immagine_brandizzata(image_url):
         (8, 8, 1072, 1072), radius=40, outline="#F20D18", width=18
     )
     disegno.rounded_rectangle(
-        (29, 29, 1051, 1051), radius=29, outline="#171717", width=3
+        (26, 26, 1054, 1054), radius=22, outline="#171717", width=3
     )
 
     if not LOGO_PATH.exists():
@@ -1202,7 +1203,8 @@ def crea_immagine_brandizzata(image_url):
 
     logo = Image.open(LOGO_PATH).convert("RGBA")
     logo = ImageOps.contain(logo, (195, 170), Image.Resampling.LANCZOS)
-    posizione_logo = (1015 - logo.width, 42)
+    # Margine del logo: 10 px dal profilo nero, in alto e a destra.
+    posizione_logo = (1044 - logo.width, 36)
 
     # Il logo è opaco; solo una piccola ombra ne migliora la leggibilità.
     alpha_ombra = logo.getchannel("A").point(lambda valore: valore * 90 // 255)
@@ -1289,7 +1291,7 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
             f"{vecchio}\n"
             f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
             f"{riga_venditore_categoria(prodotto, categoria)}\n\n"
-            f"👉 {html.escape(prodotto['link'])}\n\n"
+            f"👉 <a href=\"{html.escape(prodotto['link'], quote=True)}\">Scopri l’offerta su Amazon</a>\n\n"
             "Anteprima non pubblicata"
         )
         tastiera = InlineKeyboardMarkup([[
@@ -1490,7 +1492,7 @@ async def pubblica_offerta_automatica(bot, prodotto):
         f"{prima}\n"
         f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
         f"{riga_venditore}\n\n"
-        f"👉 {link_html}\n\n"
+        f"👉 <a href=\"{link_html}\">Scopri l’offerta su Amazon</a>\n\n"
         "⚡ Prezzo e disponibilità possono variare."
     )
     tastiera = InlineKeyboardMarkup([[
