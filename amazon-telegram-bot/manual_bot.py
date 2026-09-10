@@ -802,6 +802,8 @@ def inizializza_automazione():
         "soglia_sconto": "INTEGER",
         "verifiche_fallite": "INTEGER DEFAULT 0",
         "terminata_il": "TEXT",
+        "deal_end_time": "TEXT",
+        "ultima_verifica": "TEXT",
     }
     for colonna, definizione in nuove_colonne.items():
         if colonna not in colonne_invii:
@@ -1132,6 +1134,10 @@ def estrai_prodotto_creators(item):
         if offerta.merchant_info and offerta.merchant_info.name:
             venditore = offerta.merchant_info.name.strip()
 
+        deal_end_time = None
+        if offerta.deal_details and offerta.deal_details.end_time:
+            deal_end_time = offerta.deal_details.end_time
+
         return {
             "asin": asin,
             "nome": titolo,
@@ -1143,6 +1149,7 @@ def estrai_prodotto_creators(item):
             "immagine": immagine,
             "link": link,
             "venditore": venditore,
+            "deal_end_time": deal_end_time,
         }
     except (AttributeError, IndexError, TypeError, ValueError):
         return None
@@ -1272,6 +1279,7 @@ def _aggiorna_slot_automatico(
     prodotto=None,
     telegram_message_id=None,
     soglia_sconto=None,
+    deal_end_time=None,
 ):
     prodotto = prodotto or {}
     db = sqlite3.connect(DB_PATH)
@@ -1280,7 +1288,12 @@ def _aggiorna_slot_automatico(
         UPDATE invii_automatici
         SET stato = ?, asin = ?, nome = ?, link = ?, sconto = ?,
             telegram_message_id = COALESCE(?, telegram_message_id),
-            soglia_sconto = COALESCE(?, soglia_sconto)
+            soglia_sconto = COALESCE(?, soglia_sconto),
+            deal_end_time = COALESCE(?, deal_end_time),
+            ultima_verifica = CASE
+                WHEN ? = 'pubblicata' THEN COALESCE(ultima_verifica, ?)
+                ELSE ultima_verifica
+            END
         WHERE slot_data = ? AND slot_ora = ?
         """,
         (
@@ -1291,6 +1304,9 @@ def _aggiorna_slot_automatico(
             prodotto.get("sconto"),
             telegram_message_id,
             soglia_sconto,
+            deal_end_time,
+            stato,
+            datetime.now(ROMA_TZ).isoformat(timespec="seconds"),
             data_slot,
             ora_slot,
         ),
@@ -1464,6 +1480,7 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
             prodotto,
             telegram_message_id=message_id,
             soglia_sconto=configurazione["sconto_minimo"],
+            deal_end_time=prodotto.get("deal_end_time"),
         )
         await _notifica_admin_automazione(
             app.bot,
@@ -1560,12 +1577,14 @@ async def controlla_invii_automatici(app):
 # =========================================================
 
 def _offerte_da_verificare():
-    limite = datetime.now(ROMA_TZ) - timedelta(hours=24)
+    adesso = datetime.now(ROMA_TZ)
+    limite = adesso - timedelta(days=7)
     db = sqlite3.connect(DB_PATH)
     righe = db.execute(
         """
         SELECT id, asin, nome, categoria, telegram_message_id,
-               COALESCE(soglia_sconto, 0), COALESCE(verifiche_fallite, 0)
+               COALESCE(soglia_sconto, 0), COALESCE(verifiche_fallite, 0),
+               creato_il, deal_end_time, ultima_verifica
         FROM invii_automatici
         WHERE stato = 'pubblicata'
           AND telegram_message_id IS NOT NULL
@@ -1575,7 +1594,45 @@ def _offerte_da_verificare():
         (limite.isoformat(timespec="seconds"),),
     ).fetchall()
     db.close()
-    return righe
+    da_verificare = []
+    for riga in righe:
+        creato_il = _data_api(riga[7])
+        fine_offerta = _data_api(riga[8])
+        ultima_verifica = _data_api(riga[9]) or creato_il
+        if not creato_il:
+            continue
+
+        eta = adesso - creato_il
+        fallimenti = riga[6]
+        if fallimenti > 0:
+            intervallo = timedelta(minutes=30)
+        elif fine_offerta and adesso < fine_offerta:
+            continue
+        elif fine_offerta:
+            intervallo = timedelta(hours=2)
+        elif eta <= timedelta(hours=24):
+            intervallo = timedelta(hours=2)
+        elif eta <= timedelta(hours=72):
+            intervallo = timedelta(hours=6)
+        else:
+            intervallo = timedelta(hours=24)
+
+        if not ultima_verifica or adesso - ultima_verifica >= intervallo:
+            da_verificare.append(riga[:7])
+    return da_verificare
+
+
+def _data_api(valore):
+    if not valore:
+        return None
+    try:
+        testo = str(valore).strip().replace("Z", "+00:00")
+        data = datetime.fromisoformat(testo)
+        if data.tzinfo is None:
+            data = data.replace(tzinfo=ROMA_TZ)
+        return data.astimezone(ROMA_TZ)
+    except (TypeError, ValueError):
+        return None
 
 
 def _aggiorna_verifica_offerta(invio_id, fallita):
@@ -1584,15 +1641,20 @@ def _aggiorna_verifica_offerta(invio_id, fallita):
         db.execute(
             """
             UPDATE invii_automatici
-            SET verifiche_fallite = COALESCE(verifiche_fallite, 0) + 1
+            SET verifiche_fallite = COALESCE(verifiche_fallite, 0) + 1,
+                ultima_verifica = ?
             WHERE id = ?
             """,
-            (invio_id,),
+            (datetime.now(ROMA_TZ).isoformat(timespec="seconds"), invio_id),
         )
     else:
         db.execute(
-            "UPDATE invii_automatici SET verifiche_fallite = 0 WHERE id = ?",
-            (invio_id,),
+            """
+            UPDATE invii_automatici
+            SET verifiche_fallite = 0, ultima_verifica = ?
+            WHERE id = ?
+            """,
+            (datetime.now(ROMA_TZ).isoformat(timespec="seconds"), invio_id),
         )
     db.commit()
     valore = db.execute(
