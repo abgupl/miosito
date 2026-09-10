@@ -3,12 +3,15 @@ import asyncio
 import sqlite3
 import html
 import re
+import random
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from collections import deque
 
 import requests
 from bs4 import BeautifulSoup
+
+from amazon_client import get_items, search_items
 
 from telegram import (
     Update,
@@ -63,15 +66,36 @@ ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
 DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
 ROMA_TZ = ZoneInfo("Europe/Rome")
 
-AUTO_ORARI = 300
+AUTO_INTERVALLO, AUTO_FASCIA = range(300, 302)
 
 AUTO_CATEGORIE = {
-    "elettronica": ("📱 Elettronica", ["offerte elettronica", "accessori smartphone"]),
-    "informatica": ("💻 Informatica", ["offerte informatica", "accessori PC"]),
-    "casa": ("🏠 Casa e cucina", ["offerte casa e cucina", "elettrodomestici cucina"]),
-    "gaming": ("🎮 Gaming", ["offerte gaming", "accessori gaming"]),
-    "sport": ("🏋️ Sport", ["offerte sport fitness", "attrezzatura sportiva"]),
-    "persona": ("🧴 Cura personale", ["offerte cura della persona", "beauty offerte"]),
+    "elettronica": ("📱 Elettronica", ["offerte elettronica", "cuffie bluetooth", "dispositivi smart home"]),
+    "informatica": ("💻 Informatica", ["offerte informatica", "accessori PC", "computer e tablet"]),
+    "smartphone": ("📲 Smartphone", ["smartphone in offerta", "accessori smartphone", "caricabatterie powerbank"]),
+    "tvaudio": ("📺 TV e audio", ["smart TV in offerta", "soundbar altoparlanti", "cuffie auricolari"]),
+    "gaming": ("🎮 Gaming", ["offerte gaming", "accessori gaming", "videogiochi e console"]),
+    "casa": ("🏠 Casa e cucina", ["offerte casa e cucina", "accessori cucina", "pulizia casa"]),
+    "elettrodomestici": ("🔌 Elettrodomestici", ["piccoli elettrodomestici", "elettrodomestici cucina", "aspirapolvere in offerta"]),
+    "persona": ("🧴 Cura personale", ["cura della persona", "rasoi elettrici", "asciugacapelli piastre"]),
+    "bellezza": ("💄 Bellezza", ["prodotti bellezza", "skincare in offerta", "profumi e cosmetici"]),
+    "sport": ("🏋️ Sport", ["offerte sport fitness", "attrezzatura sportiva", "abbigliamento sportivo"]),
+    "faidate": ("🛠 Fai da te", ["offerte fai da te", "utensili elettrici", "attrezzi bricolage"]),
+    "giocattoli": ("🧸 Giochi e giocattoli", ["giocattoli in offerta", "giochi da tavolo", "LEGO in offerta"]),
+}
+
+AUTO_HASHTAG = {
+    "elettronica": "#Elettronica",
+    "informatica": "#Informatica",
+    "smartphone": "#Smartphone",
+    "tvaudio": "#TVeAudio",
+    "casa": "#CasaECucina",
+    "gaming": "#Gaming",
+    "elettrodomestici": "#Elettrodomestici",
+    "sport": "#Sport",
+    "persona": "#CuraPersonale",
+    "bellezza": "#Bellezza",
+    "faidate": "#FaiDaTe",
+    "giocattoli": "#GiochiEGiocattoli",
 }
 
 
@@ -693,6 +717,14 @@ async def avvia_programmazioni(app):
         controlla_recap(app)
     )
 
+    app.create_task(
+        controlla_invii_automatici(app)
+    )
+
+    app.create_task(
+        controlla_offerte_terminate(app)
+    )
+
 
 # =========================================================
 # SICUREZZA ADMIN
@@ -763,16 +795,41 @@ def inizializza_automazione():
             UNIQUE(slot_data, slot_ora)
         )
     """)
+    cur.execute("PRAGMA table_info(invii_automatici)")
+    colonne_invii = {riga[1] for riga in cur.fetchall()}
+    nuove_colonne = {
+        "telegram_message_id": "INTEGER",
+        "soglia_sconto": "INTEGER",
+        "verifiche_fallite": "INTEGER DEFAULT 0",
+        "terminata_il": "TEXT",
+        "deal_end_time": "TEXT",
+        "ultima_verifica": "TEXT",
+    }
+    for colonna, definizione in nuove_colonne.items():
+        if colonna not in colonne_invii:
+            cur.execute(f"ALTER TABLE invii_automatici ADD COLUMN {colonna} {definizione}")
     defaults = {
         "attiva": "0",
-        "post_giornalieri": "3",
-        "orari": "09:00,14:00,20:00",
+        "intervallo_minuti": "120",
+        "ora_inizio": "09:00",
+        "ora_fine": "21:00",
+        "prossimo_invio": "",
         "sconto_minimo": "20",
     }
     for chiave, valore in defaults.items():
         cur.execute(
             "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
             (chiave, valore),
+        )
+    versione = cur.execute(
+        "SELECT valore FROM configurazione_automatica WHERE chiave = 'versione_config'"
+    ).fetchone()
+    if not versione or versione[0] != "3":
+        cur.execute(
+            "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES ('attiva', '0')"
+        )
+        cur.execute(
+            "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES ('versione_config', '3')"
         )
     db.commit()
     db.close()
@@ -788,8 +845,10 @@ def leggi_config_automatica():
     db.close()
     return {
         "attiva": valori.get("attiva", "0") == "1",
-        "post_giornalieri": int(valori.get("post_giornalieri", "3")),
-        "orari": [x for x in valori.get("orari", "").split(",") if x],
+        "intervallo_minuti": int(valori.get("intervallo_minuti", "120")),
+        "ora_inizio": valori.get("ora_inizio", "09:00"),
+        "ora_fine": valori.get("ora_fine", "21:00"),
+        "prossimo_invio": valori.get("prossimo_invio", ""),
         "sconto_minimo": int(valori.get("sconto_minimo", "20")),
         "categorie": categorie,
     }
@@ -808,17 +867,21 @@ def salva_config_automatica(chiave, valore):
 def tastiera_automazione(configurazione):
     stato = "🟢 ATTIVA" if configurazione["attiva"] else "🔴 DISATTIVATA"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"Stato: {stato}", callback_data="auto_toggle")],
+        [InlineKeyboardButton(f"STATO: {stato}", callback_data="auto_toggle")],
         [InlineKeyboardButton(
-            f"📨 Post al giorno: {configurazione['post_giornalieri']}",
-            callback_data="auto_numero",
+            f"⏱ OGNI {configurazione['intervallo_minuti']} MINUTI",
+            callback_data="auto_intervallo",
         )],
-        [InlineKeyboardButton("🕒 Fasce orarie", callback_data="auto_orari")],
-        [InlineKeyboardButton("🗂 Categorie prodotti", callback_data="auto_categorie")],
         [InlineKeyboardButton(
-            f"📉 Sconto minimo: {configurazione['sconto_minimo']}%",
+            f"🕒 DALLE {configurazione['ora_inizio']} ALLE {configurazione['ora_fine']}",
+            callback_data="auto_fascia",
+        )],
+        [InlineKeyboardButton("🗂 CATEGORIE PRODOTTI", callback_data="auto_categorie")],
+        [InlineKeyboardButton(
+            f"📉 SCONTO MINIMO: {configurazione['sconto_minimo']}%",
             callback_data="auto_sconto",
         )],
+        [InlineKeyboardButton("🧪 TESTA RICERCA", callback_data="auto_test")],
         [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
     ])
 
@@ -828,10 +891,10 @@ def testo_automazione(configurazione):
     return (
         "🤖 INVIO AUTOMATICO\n\n"
         f"Stato: {'🟢 Attivo' if configurazione['attiva'] else '🔴 Disattivato'}\n"
-        f"Post giornalieri: {configurazione['post_giornalieri']}\n"
-        f"Orari: {', '.join(configurazione['orari']) or 'da impostare'}\n"
+        f"Intervallo: {configurazione['intervallo_minuti']} minuti\n"
+        f"Orario: {configurazione['ora_inizio']}–{configurazione['ora_fine']}\n"
         f"Sconto minimo: {configurazione['sconto_minimo']}%\n"
-        f"Categorie: {', '.join(categorie) or 'nessuna'}"
+        f"Categorie: {', '.join(categorie) if categorie else 'nessuna'}"
     )
 
 
@@ -858,7 +921,7 @@ async def mostra_categorie_automatiche(query):
         segno = "✅" if codice in selezionate else "▫️"
         tastiera.append([
             InlineKeyboardButton(
-                f"{segno} {etichetta}",
+                f"{segno} {etichetta.upper()}",
                 callback_data=f"auto_cat_{codice}",
             )
         ])
@@ -878,30 +941,39 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
     configurazione = leggi_config_automatica()
 
     if azione == "auto_toggle":
-        if not configurazione["attiva"]:
-            if not configurazione["categorie"]:
-                await query.message.reply_text("❌ Seleziona almeno una categoria.")
-                return
-            if len(configurazione["orari"]) != configurazione["post_giornalieri"]:
-                await query.message.reply_text("❌ Imposta un orario per ogni post giornaliero.")
-                return
-        salva_config_automatica("attiva", "0" if configurazione["attiva"] else "1")
-        return await aggiorna_menu_automazione(query)
+        if configurazione["attiva"]:
+            salva_config_automatica("attiva", 0)
+            salva_config_automatica("prossimo_invio", "")
+            return await aggiorna_menu_automazione(query)
 
-    if azione == "auto_numero":
-        tastiera = [
-            [InlineKeyboardButton(str(n), callback_data=f"auto_num_{n}") for n in range(1, 4)],
-            [InlineKeyboardButton(str(n), callback_data=f"auto_num_{n}") for n in range(4, 7)],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
-        ]
-        await query.edit_message_text("📨 Quanti post vuoi inviare ogni giorno?", reply_markup=InlineKeyboardMarkup(tastiera))
+        if not configurazione["categorie"]:
+            await query.message.reply_text("❌ Seleziona almeno una categoria.")
+            return
+
+        adesso = datetime.now(ROMA_TZ)
+        salva_config_automatica("attiva", 1)
+        configurazione = leggi_config_automatica()
+
+        if _dentro_fascia_automatica(configurazione, adesso):
+            prossimo = _calcola_prossimo_invio(configurazione, adesso)
+            salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"))
+            await aggiorna_menu_automazione(query)
+            await query.message.reply_text("🚀 Automazione attivata. Cerco subito la prima offerta…")
+            await esegui_slot_automatico(
+                context.application,
+                configurazione,
+                adesso.date().isoformat(),
+                adesso.strftime("%H:%M"),
+            )
+            return
+
+        prossimo = _prossimo_inizio_fascia(configurazione, adesso)
+        salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"))
+        await aggiorna_menu_automazione(query)
+        await query.message.reply_text(
+            f"✅ Automazione attivata. Il primo tentativo partirà alle {prossimo.strftime('%H:%M')}."
+        )
         return
-
-    if azione.startswith("auto_num_"):
-        numero = int(azione.rsplit("_", 1)[1])
-        salva_config_automatica("post_giornalieri", numero)
-        salva_config_automatica("attiva", 0)
-        return await aggiorna_menu_automazione(query)
 
     if azione == "auto_sconto":
         valori = (10, 15, 20, 25, 30, 40, 50)
@@ -915,6 +987,7 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if azione.startswith("auto_disc_"):
         salva_config_automatica("sconto_minimo", int(azione.rsplit("_", 1)[1]))
+        salva_config_automatica("attiva", 0)
         return await aggiorna_menu_automazione(query)
 
     if azione == "auto_categorie":
@@ -937,52 +1010,745 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
         return await mostra_categorie_automatiche(query)
 
 
-async def richiedi_orari_automatici(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def richiedi_intervallo_automatico(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
     query = update.callback_query
     await query.answer()
-    numero = leggi_config_automatica()["post_giornalieri"]
     await query.edit_message_text(
-        "🕒 FASCE ORARIE\n\n"
-        f"Scrivi {numero} orari, separati da una virgola.\n"
-        "Esempio: 09:00, 14:30, 20:00\n\n"
-        "Gli orari devono essere distanti almeno 29 minuti."
+        "⏱ Intervallo tra i post\n\n"
+        "Scrivi quanti minuti devono passare tra un post e l’altro.\n\n"
+        "Esempio: 120\n\n"
+        "Il minimo consentito è 29 minuti."
     )
-    return AUTO_ORARI
+    return AUTO_INTERVALLO
 
 
-async def ricevi_orari_automatici(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ricevi_intervallo_automatico(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
-    configurazione = leggi_config_automatica()
-    orari = [x.strip() for x in update.message.text.split(",") if x.strip()]
-    if len(orari) != configurazione["post_giornalieri"]:
-        await update.message.reply_text(
-            f"❌ Devi inserire esattamente {configurazione['post_giornalieri']} orari. Riprova."
-        )
-        return AUTO_ORARI
-    minuti = []
     try:
-        for valore in orari:
-            ora = datetime.strptime(valore, "%H:%M")
-            minuti.append(ora.hour * 60 + ora.minute)
+        minuti = int(update.message.text.strip())
     except ValueError:
-        await update.message.reply_text("❌ Usa il formato HH:MM, per esempio 09:00, 14:30, 20:00.")
-        return AUTO_ORARI
-    minuti.sort()
-    if any(b - a < 29 for a, b in zip(minuti, minuti[1:])):
-        await update.message.reply_text("❌ Gli orari devono essere distanti almeno 29 minuti.")
-        return AUTO_ORARI
-    orari_ordinati = [f"{m // 60:02d}:{m % 60:02d}" for m in minuti]
-    salva_config_automatica("orari", ",".join(orari_ordinati))
+        await update.message.reply_text("❌ Scrivi soltanto il numero dei minuti, per esempio 120.")
+        return AUTO_INTERVALLO
+    if minuti < 29 or minuti > 1440:
+        await update.message.reply_text("❌ Inserisci un valore tra 29 e 1440 minuti.")
+        return AUTO_INTERVALLO
+    salva_config_automatica("intervallo_minuti", minuti)
     salva_config_automatica("attiva", 0)
     configurazione = leggi_config_automatica()
     await update.message.reply_text(
-        "✅ Fasce orarie salvate. L’automazione resta disattivata finché non la riattivi.",
+        f"✅ Intervallo salvato: {minuti} minuti.\n\n"
+        "L’automazione resta disattivata finché non la riattivi.",
         reply_markup=tastiera_automazione(configurazione),
     )
     return ConversationHandler.END
+
+
+async def richiedi_fascia_automatica(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "🕒 Orario di attività\n\n"
+        "Scrivi l’orario di inizio e quello di fine separati da un trattino.\n\n"
+        "Esempio: 09:00-21:00\n\n"
+        "Alle 21:00 il bot si fermerà."
+    )
+    return AUTO_FASCIA
+
+
+async def ricevi_fascia_automatica(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    testo = update.message.text.strip().replace("–", "-").replace("—", "-")
+    parti = [x.strip() for x in testo.split("-")]
+    if len(parti) != 2:
+        await update.message.reply_text("❌ Usa il formato 09:00-21:00.")
+        return AUTO_FASCIA
+    try:
+        inizio = datetime.strptime(parti[0], "%H:%M")
+        fine = datetime.strptime(parti[1], "%H:%M")
+    except ValueError:
+        await update.message.reply_text("❌ Orario non corretto. Usa il formato 09:00-21:00.")
+        return AUTO_FASCIA
+    inizio_minuti = inizio.hour * 60 + inizio.minute
+    fine_minuti = fine.hour * 60 + fine.minute
+    if fine_minuti <= inizio_minuti:
+        await update.message.reply_text("❌ L’orario finale deve essere successivo a quello iniziale.")
+        return AUTO_FASCIA
+    ora_inizio = inizio.strftime("%H:%M")
+    ora_fine = fine.strftime("%H:%M")
+    salva_config_automatica("ora_inizio", ora_inizio)
+    salva_config_automatica("ora_fine", ora_fine)
+    salva_config_automatica("attiva", 0)
+    configurazione = leggi_config_automatica()
+    await update.message.reply_text(
+        f"✅ Orario salvato: dalle {ora_inizio} alle {ora_fine}.\n\n"
+        f"Alle {ora_fine} il bot si fermerà.",
+        reply_markup=tastiera_automazione(configurazione),
+    )
+    return ConversationHandler.END
+
+
+def estrai_prodotto_creators(item):
+    """Converte un Item delle Creators API nel formato usato dal bot."""
+    try:
+        titolo = item.item_info.title.display_value
+        immagine = item.images.primary.large.url
+        link = item.detail_page_url
+        asin = item.asin
+
+        offerte = item.offers_v2.listings
+        if not offerte:
+            return None
+
+        offerta = offerte[0]
+        prezzo_api = offerta.price
+        denaro = prezzo_api.money
+        if not denaro or denaro.amount is None:
+            return None
+
+        prezzo_valore = float(denaro.amount)
+        prezzo = denaro.display_amount or f"{prezzo_valore:.2f} €"
+        vecchio_prezzo = None
+        vecchio_valore = None
+
+        base = prezzo_api.saving_basis
+        if base and base.money and base.money.amount is not None:
+            vecchio_valore = float(base.money.amount)
+            vecchio_prezzo = base.money.display_amount or f"{vecchio_valore:.2f} €"
+
+        sconto = 0
+        if prezzo_api.savings and prezzo_api.savings.percentage is not None:
+            sconto = round(float(prezzo_api.savings.percentage))
+        elif vecchio_valore and vecchio_valore > prezzo_valore:
+            sconto = round((1 - prezzo_valore / vecchio_valore) * 100)
+
+        if not all((titolo, immagine, link, asin)):
+            return None
+
+        venditore = None
+        if offerta.merchant_info and offerta.merchant_info.name:
+            venditore = offerta.merchant_info.name.strip()
+
+        deal_end_time = None
+        if offerta.deal_details and offerta.deal_details.end_time:
+            deal_end_time = offerta.deal_details.end_time
+
+        return {
+            "asin": asin,
+            "nome": titolo,
+            "prezzo": prezzo,
+            "prezzo_valore": prezzo_valore,
+            "vecchio_prezzo": vecchio_prezzo,
+            "vecchio_valore": vecchio_valore,
+            "sconto": sconto,
+            "immagine": immagine,
+            "link": link,
+            "venditore": venditore,
+            "deal_end_time": deal_end_time,
+        }
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return None
+
+
+def riga_venditore_categoria(prodotto, categoria):
+    hashtag = AUTO_HASHTAG.get(categoria, "#OfferteAmazon")
+    venditore = prodotto.get("venditore")
+    if venditore and "amazon" in venditore.lower():
+        return f"Venduto e spedito da <i>Amazon</i> - Categoria: {hashtag}"
+    return f"Categoria: {hashtag}"
+
+
+async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    configurazione = leggi_config_automatica()
+    if not configurazione["categorie"]:
+        await query.message.reply_text("❌ Prima seleziona almeno una categoria.")
+        return
+
+    categoria = random.choice(configurazione["categorie"])
+    etichetta, termini = AUTO_CATEGORIE[categoria]
+    termine = random.choice(termini)
+    attesa = await query.message.reply_text(
+        f"🔎 Cerco una prova in {etichetta}…\n"
+        f"Sconto minimo richiesto: {configurazione['sconto_minimo']}%"
+    )
+
+    try:
+        items = await asyncio.to_thread(search_items, termine, "All", 10)
+        prodotti = []
+        for item in items:
+            prodotto = estrai_prodotto_creators(item)
+            if prodotto and prodotto["sconto"] >= configurazione["sconto_minimo"]:
+                prodotti.append(prodotto)
+
+        if not prodotti:
+            await attesa.edit_text(
+                "ℹ️ Collegamento riuscito, ma la ricerca non ha trovato prodotti "
+                f"con almeno il {configurazione['sconto_minimo']}% di sconto.\n\n"
+                "Nessun post è stato pubblicato."
+            )
+            return
+
+        prodotto = max(prodotti, key=lambda x: x["sconto"])
+        prodotto["categoria"] = categoria
+        await attesa.delete()
+        tipo_offerta = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
+        vecchio = (
+            f"\n❌ Prima: <s>{html.escape(prodotto['vecchio_prezzo'])}</s>"
+            if prodotto["vecchio_prezzo"] else ""
+        )
+        testo = (
+            f"🧪 <b>ANTEPRIMA TEST — {tipo_offerta}</b>\n\n"
+            f"🛒 {html.escape(prodotto['nome'])}\n\n"
+            f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
+            f"{vecchio}\n"
+            f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
+            f"{riga_venditore_categoria(prodotto, categoria)}\n\n"
+            f"👉 <a href=\"{html.escape(prodotto['link'], quote=True)}\">Link affiliato all’offerta</a>\n\n"
+            "Anteprima non pubblicata"
+        )
+        tastiera = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🛒 APRI", url=prodotto["link"]),
+        ]])
+        await query.message.reply_photo(
+            photo=prodotto["immagine"],
+            caption=testo,
+            parse_mode="HTML",
+            reply_markup=tastiera,
+        )
+    except Exception as errore:
+        print(f"Errore test Creators API: {errore}")
+        await attesa.edit_text(
+            "❌ Il test delle Creator API non è riuscito.\n\n"
+            f"Dettaglio tecnico: {html.escape(str(errore))[:900]}\n\n"
+            "Nessun post è stato pubblicato.",
+            parse_mode="HTML",
+        )
+
+
+# =========================================================
+# INVIO AUTOMATICO - MOTORE
+# =========================================================
+
+def _slot_automatico_gia_gestito(data_slot, ora_slot):
+    db = sqlite3.connect(DB_PATH)
+    riga = db.execute(
+        "SELECT stato FROM invii_automatici WHERE slot_data = ? AND slot_ora = ?",
+        (data_slot, ora_slot),
+    ).fetchone()
+    db.close()
+    return bool(riga)
+
+
+def _prenota_slot_automatico(data_slot, ora_slot, categoria):
+    db = sqlite3.connect(DB_PATH)
+    try:
+        db.execute(
+            """
+            INSERT INTO invii_automatici (
+                categoria, slot_data, slot_ora, stato, creato_il
+            ) VALUES (?, ?, ?, 'ricerca', ?)
+            """,
+            (
+                categoria,
+                data_slot,
+                ora_slot,
+                datetime.now(ROMA_TZ).isoformat(timespec="seconds"),
+            ),
+        )
+        db.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        db.close()
+
+
+def _aggiorna_slot_automatico(
+    data_slot,
+    ora_slot,
+    stato,
+    prodotto=None,
+    telegram_message_id=None,
+    soglia_sconto=None,
+    deal_end_time=None,
+):
+    prodotto = prodotto or {}
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        """
+        UPDATE invii_automatici
+        SET stato = ?, asin = ?, nome = ?, link = ?, sconto = ?,
+            telegram_message_id = COALESCE(?, telegram_message_id),
+            soglia_sconto = COALESCE(?, soglia_sconto),
+            deal_end_time = COALESCE(?, deal_end_time),
+            ultima_verifica = CASE
+                WHEN ? = 'pubblicata' THEN COALESCE(ultima_verifica, ?)
+                ELSE ultima_verifica
+            END
+        WHERE slot_data = ? AND slot_ora = ?
+        """,
+        (
+            stato,
+            prodotto.get("asin"),
+            prodotto.get("nome"),
+            prodotto.get("link"),
+            prodotto.get("sconto"),
+            telegram_message_id,
+            soglia_sconto,
+            deal_end_time,
+            stato,
+            datetime.now(ROMA_TZ).isoformat(timespec="seconds"),
+            data_slot,
+            ora_slot,
+        ),
+    )
+    db.commit()
+    db.close()
+
+
+def _asin_gia_pubblicato(asin):
+    if not asin:
+        return True
+    db = sqlite3.connect(DB_PATH)
+    riga = db.execute(
+        "SELECT 1 FROM invii_automatici WHERE asin = ? AND stato = 'pubblicata' LIMIT 1",
+        (asin,),
+    ).fetchone()
+    db.close()
+    return bool(riga)
+
+
+def _numero_slot_del_giorno(data_slot):
+    db = sqlite3.connect(DB_PATH)
+    numero = db.execute(
+        "SELECT COUNT(*) FROM invii_automatici WHERE slot_data = ?",
+        (data_slot,),
+    ).fetchone()[0]
+    db.close()
+    return numero
+
+
+def _prezzo_italiano(valore):
+    return f"{float(valore):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+async def _notifica_admin_automazione(bot, testo):
+    if not ADMIN_ID:
+        return
+    try:
+        await bot.send_message(chat_id=ADMIN_ID, text=testo)
+    except Exception as errore:
+        print(f"Errore notifica automazione: {errore}")
+
+
+async def cerca_offerta_automatica(configurazione, categoria_iniziale):
+    categorie = list(configurazione["categorie"])
+    if categoria_iniziale in categorie:
+        indice = categorie.index(categoria_iniziale)
+        categorie = categorie[indice:] + categorie[:indice]
+
+    tentativi = []
+    for numero in range(3):
+        categoria = categorie[numero % len(categorie)]
+        termini = AUTO_CATEGORIE[categoria][1]
+        termine = termini[numero % len(termini)]
+        tentativi.append((categoria, termine))
+
+    candidati = []
+    for numero, (categoria, termine) in enumerate(tentativi, start=1):
+        print(f"Ricerca automatica {numero}/3: {categoria} - {termine}")
+        try:
+            items = await asyncio.to_thread(search_items, termine, "All", 10)
+            for item in items:
+                prodotto = estrai_prodotto_creators(item)
+                if not prodotto:
+                    continue
+                if prodotto["sconto"] < configurazione["sconto_minimo"]:
+                    continue
+                if _asin_gia_pubblicato(prodotto["asin"]):
+                    continue
+                prodotto["categoria"] = categoria
+                candidati.append(prodotto)
+        except Exception as errore:
+            print(f"Errore tentativo automatico {numero}: {errore}")
+        if numero < len(tentativi):
+            await asyncio.sleep(1.2)
+
+    if not candidati:
+        return None
+    candidati.sort(key=lambda x: (x["sconto"], -x["prezzo_valore"]), reverse=True)
+    return candidati[0]
+
+
+async def pubblica_offerta_automatica(bot, prodotto):
+    nome = prodotto["nome"]
+    prezzo_numero = _prezzo_italiano(prodotto["prezzo_valore"])
+    vecchio_numero = None
+    if prodotto["vecchio_prezzo"]:
+        base = prodotto.get("vecchio_valore")
+        if base is not None:
+            vecchio_numero = _prezzo_italiano(base)
+
+    prima = (
+        f"\n❌ Prima: <s>{html.escape(prodotto['vecchio_prezzo'])}</s>"
+        if prodotto["vecchio_prezzo"] else ""
+    )
+    tipo_offerta = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
+    link_html = html.escape(prodotto["link"], quote=True)
+    riga_venditore = riga_venditore_categoria(prodotto, prodotto.get("categoria"))
+    messaggio = (
+        f"<b>{tipo_offerta}</b>\n\n"
+        f"🛒 {html.escape(nome)}\n\n"
+        f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
+        f"{prima}\n"
+        f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
+        f"{riga_venditore}\n\n"
+        f"👉 <a href=\"{link_html}\">Link affiliato all’offerta</a>\n\n"
+        "⚡ Prezzo e disponibilità possono variare.\n\n"
+        "Meno offerte. Più affari."
+    )
+    tastiera = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
+        InlineKeyboardButton("🛒 APRI", url=prodotto["link"]),
+    ]])
+    messaggio_telegram = await bot.send_photo(
+        chat_id=CHANNEL_ID,
+        photo=prodotto["immagine"],
+        caption=messaggio,
+        parse_mode="HTML",
+        reply_markup=tastiera,
+    )
+    ultime_offerte.appendleft({
+        "nome": nome,
+        "link": prodotto["link"],
+        "prezzo": prezzo_numero,
+    })
+    salva_offerta_recap(
+        nome,
+        prodotto["link"],
+        prezzo_numero,
+        vecchio_numero or "NO",
+        messaggio=messaggio,
+        foto_file_id=prodotto["immagine"],
+        template="automatico",
+    )
+    return messaggio_telegram.message_id
+
+
+async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
+    categorie = configurazione["categorie"]
+    if not categorie:
+        return
+    indice = _numero_slot_del_giorno(data_slot) % len(categorie)
+    categoria = categorie[indice]
+    if not _prenota_slot_automatico(data_slot, ora_slot, categoria):
+        return
+
+    try:
+        if minuti_rimanenti_prima_del_prossimo_invio() > 0:
+            _aggiorna_slot_automatico(data_slot, ora_slot, "saltata_distanza")
+            await _notifica_admin_automazione(
+                app.bot,
+                f"⏭ Invio automatico delle {ora_slot} saltato: troppo vicino a un altro post.",
+            )
+            return
+
+        prodotto = await cerca_offerta_automatica(configurazione, categoria)
+        if not prodotto:
+            _aggiorna_slot_automatico(data_slot, ora_slot, "nessuna_offerta")
+            await _notifica_admin_automazione(
+                app.bot,
+                f"ℹ️ Alle {ora_slot} non ho trovato offerte nuove con almeno "
+                f"il {configurazione['sconto_minimo']}% di sconto dopo 3 tentativi.",
+            )
+            return
+
+        message_id = await pubblica_offerta_automatica(app.bot, prodotto)
+        _aggiorna_slot_automatico(
+            data_slot,
+            ora_slot,
+            "pubblicata",
+            prodotto,
+            telegram_message_id=message_id,
+            soglia_sconto=configurazione["sconto_minimo"],
+            deal_end_time=prodotto.get("deal_end_time"),
+        )
+        await _notifica_admin_automazione(
+            app.bot,
+            f"✅ Offerta automatica pubblicata alle {ora_slot}:\n"
+            f"{prodotto['nome']}\nSconto: -{prodotto['sconto']}%",
+        )
+    except Exception as errore:
+        _aggiorna_slot_automatico(data_slot, ora_slot, "errore")
+        print(f"Errore invio automatico: {errore}")
+        await _notifica_admin_automazione(
+            app.bot,
+            f"❌ Errore invio automatico delle {ora_slot}:\n{str(errore)[:700]}",
+        )
+
+
+def _limiti_fascia_automatica(configurazione, giorno):
+    inizio_ora = datetime.strptime(configurazione["ora_inizio"], "%H:%M").time()
+    fine_ora = datetime.strptime(configurazione["ora_fine"], "%H:%M").time()
+    return (
+        datetime.combine(giorno, inizio_ora, tzinfo=ROMA_TZ),
+        datetime.combine(giorno, fine_ora, tzinfo=ROMA_TZ),
+    )
+
+
+def _dentro_fascia_automatica(configurazione, adesso):
+    inizio, fine = _limiti_fascia_automatica(configurazione, adesso.date())
+    return inizio <= adesso < fine
+
+
+def _prossimo_inizio_fascia(configurazione, adesso):
+    inizio, fine = _limiti_fascia_automatica(configurazione, adesso.date())
+    if adesso < inizio:
+        return inizio
+    if adesso >= fine:
+        domani = adesso.date() + timedelta(days=1)
+        return _limiti_fascia_automatica(configurazione, domani)[0]
+    return adesso
+
+
+def _calcola_prossimo_invio(configurazione, riferimento):
+    candidato = riferimento + timedelta(minutes=configurazione["intervallo_minuti"])
+    _, fine = _limiti_fascia_automatica(configurazione, riferimento.date())
+    if candidato < fine:
+        return candidato
+    domani = riferimento.date() + timedelta(days=1)
+    return _limiti_fascia_automatica(configurazione, domani)[0]
+
+
+async def controlla_invii_automatici(app):
+    while True:
+        try:
+            configurazione = leggi_config_automatica()
+            if configurazione["attiva"]:
+                adesso = datetime.now(ROMA_TZ)
+                prossimo_testo = configurazione.get("prossimo_invio")
+                prossimo = None
+                if prossimo_testo:
+                    try:
+                        prossimo = datetime.fromisoformat(prossimo_testo)
+                        if prossimo.tzinfo is None:
+                            prossimo = prossimo.replace(tzinfo=ROMA_TZ)
+                        else:
+                            prossimo = prossimo.astimezone(ROMA_TZ)
+                    except ValueError:
+                        prossimo = None
+
+                if prossimo is None:
+                    prossimo = _prossimo_inizio_fascia(configurazione, adesso)
+                    salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"))
+
+                if adesso >= prossimo:
+                    if not _dentro_fascia_automatica(configurazione, adesso):
+                        prossimo = _prossimo_inizio_fascia(configurazione, adesso)
+                        salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"))
+                    else:
+                        successivo = _calcola_prossimo_invio(configurazione, adesso)
+                        salva_config_automatica("prossimo_invio", successivo.isoformat(timespec="seconds"))
+                        data_slot = adesso.date().isoformat()
+                        ora_slot = adesso.strftime("%H:%M")
+                        if not _slot_automatico_gia_gestito(data_slot, ora_slot):
+                            await esegui_slot_automatico(
+                                app,
+                                configurazione,
+                                data_slot,
+                                ora_slot,
+                            )
+        except Exception as errore:
+            print(f"Errore controllo automazione: {errore}")
+        await asyncio.sleep(20)
+
+
+# =========================================================
+# CONTROLLO OFFERTE TERMINATE
+# =========================================================
+
+def _offerte_da_verificare():
+    adesso = datetime.now(ROMA_TZ)
+    limite = adesso - timedelta(days=7)
+    db = sqlite3.connect(DB_PATH)
+    righe = db.execute(
+        """
+        SELECT id, asin, nome, categoria, telegram_message_id,
+               COALESCE(soglia_sconto, 0), COALESCE(verifiche_fallite, 0),
+               creato_il, deal_end_time, ultima_verifica
+        FROM invii_automatici
+        WHERE stato = 'pubblicata'
+          AND telegram_message_id IS NOT NULL
+          AND creato_il >= ?
+        ORDER BY creato_il DESC
+        """,
+        (limite.isoformat(timespec="seconds"),),
+    ).fetchall()
+    db.close()
+    da_verificare = []
+    for riga in righe:
+        creato_il = _data_api(riga[7])
+        fine_offerta = _data_api(riga[8])
+        ultima_verifica = _data_api(riga[9]) or creato_il
+        if not creato_il:
+            continue
+
+        eta = adesso - creato_il
+        fallimenti = riga[6]
+        if fallimenti > 0:
+            intervallo = timedelta(minutes=30)
+        elif fine_offerta and adesso < fine_offerta:
+            continue
+        elif fine_offerta:
+            intervallo = timedelta(hours=2)
+        elif eta <= timedelta(hours=24):
+            intervallo = timedelta(hours=2)
+        elif eta <= timedelta(hours=72):
+            intervallo = timedelta(hours=6)
+        else:
+            intervallo = timedelta(hours=24)
+
+        if not ultima_verifica or adesso - ultima_verifica >= intervallo:
+            da_verificare.append(riga[:7])
+    return da_verificare
+
+
+def _data_api(valore):
+    if not valore:
+        return None
+    try:
+        testo = str(valore).strip().replace("Z", "+00:00")
+        data = datetime.fromisoformat(testo)
+        if data.tzinfo is None:
+            data = data.replace(tzinfo=ROMA_TZ)
+        return data.astimezone(ROMA_TZ)
+    except (TypeError, ValueError):
+        return None
+
+
+def _aggiorna_verifica_offerta(invio_id, fallita):
+    db = sqlite3.connect(DB_PATH)
+    if fallita:
+        db.execute(
+            """
+            UPDATE invii_automatici
+            SET verifiche_fallite = COALESCE(verifiche_fallite, 0) + 1,
+                ultima_verifica = ?
+            WHERE id = ?
+            """,
+            (datetime.now(ROMA_TZ).isoformat(timespec="seconds"), invio_id),
+        )
+    else:
+        db.execute(
+            """
+            UPDATE invii_automatici
+            SET verifiche_fallite = 0, ultima_verifica = ?
+            WHERE id = ?
+            """,
+            (datetime.now(ROMA_TZ).isoformat(timespec="seconds"), invio_id),
+        )
+    db.commit()
+    valore = db.execute(
+        "SELECT COALESCE(verifiche_fallite, 0) FROM invii_automatici WHERE id = ?",
+        (invio_id,),
+    ).fetchone()
+    db.close()
+    return valore[0] if valore else 0
+
+
+def _segna_offerta_terminata(invio_id):
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        """
+        UPDATE invii_automatici
+        SET stato = 'terminata', terminata_il = ?
+        WHERE id = ?
+        """,
+        (datetime.now(ROMA_TZ).isoformat(timespec="seconds"), invio_id),
+    )
+    db.commit()
+    db.close()
+
+
+async def _modifica_post_terminato(bot, invio_id, nome, categoria, message_id):
+    hashtag = AUTO_HASHTAG.get(categoria, "#OfferteAmazon")
+    didascalia = (
+        "⛔ <b>OFFERTA TERMINATA</b>\n\n"
+        f"🛒 {html.escape(nome)}\n\n"
+        "Questa promozione non risulta più disponibile.\n\n"
+        f"Categoria: {hashtag}\n\n"
+        "Continua a seguirci per le prossime offerte.\n\n"
+        "Meno offerte. Più affari."
+    )
+    await bot.edit_message_caption(
+        chat_id=CHANNEL_ID,
+        message_id=message_id,
+        caption=didascalia,
+        parse_mode="HTML",
+    )
+    await bot.edit_message_reply_markup(
+        chat_id=CHANNEL_ID,
+        message_id=message_id,
+        reply_markup=None,
+    )
+    _segna_offerta_terminata(invio_id)
+
+
+async def controlla_offerte_terminate(app):
+    while True:
+        try:
+            offerte = _offerte_da_verificare()
+            for posizione in range(0, len(offerte), 10):
+                gruppo = offerte[posizione:posizione + 10]
+                asins = [riga[1] for riga in gruppo if riga[1]]
+                if not asins:
+                    continue
+                try:
+                    items = await asyncio.to_thread(get_items, asins)
+                except Exception as errore:
+                    print(f"Errore verifica disponibilità Creator API: {errore}")
+                    continue
+
+                prodotti = {}
+                for item in items:
+                    asin = getattr(item, "asin", None)
+                    if asin:
+                        prodotti[asin] = estrai_prodotto_creators(item)
+
+                for invio_id, asin, nome, categoria, message_id, soglia, _ in gruppo:
+                    prodotto = prodotti.get(asin)
+                    non_valida = not prodotto or prodotto["sconto"] < soglia
+                    fallimenti = _aggiorna_verifica_offerta(invio_id, non_valida)
+                    if non_valida and fallimenti >= 2:
+                        try:
+                            await _modifica_post_terminato(
+                                app.bot,
+                                invio_id,
+                                nome,
+                                categoria,
+                                message_id,
+                            )
+                            await _notifica_admin_automazione(
+                                app.bot,
+                                f"⛔ Offerta terminata aggiornata nel canale:\n{nome}",
+                            )
+                        except Exception as errore:
+                            print(f"Errore modifica post terminato: {errore}")
+
+                await asyncio.sleep(1.2)
+        except Exception as errore:
+            print(f"Errore controllo offerte terminate: {errore}")
+
+        await asyncio.sleep(1800)
 
 
 # =========================================================
@@ -5399,17 +6165,27 @@ def main():
     configurazione_automatica = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(
-                richiedi_orari_automatici,
-                pattern="^auto_orari$",
-            )
+                richiedi_intervallo_automatico,
+                pattern="^auto_intervallo$",
+            ),
+            CallbackQueryHandler(
+                richiedi_fascia_automatica,
+                pattern="^auto_fascia$",
+            ),
         ],
         states={
-            AUTO_ORARI: [
+            AUTO_INTERVALLO: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    ricevi_orari_automatici,
+                    ricevi_intervallo_automatico,
                 )
-            ]
+            ],
+            AUTO_FASCIA: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    ricevi_fascia_automatica,
+                )
+            ],
         },
         fallbacks=[CommandHandler("annulla", annulla)],
         allow_reentry=True,
@@ -5427,7 +6203,14 @@ def main():
     app.add_handler(
         CallbackQueryHandler(
             gestisci_automazione,
-            pattern=r"^(auto_toggle|auto_numero|auto_num_[1-6]|auto_sconto|auto_disc_[0-9]+|auto_categorie|auto_cat_[a-z]+)$",
+            pattern=r"^(auto_toggle|auto_sconto|auto_disc_[0-9]+|auto_categorie|auto_cat_[a-z]+)$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            testa_ricerca_automatica,
+            pattern="^auto_test$",
         )
     )
 
