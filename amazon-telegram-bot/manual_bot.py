@@ -3,12 +3,15 @@ import asyncio
 import sqlite3
 import html
 import re
+import random
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from collections import deque
 
 import requests
 from bs4 import BeautifulSoup
+
+from amazon_client import search_items
 
 from telegram import (
     Update,
@@ -819,6 +822,7 @@ def tastiera_automazione(configurazione):
             f"📉 Sconto minimo: {configurazione['sconto_minimo']}%",
             callback_data="auto_sconto",
         )],
+        [InlineKeyboardButton("🧪 TESTA RICERCA", callback_data="auto_test")],
         [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
     ])
 
@@ -983,6 +987,123 @@ async def ricevi_orari_automatici(update: Update, context: ContextTypes.DEFAULT_
         reply_markup=tastiera_automazione(configurazione),
     )
     return ConversationHandler.END
+
+
+def estrai_prodotto_creators(item):
+    """Converte un Item delle Creators API nel formato usato dal bot."""
+    try:
+        titolo = item.item_info.title.display_value
+        immagine = item.images.primary.large.url
+        link = item.detail_page_url
+        asin = item.asin
+
+        offerte = item.offers_v2.listings
+        if not offerte:
+            return None
+
+        prezzo_api = offerte[0].price
+        denaro = prezzo_api.money
+        if not denaro or denaro.amount is None:
+            return None
+
+        prezzo_valore = float(denaro.amount)
+        prezzo = denaro.display_amount or f"{prezzo_valore:.2f} €"
+        vecchio_prezzo = None
+        vecchio_valore = None
+
+        base = prezzo_api.saving_basis
+        if base and base.money and base.money.amount is not None:
+            vecchio_valore = float(base.money.amount)
+            vecchio_prezzo = base.money.display_amount or f"{vecchio_valore:.2f} €"
+
+        sconto = 0
+        if prezzo_api.savings and prezzo_api.savings.percentage is not None:
+            sconto = round(float(prezzo_api.savings.percentage))
+        elif vecchio_valore and vecchio_valore > prezzo_valore:
+            sconto = round((1 - prezzo_valore / vecchio_valore) * 100)
+
+        if not all((titolo, immagine, link, asin)):
+            return None
+
+        return {
+            "asin": asin,
+            "nome": titolo,
+            "prezzo": prezzo,
+            "prezzo_valore": prezzo_valore,
+            "vecchio_prezzo": vecchio_prezzo,
+            "sconto": sconto,
+            "immagine": immagine,
+            "link": link,
+        }
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return None
+
+
+async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    configurazione = leggi_config_automatica()
+    if not configurazione["categorie"]:
+        await query.message.reply_text("❌ Prima seleziona almeno una categoria.")
+        return
+
+    categoria = random.choice(configurazione["categorie"])
+    etichetta, termini = AUTO_CATEGORIE[categoria]
+    termine = random.choice(termini)
+    attesa = await query.message.reply_text(
+        f"🔎 Cerco una prova in {etichetta}…\n"
+        f"Sconto minimo richiesto: {configurazione['sconto_minimo']}%"
+    )
+
+    try:
+        items = await asyncio.to_thread(search_items, termine, "All", 10)
+        prodotti = []
+        for item in items:
+            prodotto = estrai_prodotto_creators(item)
+            if prodotto and prodotto["sconto"] >= configurazione["sconto_minimo"]:
+                prodotti.append(prodotto)
+
+        if not prodotti:
+            await attesa.edit_text(
+                "ℹ️ Collegamento riuscito, ma la ricerca non ha trovato prodotti "
+                f"con almeno il {configurazione['sconto_minimo']}% di sconto.\n\n"
+                "Nessun post è stato pubblicato."
+            )
+            return
+
+        prodotto = max(prodotti, key=lambda x: x["sconto"])
+        await attesa.delete()
+        vecchio = (
+            f"\n❌ Prima: <s>{html.escape(prodotto['vecchio_prezzo'])}</s>"
+            if prodotto["vecchio_prezzo"] else ""
+        )
+        testo = (
+            "🧪 <b>ANTEPRIMA TEST — NON PUBBLICATA</b>\n\n"
+            f"🛒 <b>{html.escape(prodotto['nome'])}</b>\n"
+            f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
+            f"{vecchio}\n"
+            f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
+            f"Categoria: {html.escape(etichetta)}"
+        )
+        tastiera = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🛒 APRI", url=prodotto["link"]),
+        ]])
+        await query.message.reply_photo(
+            photo=prodotto["immagine"],
+            caption=testo,
+            parse_mode="HTML",
+            reply_markup=tastiera,
+        )
+    except Exception as errore:
+        print(f"Errore test Creators API: {errore}")
+        await attesa.edit_text(
+            "❌ Il test delle Creator API non è riuscito.\n\n"
+            f"Dettaglio tecnico: {html.escape(str(errore))[:900]}\n\n"
+            "Nessun post è stato pubblicato.",
+            parse_mode="HTML",
+        )
 
 
 # =========================================================
@@ -5428,6 +5549,13 @@ def main():
         CallbackQueryHandler(
             gestisci_automazione,
             pattern=r"^(auto_toggle|auto_numero|auto_num_[1-6]|auto_sconto|auto_disc_[0-9]+|auto_categorie|auto_cat_[a-z]+)$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            testa_ricerca_automatica,
+            pattern="^auto_test$",
         )
     )
 
