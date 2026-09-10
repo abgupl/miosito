@@ -63,6 +63,17 @@ ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
 DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
 ROMA_TZ = ZoneInfo("Europe/Rome")
 
+AUTO_ORARI = 300
+
+AUTO_CATEGORIE = {
+    "elettronica": ("📱 Elettronica", ["offerte elettronica", "accessori smartphone"]),
+    "informatica": ("💻 Informatica", ["offerte informatica", "accessori PC"]),
+    "casa": ("🏠 Casa e cucina", ["offerte casa e cucina", "elettrodomestici cucina"]),
+    "gaming": ("🎮 Gaming", ["offerte gaming", "accessori gaming"]),
+    "sport": ("🏋️ Sport", ["offerte sport fitness", "attrezzatura sportiva"]),
+    "persona": ("🧴 Cura personale", ["offerte cura della persona", "beauty offerte"]),
+}
+
 
 (
     LINK,
@@ -720,6 +731,261 @@ async def controlla_autorizzazione(update: Update):
 
 
 # =========================================================
+# INVIO AUTOMATICO - CONFIGURAZIONE
+# =========================================================
+
+def inizializza_automazione():
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS configurazione_automatica (
+            chiave TEXT PRIMARY KEY,
+            valore TEXT NOT NULL
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS categorie_automatiche (
+            categoria TEXT PRIMARY KEY
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS invii_automatici (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asin TEXT,
+            nome TEXT,
+            link TEXT,
+            categoria TEXT,
+            sconto INTEGER,
+            slot_data TEXT NOT NULL,
+            slot_ora TEXT NOT NULL,
+            stato TEXT NOT NULL,
+            creato_il TEXT NOT NULL,
+            UNIQUE(slot_data, slot_ora)
+        )
+    """)
+    defaults = {
+        "attiva": "0",
+        "post_giornalieri": "3",
+        "orari": "09:00,14:00,20:00",
+        "sconto_minimo": "20",
+    }
+    for chiave, valore in defaults.items():
+        cur.execute(
+            "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
+            (chiave, valore),
+        )
+    db.commit()
+    db.close()
+
+
+def leggi_config_automatica():
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+    cur.execute("SELECT chiave, valore FROM configurazione_automatica")
+    valori = dict(cur.fetchall())
+    cur.execute("SELECT categoria FROM categorie_automatiche ORDER BY categoria")
+    categorie = [riga[0] for riga in cur.fetchall()]
+    db.close()
+    return {
+        "attiva": valori.get("attiva", "0") == "1",
+        "post_giornalieri": int(valori.get("post_giornalieri", "3")),
+        "orari": [x for x in valori.get("orari", "").split(",") if x],
+        "sconto_minimo": int(valori.get("sconto_minimo", "20")),
+        "categorie": categorie,
+    }
+
+
+def salva_config_automatica(chiave, valore):
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
+        (chiave, str(valore)),
+    )
+    db.commit()
+    db.close()
+
+
+def tastiera_automazione(configurazione):
+    stato = "🟢 ATTIVA" if configurazione["attiva"] else "🔴 DISATTIVATA"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"Stato: {stato}", callback_data="auto_toggle")],
+        [InlineKeyboardButton(
+            f"📨 Post al giorno: {configurazione['post_giornalieri']}",
+            callback_data="auto_numero",
+        )],
+        [InlineKeyboardButton("🕒 Fasce orarie", callback_data="auto_orari")],
+        [InlineKeyboardButton("🗂 Categorie prodotti", callback_data="auto_categorie")],
+        [InlineKeyboardButton(
+            f"📉 Sconto minimo: {configurazione['sconto_minimo']}%",
+            callback_data="auto_sconto",
+        )],
+        [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
+    ])
+
+
+def testo_automazione(configurazione):
+    categorie = [AUTO_CATEGORIE[x][0] for x in configurazione["categorie"] if x in AUTO_CATEGORIE]
+    return (
+        "🤖 INVIO AUTOMATICO\n\n"
+        f"Stato: {'🟢 Attivo' if configurazione['attiva'] else '🔴 Disattivato'}\n"
+        f"Post giornalieri: {configurazione['post_giornalieri']}\n"
+        f"Orari: {', '.join(configurazione['orari']) or 'da impostare'}\n"
+        f"Sconto minimo: {configurazione['sconto_minimo']}%\n"
+        f"Categorie: {', '.join(categorie) or 'nessuna'}"
+    )
+
+
+async def menu_automazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    await aggiorna_menu_automazione(query)
+
+
+async def aggiorna_menu_automazione(query):
+    configurazione = leggi_config_automatica()
+    await query.edit_message_text(
+        testo_automazione(configurazione),
+        reply_markup=tastiera_automazione(configurazione),
+    )
+
+
+async def mostra_categorie_automatiche(query):
+    selezionate = set(leggi_config_automatica()["categorie"])
+    tastiera = []
+    for codice, (etichetta, _) in AUTO_CATEGORIE.items():
+        segno = "✅" if codice in selezionate else "▫️"
+        tastiera.append([
+            InlineKeyboardButton(
+                f"{segno} {etichetta}",
+                callback_data=f"auto_cat_{codice}",
+            )
+        ])
+    tastiera.append([InlineKeyboardButton("✅ FATTO", callback_data="auto_menu")])
+    await query.edit_message_text(
+        "🗂 Seleziona le categorie da pubblicare:",
+        reply_markup=InlineKeyboardMarkup(tastiera),
+    )
+
+
+async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    azione = query.data
+    configurazione = leggi_config_automatica()
+
+    if azione == "auto_toggle":
+        if not configurazione["attiva"]:
+            if not configurazione["categorie"]:
+                await query.message.reply_text("❌ Seleziona almeno una categoria.")
+                return
+            if len(configurazione["orari"]) != configurazione["post_giornalieri"]:
+                await query.message.reply_text("❌ Imposta un orario per ogni post giornaliero.")
+                return
+        salva_config_automatica("attiva", "0" if configurazione["attiva"] else "1")
+        return await aggiorna_menu_automazione(query)
+
+    if azione == "auto_numero":
+        tastiera = [
+            [InlineKeyboardButton(str(n), callback_data=f"auto_num_{n}") for n in range(1, 4)],
+            [InlineKeyboardButton(str(n), callback_data=f"auto_num_{n}") for n in range(4, 7)],
+            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
+        ]
+        await query.edit_message_text("📨 Quanti post vuoi inviare ogni giorno?", reply_markup=InlineKeyboardMarkup(tastiera))
+        return
+
+    if azione.startswith("auto_num_"):
+        numero = int(azione.rsplit("_", 1)[1])
+        salva_config_automatica("post_giornalieri", numero)
+        salva_config_automatica("attiva", 0)
+        return await aggiorna_menu_automazione(query)
+
+    if azione == "auto_sconto":
+        valori = (10, 15, 20, 25, 30, 40, 50)
+        tastiera = [
+            [InlineKeyboardButton(f"{v}%", callback_data=f"auto_disc_{v}") for v in valori[:4]],
+            [InlineKeyboardButton(f"{v}%", callback_data=f"auto_disc_{v}") for v in valori[4:]],
+            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
+        ]
+        await query.edit_message_text("📉 Seleziona lo sconto minimo:", reply_markup=InlineKeyboardMarkup(tastiera))
+        return
+
+    if azione.startswith("auto_disc_"):
+        salva_config_automatica("sconto_minimo", int(azione.rsplit("_", 1)[1]))
+        return await aggiorna_menu_automazione(query)
+
+    if azione == "auto_categorie":
+        return await mostra_categorie_automatiche(query)
+
+    if azione.startswith("auto_cat_"):
+        categoria = azione.replace("auto_cat_", "", 1)
+        if categoria not in AUTO_CATEGORIE:
+            return
+        db = sqlite3.connect(DB_PATH)
+        cur = db.cursor()
+        cur.execute("SELECT 1 FROM categorie_automatiche WHERE categoria = ?", (categoria,))
+        if cur.fetchone():
+            cur.execute("DELETE FROM categorie_automatiche WHERE categoria = ?", (categoria,))
+        else:
+            cur.execute("INSERT INTO categorie_automatiche (categoria) VALUES (?)", (categoria,))
+        db.commit()
+        db.close()
+        salva_config_automatica("attiva", 0)
+        return await mostra_categorie_automatiche(query)
+
+
+async def richiedi_orari_automatici(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    numero = leggi_config_automatica()["post_giornalieri"]
+    await query.edit_message_text(
+        "🕒 FASCE ORARIE\n\n"
+        f"Scrivi {numero} orari, separati da una virgola.\n"
+        "Esempio: 09:00, 14:30, 20:00\n\n"
+        "Gli orari devono essere distanti almeno 29 minuti."
+    )
+    return AUTO_ORARI
+
+
+async def ricevi_orari_automatici(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    configurazione = leggi_config_automatica()
+    orari = [x.strip() for x in update.message.text.split(",") if x.strip()]
+    if len(orari) != configurazione["post_giornalieri"]:
+        await update.message.reply_text(
+            f"❌ Devi inserire esattamente {configurazione['post_giornalieri']} orari. Riprova."
+        )
+        return AUTO_ORARI
+    minuti = []
+    try:
+        for valore in orari:
+            ora = datetime.strptime(valore, "%H:%M")
+            minuti.append(ora.hour * 60 + ora.minute)
+    except ValueError:
+        await update.message.reply_text("❌ Usa il formato HH:MM, per esempio 09:00, 14:30, 20:00.")
+        return AUTO_ORARI
+    minuti.sort()
+    if any(b - a < 29 for a, b in zip(minuti, minuti[1:])):
+        await update.message.reply_text("❌ Gli orari devono essere distanti almeno 29 minuti.")
+        return AUTO_ORARI
+    orari_ordinati = [f"{m // 60:02d}:{m % 60:02d}" for m in minuti]
+    salva_config_automatica("orari", ",".join(orari_ordinati))
+    salva_config_automatica("attiva", 0)
+    configurazione = leggi_config_automatica()
+    await update.message.reply_text(
+        "✅ Fasce orarie salvate. L’automazione resta disattivata finché non la riattivi.",
+        reply_markup=tastiera_automazione(configurazione),
+    )
+    return ConversationHandler.END
+
+
+# =========================================================
 # MENU ADMIN
 # =========================================================
 
@@ -759,6 +1025,12 @@ def menu_principale():
                 InlineKeyboardButton(
                     "📅 PROGRAMMATI",
                     callback_data="programmati",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🤖 INVIO AUTOMATICO",
+                    callback_data="auto_menu",
                 )
             ],
             [
@@ -4939,6 +5211,7 @@ def main():
     inizializza_database()
     inizializza_programmazioni()
     inizializza_recap()
+    inizializza_automazione()
 
     app = (
         Application
@@ -5121,6 +5394,41 @@ def main():
 
     app.add_handler(
         conversazione
+    )
+
+    configurazione_automatica = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(
+                richiedi_orari_automatici,
+                pattern="^auto_orari$",
+            )
+        ],
+        states={
+            AUTO_ORARI: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    ricevi_orari_automatici,
+                )
+            ]
+        },
+        fallbacks=[CommandHandler("annulla", annulla)],
+        allow_reentry=True,
+    )
+
+    app.add_handler(configurazione_automatica)
+
+    app.add_handler(
+        CallbackQueryHandler(
+            menu_automazione,
+            pattern="^auto_menu$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            gestisci_automazione,
+            pattern=r"^(auto_toggle|auto_numero|auto_num_[1-6]|auto_sconto|auto_disc_[0-9]+|auto_categorie|auto_cat_[a-z]+)$",
+        )
     )
 
     app.add_handler(
