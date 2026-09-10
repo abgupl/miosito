@@ -66,7 +66,7 @@ ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
 DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
 ROMA_TZ = ZoneInfo("Europe/Rome")
 
-AUTO_ORARI = 300
+AUTO_INTERVALLO, AUTO_FASCIA = range(300, 302)
 
 AUTO_CATEGORIE = {
     "elettronica": ("📱 Elettronica", ["offerte elettronica", "accessori smartphone", "offerte cuffie bluetooth"]),
@@ -772,14 +772,25 @@ def inizializza_automazione():
     """)
     defaults = {
         "attiva": "0",
-        "post_giornalieri": "3",
-        "orari": "09:00,14:00,20:00",
+        "intervallo_minuti": "120",
+        "ora_inizio": "09:00",
+        "ora_fine": "21:00",
         "sconto_minimo": "20",
     }
     for chiave, valore in defaults.items():
         cur.execute(
             "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
             (chiave, valore),
+        )
+    versione = cur.execute(
+        "SELECT valore FROM configurazione_automatica WHERE chiave = 'versione_config'"
+    ).fetchone()
+    if not versione or versione[0] != "2":
+        cur.execute(
+            "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES ('attiva', '0')"
+        )
+        cur.execute(
+            "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES ('versione_config', '2')"
         )
     db.commit()
     db.close()
@@ -795,8 +806,9 @@ def leggi_config_automatica():
     db.close()
     return {
         "attiva": valori.get("attiva", "0") == "1",
-        "post_giornalieri": int(valori.get("post_giornalieri", "3")),
-        "orari": [x for x in valori.get("orari", "").split(",") if x],
+        "intervallo_minuti": int(valori.get("intervallo_minuti", "120")),
+        "ora_inizio": valori.get("ora_inizio", "09:00"),
+        "ora_fine": valori.get("ora_fine", "21:00"),
         "sconto_minimo": int(valori.get("sconto_minimo", "20")),
         "categorie": categorie,
     }
@@ -815,15 +827,18 @@ def salva_config_automatica(chiave, valore):
 def tastiera_automazione(configurazione):
     stato = "🟢 ATTIVA" if configurazione["attiva"] else "🔴 DISATTIVATA"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"Stato: {stato}", callback_data="auto_toggle")],
+        [InlineKeyboardButton(f"STATO: {stato}", callback_data="auto_toggle")],
         [InlineKeyboardButton(
-            f"📨 Post al giorno: {configurazione['post_giornalieri']}",
-            callback_data="auto_numero",
+            f"⏱ OGNI {configurazione['intervallo_minuti']} MINUTI",
+            callback_data="auto_intervallo",
         )],
-        [InlineKeyboardButton("🕒 Fasce orarie", callback_data="auto_orari")],
-        [InlineKeyboardButton("🗂 Categorie prodotti", callback_data="auto_categorie")],
         [InlineKeyboardButton(
-            f"📉 Sconto minimo: {configurazione['sconto_minimo']}%",
+            f"🕒 DALLE {configurazione['ora_inizio']} ALLE {configurazione['ora_fine']}",
+            callback_data="auto_fascia",
+        )],
+        [InlineKeyboardButton("🗂 CATEGORIE PRODOTTI", callback_data="auto_categorie")],
+        [InlineKeyboardButton(
+            f"📉 SCONTO MINIMO: {configurazione['sconto_minimo']}%",
             callback_data="auto_sconto",
         )],
         [InlineKeyboardButton("🧪 TESTA RICERCA", callback_data="auto_test")],
@@ -835,11 +850,11 @@ def testo_automazione(configurazione):
     categorie = [AUTO_CATEGORIE[x][0] for x in configurazione["categorie"] if x in AUTO_CATEGORIE]
     return (
         "🤖 INVIO AUTOMATICO\n\n"
-        f"Stato: {'🟢 Attivo' if configurazione['attiva'] else '🔴 Disattivato'}\n"
-        f"Post giornalieri: {configurazione['post_giornalieri']}\n"
-        f"Orari: {', '.join(configurazione['orari']) or 'da impostare'}\n"
-        f"Sconto minimo: {configurazione['sconto_minimo']}%\n"
-        f"Categorie: {', '.join(categorie) or 'nessuna'}"
+        f"STATO: {'🟢 ATTIVO' if configurazione['attiva'] else '🔴 DISATTIVATO'}\n"
+        f"INTERVALLO: {configurazione['intervallo_minuti']} MINUTI\n"
+        f"ORARIO: {configurazione['ora_inizio']}–{configurazione['ora_fine']}\n"
+        f"SCONTO MINIMO: {configurazione['sconto_minimo']}%\n"
+        f"CATEGORIE: {', '.join(categorie).upper() if categorie else 'NESSUNA'}"
     )
 
 
@@ -866,13 +881,13 @@ async def mostra_categorie_automatiche(query):
         segno = "✅" if codice in selezionate else "▫️"
         tastiera.append([
             InlineKeyboardButton(
-                f"{segno} {etichetta}",
+                f"{segno} {etichetta.upper()}",
                 callback_data=f"auto_cat_{codice}",
             )
         ])
     tastiera.append([InlineKeyboardButton("✅ FATTO", callback_data="auto_menu")])
     await query.edit_message_text(
-        "🗂 Seleziona le categorie da pubblicare:",
+        "🗂 SELEZIONA LE CATEGORIE DA PUBBLICARE:",
         reply_markup=InlineKeyboardMarkup(tastiera),
     )
 
@@ -888,27 +903,9 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
     if azione == "auto_toggle":
         if not configurazione["attiva"]:
             if not configurazione["categorie"]:
-                await query.message.reply_text("❌ Seleziona almeno una categoria.")
-                return
-            if len(configurazione["orari"]) != configurazione["post_giornalieri"]:
-                await query.message.reply_text("❌ Imposta un orario per ogni post giornaliero.")
+                await query.message.reply_text("❌ SELEZIONA ALMENO UNA CATEGORIA.")
                 return
         salva_config_automatica("attiva", "0" if configurazione["attiva"] else "1")
-        return await aggiorna_menu_automazione(query)
-
-    if azione == "auto_numero":
-        tastiera = [
-            [InlineKeyboardButton(str(n), callback_data=f"auto_num_{n}") for n in range(1, 4)],
-            [InlineKeyboardButton(str(n), callback_data=f"auto_num_{n}") for n in range(4, 7)],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
-        ]
-        await query.edit_message_text("📨 Quanti post vuoi inviare ogni giorno?", reply_markup=InlineKeyboardMarkup(tastiera))
-        return
-
-    if azione.startswith("auto_num_"):
-        numero = int(azione.rsplit("_", 1)[1])
-        salva_config_automatica("post_giornalieri", numero)
-        salva_config_automatica("attiva", 0)
         return await aggiorna_menu_automazione(query)
 
     if azione == "auto_sconto":
@@ -918,11 +915,12 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
             [InlineKeyboardButton(f"{v}%", callback_data=f"auto_disc_{v}") for v in valori[4:]],
             [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
         ]
-        await query.edit_message_text("📉 Seleziona lo sconto minimo:", reply_markup=InlineKeyboardMarkup(tastiera))
+        await query.edit_message_text("📉 SELEZIONA LO SCONTO MINIMO:", reply_markup=InlineKeyboardMarkup(tastiera))
         return
 
     if azione.startswith("auto_disc_"):
         salva_config_automatica("sconto_minimo", int(azione.rsplit("_", 1)[1]))
+        salva_config_automatica("attiva", 0)
         return await aggiorna_menu_automazione(query)
 
     if azione == "auto_categorie":
@@ -945,49 +943,84 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
         return await mostra_categorie_automatiche(query)
 
 
-async def richiedi_orari_automatici(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def richiedi_intervallo_automatico(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
     query = update.callback_query
     await query.answer()
-    numero = leggi_config_automatica()["post_giornalieri"]
     await query.edit_message_text(
-        "🕒 FASCE ORARIE\n\n"
-        f"Scrivi {numero} orari, separati da una virgola.\n"
-        "Esempio: 09:00, 14:30, 20:00\n\n"
-        "Gli orari devono essere distanti almeno 29 minuti."
+        "⏱ INTERVALLO TRA I POST\n\n"
+        "SCRIVI QUANTI MINUTI DEVONO PASSARE TRA UN POST E L’ALTRO.\n\n"
+        "ESEMPIO: 120\n\n"
+        "IL MINIMO CONSENTITO È 29 MINUTI."
     )
-    return AUTO_ORARI
+    return AUTO_INTERVALLO
 
 
-async def ricevi_orari_automatici(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ricevi_intervallo_automatico(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
-    configurazione = leggi_config_automatica()
-    orari = [x.strip() for x in update.message.text.split(",") if x.strip()]
-    if len(orari) != configurazione["post_giornalieri"]:
-        await update.message.reply_text(
-            f"❌ Devi inserire esattamente {configurazione['post_giornalieri']} orari. Riprova."
-        )
-        return AUTO_ORARI
-    minuti = []
     try:
-        for valore in orari:
-            ora = datetime.strptime(valore, "%H:%M")
-            minuti.append(ora.hour * 60 + ora.minute)
+        minuti = int(update.message.text.strip())
     except ValueError:
-        await update.message.reply_text("❌ Usa il formato HH:MM, per esempio 09:00, 14:30, 20:00.")
-        return AUTO_ORARI
-    minuti.sort()
-    if any(b - a < 29 for a, b in zip(minuti, minuti[1:])):
-        await update.message.reply_text("❌ Gli orari devono essere distanti almeno 29 minuti.")
-        return AUTO_ORARI
-    orari_ordinati = [f"{m // 60:02d}:{m % 60:02d}" for m in minuti]
-    salva_config_automatica("orari", ",".join(orari_ordinati))
+        await update.message.reply_text("❌ SCRIVI SOLTANTO IL NUMERO DEI MINUTI, PER ESEMPIO 120.")
+        return AUTO_INTERVALLO
+    if minuti < 29 or minuti > 1440:
+        await update.message.reply_text("❌ INSERISCI UN VALORE TRA 29 E 1440 MINUTI.")
+        return AUTO_INTERVALLO
+    salva_config_automatica("intervallo_minuti", minuti)
     salva_config_automatica("attiva", 0)
     configurazione = leggi_config_automatica()
     await update.message.reply_text(
-        "✅ Fasce orarie salvate. L’automazione resta disattivata finché non la riattivi.",
+        f"✅ INTERVALLO SALVATO: {minuti} MINUTI.\n\n"
+        "L’AUTOMAZIONE RESTA DISATTIVATA FINCHÉ NON LA RIATTIVI.",
+        reply_markup=tastiera_automazione(configurazione),
+    )
+    return ConversationHandler.END
+
+
+async def richiedi_fascia_automatica(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "🕒 ORARIO DI ATTIVITÀ\n\n"
+        "SCRIVI L’ORARIO DI INIZIO E QUELLO DI FINE SEPARATI DA UN TRATTINO.\n\n"
+        "ESEMPIO: 09:00-21:00\n\n"
+        "ALLE 21:00 IL BOT SI FERMERÀ."
+    )
+    return AUTO_FASCIA
+
+
+async def ricevi_fascia_automatica(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    testo = update.message.text.strip().replace("–", "-").replace("—", "-")
+    parti = [x.strip() for x in testo.split("-")]
+    if len(parti) != 2:
+        await update.message.reply_text("❌ USA IL FORMATO 09:00-21:00.")
+        return AUTO_FASCIA
+    try:
+        inizio = datetime.strptime(parti[0], "%H:%M")
+        fine = datetime.strptime(parti[1], "%H:%M")
+    except ValueError:
+        await update.message.reply_text("❌ ORARIO NON CORRETTO. USA IL FORMATO 09:00-21:00.")
+        return AUTO_FASCIA
+    inizio_minuti = inizio.hour * 60 + inizio.minute
+    fine_minuti = fine.hour * 60 + fine.minute
+    if fine_minuti <= inizio_minuti:
+        await update.message.reply_text("❌ L’ORARIO FINALE DEVE ESSERE SUCCESSIVO A QUELLO INIZIALE.")
+        return AUTO_FASCIA
+    ora_inizio = inizio.strftime("%H:%M")
+    ora_fine = fine.strftime("%H:%M")
+    salva_config_automatica("ora_inizio", ora_inizio)
+    salva_config_automatica("ora_fine", ora_fine)
+    salva_config_automatica("attiva", 0)
+    configurazione = leggi_config_automatica()
+    await update.message.reply_text(
+        f"✅ ORARIO SALVATO: DALLE {ora_inizio} ALLE {ora_fine}.\n\n"
+        f"ALLE {ora_fine} IL BOT SI FERMERÀ.",
         reply_markup=tastiera_automazione(configurazione),
     )
     return ConversationHandler.END
@@ -1080,12 +1113,13 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
 
         prodotto = max(prodotti, key=lambda x: x["sconto"])
         await attesa.delete()
+        tipo_offerta = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
         vecchio = (
             f"\n❌ Prima: <s>{html.escape(prodotto['vecchio_prezzo'])}</s>"
             if prodotto["vecchio_prezzo"] else ""
         )
         testo = (
-            "🧪 <b>ANTEPRIMA TEST — NON PUBBLICATA</b>\n\n"
+            f"🧪 <b>ANTEPRIMA TEST — {tipo_offerta}</b>\n\n"
             f"🛒 <b>{html.escape(prodotto['nome'])}</b>\n"
             f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
             f"{vecchio}\n"
@@ -1259,8 +1293,9 @@ async def pubblica_offerta_automatica(bot, prodotto):
         f"\n❌ Prima: <s>{html.escape(prodotto['vecchio_prezzo'])}</s>"
         if prodotto["vecchio_prezzo"] else ""
     )
+    tipo_offerta = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
     messaggio = (
-        "🔥 <b>OFFERTA AMAZON</b>\n\n"
+        f"<b>{tipo_offerta}</b>\n\n"
         f"🛒 <b>{html.escape(nome)}</b>\n\n"
         f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
         f"{prima}\n"
@@ -1338,6 +1373,19 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
         )
 
 
+def _orario_automatico_previsto(configurazione, adesso):
+    ora_corrente_minuti = adesso.hour * 60 + adesso.minute
+    inizio = datetime.strptime(configurazione["ora_inizio"], "%H:%M")
+    fine = datetime.strptime(configurazione["ora_fine"], "%H:%M")
+    inizio_minuti = inizio.hour * 60 + inizio.minute
+    fine_minuti = fine.hour * 60 + fine.minute
+    return (
+        inizio_minuti <= ora_corrente_minuti < fine_minuti
+        and (ora_corrente_minuti - inizio_minuti)
+        % configurazione["intervallo_minuti"] == 0
+    )
+
+
 async def controlla_invii_automatici(app):
     while True:
         try:
@@ -1346,8 +1394,9 @@ async def controlla_invii_automatici(app):
                 adesso = datetime.now(ROMA_TZ)
                 data_slot = adesso.date().isoformat()
                 ora_slot = adesso.strftime("%H:%M")
+                nello_slot = _orario_automatico_previsto(configurazione, adesso)
                 if (
-                    ora_slot in configurazione["orari"]
+                    nello_slot
                     and not _slot_automatico_gia_gestito(data_slot, ora_slot)
                 ):
                     await esegui_slot_automatico(
@@ -5775,17 +5824,27 @@ def main():
     configurazione_automatica = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(
-                richiedi_orari_automatici,
-                pattern="^auto_orari$",
-            )
+                richiedi_intervallo_automatico,
+                pattern="^auto_intervallo$",
+            ),
+            CallbackQueryHandler(
+                richiedi_fascia_automatica,
+                pattern="^auto_fascia$",
+            ),
         ],
         states={
-            AUTO_ORARI: [
+            AUTO_INTERVALLO: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    ricevi_orari_automatici,
+                    ricevi_intervallo_automatico,
                 )
-            ]
+            ],
+            AUTO_FASCIA: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    ricevi_fascia_automatica,
+                )
+            ],
         },
         fallbacks=[CommandHandler("annulla", annulla)],
         allow_reentry=True,
@@ -5803,7 +5862,7 @@ def main():
     app.add_handler(
         CallbackQueryHandler(
             gestisci_automazione,
-            pattern=r"^(auto_toggle|auto_numero|auto_num_[1-6]|auto_sconto|auto_disc_[0-9]+|auto_categorie|auto_cat_[a-z]+)$",
+            pattern=r"^(auto_toggle|auto_sconto|auto_disc_[0-9]+|auto_categorie|auto_cat_[a-z]+)$",
         )
     )
 
