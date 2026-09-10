@@ -12,7 +12,7 @@ from collections import deque
 
 import requests
 from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from amazon_client import get_items, search_items
 
@@ -20,6 +20,7 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
 )
 
 from telegram.ext import (
@@ -69,6 +70,7 @@ ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
 DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
 ROMA_TZ = ZoneInfo("Europe/Rome")
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "bestprice24h_logo.png"
+AMAZON_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "amazon_logo.png"
 
 AUTO_INTERVALLO, AUTO_FASCIA = range(300, 302)
 
@@ -808,6 +810,7 @@ def inizializza_automazione():
         "terminata_il": "TEXT",
         "deal_end_time": "TEXT",
         "ultima_verifica": "TEXT",
+        "telegram_photo_file_id": "TEXT",
     }
     for colonna, definizione in nuove_colonne.items():
         if colonna not in colonne_invii:
@@ -1204,7 +1207,7 @@ def crea_immagine_brandizzata(image_url):
     logo = Image.open(LOGO_PATH).convert("RGBA")
     logo = ImageOps.contain(logo, (195, 170), Image.Resampling.LANCZOS)
     # Trasparenza molto leggera: il logo conserva circa il 92% di opacità.
-    alpha_logo = logo.getchannel("A").point(lambda valore: valore * 150 // 255)
+    alpha_logo = logo.getchannel("A").point(lambda valore: valore * 235 // 255)
     logo.putalpha(alpha_logo)
     # Margine del logo: 10 px dal profilo nero, in alto e a destra.
     posizione_logo = (1044 - logo.width, 36)
@@ -1223,6 +1226,28 @@ def crea_immagine_brandizzata(image_url):
 
     canvas = Image.alpha_composite(canvas.convert("RGBA"), ombra)
     canvas.alpha_composite(logo, posizione_logo)
+
+    # Logo Amazon originale, centrato nel margine bianco inferiore.
+    if AMAZON_LOGO_PATH.exists():
+        logo_amazon = Image.open(AMAZON_LOGO_PATH).convert("RGBA")
+        # Rende trasparente soltanto lo sfondo bianco del file fornito.
+        pixel = []
+        for rosso, verde, blu, alpha in logo_amazon.getdata():
+            if rosso >= 245 and verde >= 245 and blu >= 245:
+                pixel.append((rosso, verde, blu, 0))
+            else:
+                pixel.append((rosso, verde, blu, alpha))
+        logo_amazon.putdata(pixel)
+        logo_amazon = ImageOps.contain(
+            logo_amazon,
+            (140, 60),
+            Image.Resampling.LANCZOS,
+        )
+        posizione_amazon = (
+            (1080 - logo_amazon.width) // 2,
+            1010 - logo_amazon.height,
+        )
+        canvas.alpha_composite(logo_amazon, posizione_amazon)
 
     output = BytesIO()
     output.name = "offerta_bestprice24h.jpg"
@@ -1243,6 +1268,73 @@ async def prepara_foto_automatica(image_url):
     except Exception as errore:
         print(f"Impossibile creare immagine brandizzata: {errore}")
         return image_url
+
+
+def _font_terminata(dimensione):
+    percorsi = (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        "DejaVuSans-Bold.ttf",
+    )
+    for percorso in percorsi:
+        try:
+            return ImageFont.truetype(percorso, dimensione)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def crea_immagine_terminata(dati_immagine):
+    """Crea la versione grigia della foto già pubblicata."""
+    originale = Image.open(BytesIO(bytes(dati_immagine))).convert("RGBA")
+    immagine = ImageOps.grayscale(originale).convert("RGBA")
+
+    # Mantiene riconoscibile la cornice BestPrice24h.
+    disegno = ImageDraw.Draw(immagine, "RGBA")
+    disegno.rounded_rectangle(
+        (8, 8, 1072, 1072), radius=40, outline="#F20D18", width=18
+    )
+    disegno.rounded_rectangle(
+        (26, 26, 1054, 1054), radius=22, outline="#171717", width=3
+    )
+
+    # Ripristina a colori il logo BestPrice24h.
+    if LOGO_PATH.exists():
+        logo = Image.open(LOGO_PATH).convert("RGBA")
+        logo = ImageOps.contain(logo, (195, 170), Image.Resampling.LANCZOS)
+        alpha_logo = logo.getchannel("A").point(lambda valore: valore * 235 // 255)
+        logo.putalpha(alpha_logo)
+        immagine.alpha_composite(logo, (1044 - logo.width, 36))
+
+    # Fascia chiara e scritta rossa centrale.
+    fascia = Image.new("RGBA", immagine.size, (0, 0, 0, 0))
+    ImageDraw.Draw(fascia).rectangle((35, 430, 1045, 650), fill=(255, 255, 255, 210))
+    immagine = Image.alpha_composite(immagine, fascia)
+    disegno = ImageDraw.Draw(immagine)
+    testo = "OFFERTA TERMINATA"
+    dimensione = 82
+    font = _font_terminata(dimensione)
+    while disegno.textbbox((0, 0), testo, font=font)[2] > 930 and dimensione > 40:
+        dimensione -= 4
+        font = _font_terminata(dimensione)
+    riquadro = disegno.textbbox((0, 0), testo, font=font, stroke_width=2)
+    larghezza = riquadro[2] - riquadro[0]
+    altezza = riquadro[3] - riquadro[1]
+    posizione = ((1080 - larghezza) // 2, (1080 - altezza) // 2 - riquadro[1])
+    disegno.text(
+        posizione,
+        testo,
+        font=font,
+        fill="#E30613",
+        stroke_width=2,
+        stroke_fill="white",
+    )
+
+    output = BytesIO()
+    output.name = "offerta_terminata.jpg"
+    immagine.convert("RGB").save(output, "JPEG", quality=93, optimize=True)
+    output.seek(0)
+    return output
 
 
 async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1361,6 +1453,7 @@ def _aggiorna_slot_automatico(
     stato,
     prodotto=None,
     telegram_message_id=None,
+    telegram_photo_file_id=None,
     soglia_sconto=None,
     deal_end_time=None,
 ):
@@ -1371,6 +1464,7 @@ def _aggiorna_slot_automatico(
         UPDATE invii_automatici
         SET stato = ?, asin = ?, nome = ?, link = ?, sconto = ?,
             telegram_message_id = COALESCE(?, telegram_message_id),
+            telegram_photo_file_id = COALESCE(?, telegram_photo_file_id),
             soglia_sconto = COALESCE(?, soglia_sconto),
             deal_end_time = COALESCE(?, deal_end_time),
             ultima_verifica = CASE
@@ -1386,6 +1480,7 @@ def _aggiorna_slot_automatico(
             prodotto.get("link"),
             prodotto.get("sconto"),
             telegram_message_id,
+            telegram_photo_file_id,
             soglia_sconto,
             deal_end_time,
             stato,
@@ -1527,7 +1622,7 @@ async def pubblica_offerta_automatica(bot, prodotto):
         foto_file_id=foto_telegram,
         template="automatico",
     )
-    return messaggio_telegram.message_id
+    return messaggio_telegram.message_id, foto_telegram
 
 
 async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
@@ -1558,13 +1653,14 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
             )
             return
 
-        message_id = await pubblica_offerta_automatica(app.bot, prodotto)
+        message_id, foto_file_id = await pubblica_offerta_automatica(app.bot, prodotto)
         _aggiorna_slot_automatico(
             data_slot,
             ora_slot,
             "pubblicata",
             prodotto,
             telegram_message_id=message_id,
+            telegram_photo_file_id=foto_file_id,
             soglia_sconto=configurazione["sconto_minimo"],
             deal_end_time=prodotto.get("deal_end_time"),
         )
@@ -1670,7 +1766,8 @@ def _offerte_da_verificare():
         """
         SELECT id, asin, nome, categoria, telegram_message_id,
                COALESCE(soglia_sconto, 0), COALESCE(verifiche_fallite, 0),
-               creato_il, deal_end_time, ultima_verifica
+               creato_il, deal_end_time, ultima_verifica,
+               telegram_photo_file_id
         FROM invii_automatici
         WHERE stato = 'pubblicata'
           AND telegram_message_id IS NOT NULL
@@ -1704,7 +1801,7 @@ def _offerte_da_verificare():
             intervallo = timedelta(hours=24)
 
         if not ultima_verifica or adesso - ultima_verifica >= intervallo:
-            da_verificare.append(riga[:7])
+            da_verificare.append(riga[:7] + (riga[10],))
     return da_verificare
 
 
@@ -1765,7 +1862,14 @@ def _segna_offerta_terminata(invio_id):
     db.close()
 
 
-async def _modifica_post_terminato(bot, invio_id, nome, categoria, message_id):
+async def _modifica_post_terminato(
+    bot,
+    invio_id,
+    nome,
+    categoria,
+    message_id,
+    foto_file_id=None,
+):
     hashtag = AUTO_HASHTAG.get(categoria, "#OfferteAmazon")
     didascalia = (
         "⛔ <b>OFFERTA TERMINATA</b>\n\n"
@@ -1774,17 +1878,39 @@ async def _modifica_post_terminato(bot, invio_id, nome, categoria, message_id):
         f"Categoria: {hashtag}\n\n"
         "Continua a seguirci per le prossime offerte."
     )
-    await bot.edit_message_caption(
-        chat_id=CHANNEL_ID,
-        message_id=message_id,
-        caption=didascalia,
-        parse_mode="HTML",
-    )
-    await bot.edit_message_reply_markup(
-        chat_id=CHANNEL_ID,
-        message_id=message_id,
-        reply_markup=None,
-    )
+    immagine_aggiornata = False
+    if foto_file_id:
+        try:
+            file_telegram = await bot.get_file(foto_file_id)
+            dati = await file_telegram.download_as_bytearray()
+            foto_terminata = await asyncio.to_thread(crea_immagine_terminata, dati)
+            await bot.edit_message_media(
+                chat_id=CHANNEL_ID,
+                message_id=message_id,
+                media=InputMediaPhoto(
+                    media=foto_terminata,
+                    caption=didascalia,
+                    parse_mode="HTML",
+                ),
+                reply_markup=None,
+            )
+            immagine_aggiornata = True
+        except Exception as errore:
+            print(f"Impossibile aggiornare la foto terminata: {errore}")
+
+    # Fallback per vecchi post o errori nel download della foto Telegram.
+    if not immagine_aggiornata:
+        await bot.edit_message_caption(
+            chat_id=CHANNEL_ID,
+            message_id=message_id,
+            caption=didascalia,
+            parse_mode="HTML",
+        )
+        await bot.edit_message_reply_markup(
+            chat_id=CHANNEL_ID,
+            message_id=message_id,
+            reply_markup=None,
+        )
     _segna_offerta_terminata(invio_id)
 
 
@@ -1809,7 +1935,7 @@ async def controlla_offerte_terminate(app):
                     if asin:
                         prodotti[asin] = estrai_prodotto_creators(item)
 
-                for invio_id, asin, nome, categoria, message_id, soglia, _ in gruppo:
+                for invio_id, asin, nome, categoria, message_id, soglia, _, foto_file_id in gruppo:
                     prodotto = prodotti.get(asin)
                     non_valida = not prodotto or prodotto["sconto"] < soglia
                     fallimenti = _aggiorna_verifica_offerta(invio_id, non_valida)
@@ -1821,6 +1947,7 @@ async def controlla_offerte_terminate(app):
                                 nome,
                                 categoria,
                                 message_id,
+                                foto_file_id,
                             )
                             await _notifica_admin_automazione(
                                 app.bot,
