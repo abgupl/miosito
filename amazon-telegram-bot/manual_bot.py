@@ -1204,7 +1204,7 @@ def crea_immagine_brandizzata(image_url):
     logo = Image.open(LOGO_PATH).convert("RGBA")
     logo = ImageOps.contain(logo, (195, 170), Image.Resampling.LANCZOS)
     # Trasparenza molto leggera: il logo conserva circa il 92% di opacità.
-    alpha_logo = logo.getchannel("A").point(lambda valore: valore * 170 // 255)
+    alpha_logo = logo.getchannel("A").point(lambda valore: valore * 150 // 255)
     logo.putalpha(alpha_logo)
     # Margine del logo: 10 px dal profilo nero, in alto e a destra.
     posizione_logo = (1044 - logo.width, 36)
