@@ -1240,7 +1240,7 @@ def crea_immagine_brandizzata(image_url):
         logo_amazon.putdata(pixel)
         logo_amazon = ImageOps.contain(
             logo_amazon,
-            (140, 60),
+            (180, 75),
             Image.Resampling.LANCZOS,
         )
         posizione_amazon = (
