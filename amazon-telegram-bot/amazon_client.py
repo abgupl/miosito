@@ -11,6 +11,7 @@ Utilizza le nuove credenziali Amazon:
 import os
 
 from amazon_creatorsapi import AmazonCreatorsApi, Country
+from amazon_creatorsapi.errors import ItemsNotFoundError
 
 import config
 
@@ -46,3 +47,12 @@ def search_items(keywords, search_index="All", item_count=10):
     )
 
     return getattr(risultato, "items", []) or []
+
+
+def get_items(item_ids):
+    """Recupera fino a 10 prodotti per ASIN per verificarne disponibilità e prezzo."""
+    amazon = _get_client()
+    try:
+        return amazon.get_items(item_ids) or []
+    except ItemsNotFoundError:
+        return []
