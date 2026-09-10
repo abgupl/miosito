@@ -1,16 +1,18 @@
-
 import os
 import asyncio
 import sqlite3
 import html
 import re
 import random
+from io import BytesIO
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from collections import deque
 
 import requests
 from bs4 import BeautifulSoup
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 from amazon_client import get_items, search_items
 
@@ -66,6 +68,7 @@ CHANNEL_ID = os.environ["TELEGRAM_CHAT_ID"]
 ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
 DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
 ROMA_TZ = ZoneInfo("Europe/Rome")
+LOGO_PATH = Path(__file__).resolve().parent / "assets" / "bestprice24h_logo.png"
 
 AUTO_INTERVALLO, AUTO_FASCIA = range(300, 302)
 
@@ -1164,6 +1167,79 @@ def riga_venditore_categoria(prodotto, categoria):
     return f"Categoria: {hashtag}"
 
 
+def crea_immagine_brandizzata(image_url):
+    """Scarica la foto Amazon e aggiunge cornice e logo BestPrice24h."""
+    risposta = requests.get(image_url, timeout=20)
+    risposta.raise_for_status()
+
+    prodotto = Image.open(BytesIO(risposta.content)).convert("RGB")
+    canvas = Image.new("RGB", (1080, 1080), "white")
+
+    # La foto occupa tutto lo spazio interno, anche sotto al logo.
+    foto = ImageOps.fit(
+        prodotto,
+        (1020, 1020),
+        method=Image.Resampling.LANCZOS,
+        centering=(0.5, 0.5),
+    )
+    maschera_foto = Image.new("L", (1020, 1020), 0)
+    ImageDraw.Draw(maschera_foto).rounded_rectangle(
+        (0, 0, 1019, 1019), radius=28, fill=255
+    )
+    canvas.paste(foto, (30, 30), maschera_foto)
+
+    # Cornice rossa sottile, profilo nero e nessuna ombra esterna.
+    disegno = ImageDraw.Draw(canvas)
+    disegno.rounded_rectangle(
+        (8, 8, 1072, 1072), radius=40, outline="#F20D18", width=18
+    )
+    disegno.rounded_rectangle(
+        (29, 29, 1051, 1051), radius=29, outline="#171717", width=3
+    )
+
+    if not LOGO_PATH.exists():
+        raise FileNotFoundError(f"Logo non trovato: {LOGO_PATH}")
+
+    logo = Image.open(LOGO_PATH).convert("RGBA")
+    logo = ImageOps.contain(logo, (195, 170), Image.Resampling.LANCZOS)
+    posizione_logo = (1015 - logo.width, 42)
+
+    # Il logo è opaco; solo una piccola ombra ne migliora la leggibilità.
+    alpha_ombra = logo.getchannel("A").point(lambda valore: valore * 90 // 255)
+    sagoma_nera = Image.new("RGBA", logo.size, (0, 0, 0, 0))
+    sagoma_nera.putalpha(alpha_ombra)
+    ombra = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    ombra.paste(
+        sagoma_nera,
+        (posizione_logo[0] + 5, posizione_logo[1] + 6),
+        sagoma_nera,
+    )
+    ombra = ombra.filter(ImageFilter.GaussianBlur(6))
+
+    canvas = Image.alpha_composite(canvas.convert("RGBA"), ombra)
+    canvas.alpha_composite(logo, posizione_logo)
+
+    output = BytesIO()
+    output.name = "offerta_bestprice24h.jpg"
+    canvas.convert("RGB").save(
+        output,
+        format="JPEG",
+        quality=93,
+        optimize=True,
+    )
+    output.seek(0)
+    return output
+
+
+async def prepara_foto_automatica(image_url):
+    """Crea la grafica senza bloccare il bot; in errore usa la foto originale."""
+    try:
+        return await asyncio.to_thread(crea_immagine_brandizzata, image_url)
+    except Exception as errore:
+        print(f"Impossibile creare immagine brandizzata: {errore}")
+        return image_url
+
+
 async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return
@@ -1213,14 +1289,15 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
             f"{vecchio}\n"
             f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
             f"{riga_venditore_categoria(prodotto, categoria)}\n\n"
-            f"👉 <a href=\"{html.escape(prodotto['link'], quote=True)}\">Link affiliato all’offerta</a>\n\n"
+            f"👉 {html.escape(prodotto['link'])}\n\n"
             "Anteprima non pubblicata"
         )
         tastiera = InlineKeyboardMarkup([[
             InlineKeyboardButton("🛒 APRI", url=prodotto["link"]),
         ]])
+        foto = await prepara_foto_automatica(prodotto["immagine"])
         await query.message.reply_photo(
-            photo=prodotto["immagine"],
+            photo=foto,
             caption=testo,
             parse_mode="HTML",
             reply_markup=tastiera,
@@ -1413,17 +1490,17 @@ async def pubblica_offerta_automatica(bot, prodotto):
         f"{prima}\n"
         f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
         f"{riga_venditore}\n\n"
-        f"👉 <a href=\"{link_html}\">Link affiliato all’offerta</a>\n\n"
-        "⚡ Prezzo e disponibilità possono variare.\n\n"
-        "Meno offerte. Più affari."
+        f"👉 {link_html}\n\n"
+        "⚡ Prezzo e disponibilità possono variare."
     )
     tastiera = InlineKeyboardMarkup([[
         InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
         InlineKeyboardButton("🛒 APRI", url=prodotto["link"]),
     ]])
+    foto = await prepara_foto_automatica(prodotto["immagine"])
     messaggio_telegram = await bot.send_photo(
         chat_id=CHANNEL_ID,
-        photo=prodotto["immagine"],
+        photo=foto,
         caption=messaggio,
         parse_mode="HTML",
         reply_markup=tastiera,
@@ -1433,13 +1510,16 @@ async def pubblica_offerta_automatica(bot, prodotto):
         "link": prodotto["link"],
         "prezzo": prezzo_numero,
     })
+    foto_telegram = prodotto["immagine"]
+    if messaggio_telegram.photo:
+        foto_telegram = messaggio_telegram.photo[-1].file_id
     salva_offerta_recap(
         nome,
         prodotto["link"],
         prezzo_numero,
         vecchio_numero or "NO",
         messaggio=messaggio,
-        foto_file_id=prodotto["immagine"],
+        foto_file_id=foto_telegram,
         template="automatico",
     )
     return messaggio_telegram.message_id
@@ -1687,8 +1767,7 @@ async def _modifica_post_terminato(bot, invio_id, nome, categoria, message_id):
         f"🛒 {html.escape(nome)}\n\n"
         "Questa promozione non risulta più disponibile.\n\n"
         f"Categoria: {hashtag}\n\n"
-        "Continua a seguirci per le prossime offerte.\n\n"
-        "Meno offerte. Più affari."
+        "Continua a seguirci per le prossime offerte."
     )
     await bot.edit_message_caption(
         chat_id=CHANNEL_ID,
