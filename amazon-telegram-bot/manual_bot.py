@@ -73,7 +73,14 @@ ROMA_TZ = ZoneInfo("Europe/Rome")
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "bestprice24h_logo.png"
 AMAZON_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "amazon_logo.png"
 
-AUTO_INTERVALLO, AUTO_FASCIA = range(300, 302)
+(
+    AUTO_INTERVALLO,
+    AUTO_FASCIA,
+    FILTRO_MARCHIO_AGGIUNGI,
+    FILTRO_MARCHIO_RIMUOVI,
+    FILTRO_PAROLA_AGGIUNGI,
+    FILTRO_PAROLA_RIMUOVI,
+) = range(300, 306)
 
 AUTO_CATEGORIE = {
     "elettronica": ("📱 Elettronica", ["offerte elettronica", "cuffie bluetooth", "dispositivi smart home"]),
@@ -823,6 +830,18 @@ def inizializza_automazione():
         )
     """)
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS marchi_qualita (
+            categoria TEXT NOT NULL,
+            marchio TEXT NOT NULL COLLATE NOCASE,
+            PRIMARY KEY (categoria, marchio)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS parole_indesiderate_qualita (
+            parola TEXT PRIMARY KEY COLLATE NOCASE
+        )
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS invii_automatici (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             asin TEXT,
@@ -859,11 +878,30 @@ def inizializza_automazione():
         "prossimo_invio": "",
         "sconto_minimo": "20",
         "qualita_prodotti": "selettiva",
+        "punteggio_minimo": "5",
+        "bonus_sconto_da": "30",
+        "priorita_amazon": "1",
     }
     for chiave, valore in defaults.items():
         cur.execute(
             "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
             (chiave, valore),
+        )
+    filtri_inizializzati = cur.execute(
+        "SELECT valore FROM configurazione_automatica WHERE chiave = 'filtri_seed_v1'"
+    ).fetchone()
+    if not filtri_inizializzati:
+        for categoria, marchi in MARCHI_AUTORIZZATI.items():
+            cur.executemany(
+                "INSERT OR IGNORE INTO marchi_qualita (categoria, marchio) VALUES (?, ?)",
+                [(categoria, marchio.strip()) for marchio in marchi],
+            )
+        cur.executemany(
+            "INSERT OR IGNORE INTO parole_indesiderate_qualita (parola) VALUES (?)",
+            [(parola.strip(),) for parola in PAROLE_INDESIDERATE],
+        )
+        cur.execute(
+            "INSERT INTO configurazione_automatica (chiave, valore) VALUES ('filtri_seed_v1', '1')"
         )
     versione = cur.execute(
         "SELECT valore FROM configurazione_automatica WHERE chiave = 'versione_config'"
@@ -895,6 +933,9 @@ def leggi_config_automatica():
         "prossimo_invio": valori.get("prossimo_invio", ""),
         "sconto_minimo": int(valori.get("sconto_minimo", "20")),
         "qualita_prodotti": valori.get("qualita_prodotti", "selettiva"),
+        "punteggio_minimo": int(valori.get("punteggio_minimo", "5")),
+        "bonus_sconto_da": int(valori.get("bonus_sconto_da", "30")),
+        "priorita_amazon": valori.get("priorita_amazon", "1") == "1",
         "categorie": categorie,
     }
 
@@ -907,6 +948,299 @@ def salva_config_automatica(chiave, valore):
     )
     db.commit()
     db.close()
+
+
+def leggi_marchi_qualita(categoria=None):
+    db = sqlite3.connect(DB_PATH)
+    if categoria:
+        righe = db.execute(
+            "SELECT marchio FROM marchi_qualita WHERE categoria = ? ORDER BY marchio COLLATE NOCASE",
+            (categoria,),
+        ).fetchall()
+        risultato = [riga[0] for riga in righe]
+    else:
+        righe = db.execute(
+            "SELECT categoria, marchio FROM marchi_qualita ORDER BY categoria, marchio COLLATE NOCASE"
+        ).fetchall()
+        risultato = righe
+    db.close()
+    return risultato
+
+
+def leggi_parole_indesiderate():
+    db = sqlite3.connect(DB_PATH)
+    righe = db.execute(
+        "SELECT parola FROM parole_indesiderate_qualita ORDER BY parola COLLATE NOCASE"
+    ).fetchall()
+    db.close()
+    return [riga[0] for riga in righe]
+
+
+def _testo_elenco(valori, vuoto="nessuno"):
+    return ", ".join(valori) if valori else vuoto
+
+
+async def mostra_menu_filtri(query):
+    configurazione = leggi_config_automatica()
+    priorita = "ATTIVA" if configurazione["priorita_amazon"] else "DISATTIVATA"
+    tastiera = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏷 MARCHI AUTORIZZATI", callback_data="filter_brands")],
+        [InlineKeyboardButton("🚫 PAROLE ESCLUSE", callback_data="filter_words")],
+        [InlineKeyboardButton(
+            f"⭐ PUNTEGGIO MINIMO: {configurazione['punteggio_minimo']}",
+            callback_data="filter_score",
+        )],
+        [InlineKeyboardButton(
+            f"📉 BONUS SCONTO: DAL {configurazione['bonus_sconto_da']}%",
+            callback_data="filter_bonus",
+        )],
+        [InlineKeyboardButton(
+            f"🏪 PRIORITÀ AMAZON: {priorita}",
+            callback_data="filter_amazon",
+        )],
+        [InlineKeyboardButton("📊 RIEPILOGO FILTRI", callback_data="filter_summary")],
+        [InlineKeyboardButton("♻️ RIPRISTINA PREDEFINITI", callback_data="filter_reset")],
+        [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
+    ])
+    await query.edit_message_text(
+        "⚙️ Filtri della modalità selettiva\n\n"
+        "Puoi modificare questi valori senza intervenire sul codice. "
+        "Ogni modifica disattiva l’automazione: riattivala dopo aver terminato.",
+        reply_markup=tastiera,
+    )
+
+
+async def mostra_categorie_marchi(query):
+    conteggi = {}
+    for categoria, _ in leggi_marchi_qualita():
+        conteggi[categoria] = conteggi.get(categoria, 0) + 1
+    tastiera = [
+        [InlineKeyboardButton(
+            f"{etichetta.upper()} ({conteggi.get(codice, 0)})",
+            callback_data=f"filter_brandcat_{codice}",
+        )]
+        for codice, (etichetta, _) in AUTO_CATEGORIE.items()
+    ]
+    tastiera.append([InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_filtri")])
+    await query.edit_message_text(
+        "🏷 Scegli la categoria di cui vuoi gestire i marchi:",
+        reply_markup=InlineKeyboardMarkup(tastiera),
+    )
+
+
+async def mostra_gestione_marchi(query, context, categoria=None):
+    categoria = categoria or context.user_data.get("filtro_categoria")
+    if categoria not in AUTO_CATEGORIE:
+        return await mostra_categorie_marchi(query)
+    context.user_data["filtro_categoria"] = categoria
+    marchi = leggi_marchi_qualita(categoria)
+    etichetta = AUTO_CATEGORIE[categoria][0]
+    testo = (
+        f"🏷 Marchi autorizzati — {etichetta}\n\n"
+        f"{_testo_elenco(marchi)}\n\n"
+        f"Totale: {len(marchi)}"
+    )
+    tastiera = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ AGGIUNGI MARCHIO", callback_data="filter_brand_add")],
+        [InlineKeyboardButton("➖ RIMUOVI MARCHIO", callback_data="filter_brand_remove")],
+        [InlineKeyboardButton("⬅️ CAMBIA CATEGORIA", callback_data="filter_brands")],
+        [InlineKeyboardButton("⚙️ MENU FILTRI", callback_data="auto_filtri")],
+    ])
+    await query.edit_message_text(testo[:4000], reply_markup=tastiera)
+
+
+async def mostra_gestione_parole(query):
+    parole = leggi_parole_indesiderate()
+    await query.edit_message_text(
+        "🚫 Parole escluse\n\n"
+        f"{_testo_elenco(parole)}\n\n"
+        "Se una di queste espressioni compare nel titolo, il prodotto perde 3 punti.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ AGGIUNGI PAROLA", callback_data="filter_word_add")],
+            [InlineKeyboardButton("➖ RIMUOVI PAROLA", callback_data="filter_word_remove")],
+            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_filtri")],
+        ]),
+    )
+
+
+async def gestisci_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    azione = query.data
+
+    if azione == "auto_filtri":
+        return await mostra_menu_filtri(query)
+    if azione == "filter_brands":
+        return await mostra_categorie_marchi(query)
+    if azione.startswith("filter_brandcat_"):
+        categoria = azione.replace("filter_brandcat_", "", 1)
+        return await mostra_gestione_marchi(query, context, categoria)
+    if azione == "filter_words":
+        return await mostra_gestione_parole(query)
+    if azione == "filter_score":
+        tastiera = [
+            [InlineKeyboardButton(str(v), callback_data=f"filter_score_{v}") for v in range(3, 7)],
+            [InlineKeyboardButton(str(v), callback_data=f"filter_score_{v}") for v in range(7, 9)],
+            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_filtri")],
+        ]
+        return await query.edit_message_text(
+            "⭐ Punteggio minimo\n\nPiù è alto, più la selezione è severa. Consigliato: 5.",
+            reply_markup=InlineKeyboardMarkup(tastiera),
+        )
+    if azione.startswith("filter_score_"):
+        valore = int(azione.rsplit("_", 1)[1])
+        salva_config_automatica("punteggio_minimo", valore)
+        salva_config_automatica("attiva", 0)
+        return await mostra_menu_filtri(query)
+    if azione == "filter_bonus":
+        valori = (20, 25, 30, 35, 40)
+        tastiera = [[
+            InlineKeyboardButton(f"{v}%", callback_data=f"filter_bonus_{v}") for v in valori
+        ], [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_filtri")]]
+        return await query.edit_message_text(
+            "📉 Da quale sconto assegnare +2 punti?\n\nConsigliato: 30%.",
+            reply_markup=InlineKeyboardMarkup(tastiera),
+        )
+    if azione.startswith("filter_bonus_"):
+        valore = int(azione.rsplit("_", 1)[1])
+        salva_config_automatica("bonus_sconto_da", valore)
+        salva_config_automatica("attiva", 0)
+        return await mostra_menu_filtri(query)
+    if azione == "filter_amazon":
+        attiva = leggi_config_automatica()["priorita_amazon"]
+        salva_config_automatica("priorita_amazon", 0 if attiva else 1)
+        salva_config_automatica("attiva", 0)
+        return await mostra_menu_filtri(query)
+    if azione == "filter_summary":
+        config = leggi_config_automatica()
+        conteggio_marchi = len(leggi_marchi_qualita())
+        conteggio_parole = len(leggi_parole_indesiderate())
+        return await query.edit_message_text(
+            "📊 Riepilogo filtri\n\n"
+            f"Modalità: {config['qualita_prodotti'].capitalize()}\n"
+            f"Sconto minimo per la pubblicazione: {config['sconto_minimo']}%\n"
+            f"Punteggio minimo: {config['punteggio_minimo']}\n"
+            f"Bonus +2 dallo sconto: {config['bonus_sconto_da']}%\n"
+            f"Priorità Amazon (+3): {'attiva' if config['priorita_amazon'] else 'disattivata'}\n"
+            f"Marchi autorizzati: {conteggio_marchi}\n"
+            f"Parole escluse: {conteggio_parole}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_filtri")
+            ]]),
+        )
+    if azione == "filter_reset":
+        return await query.edit_message_text(
+            "♻️ Vuoi ripristinare tutti i marchi, le parole escluse e i punteggi predefiniti?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ SÌ, RIPRISTINA", callback_data="filter_reset_yes")],
+                [InlineKeyboardButton("❌ ANNULLA", callback_data="auto_filtri")],
+            ]),
+        )
+    if azione == "filter_reset_yes":
+        db = sqlite3.connect(DB_PATH)
+        db.execute("DELETE FROM marchi_qualita")
+        db.execute("DELETE FROM parole_indesiderate_qualita")
+        for categoria, marchi in MARCHI_AUTORIZZATI.items():
+            db.executemany(
+                "INSERT INTO marchi_qualita (categoria, marchio) VALUES (?, ?)",
+                [(categoria, marchio) for marchio in marchi],
+            )
+        db.executemany(
+            "INSERT INTO parole_indesiderate_qualita (parola) VALUES (?)",
+            [(parola,) for parola in PAROLE_INDESIDERATE],
+        )
+        db.commit()
+        db.close()
+        salva_config_automatica("punteggio_minimo", 5)
+        salva_config_automatica("bonus_sconto_da", 30)
+        salva_config_automatica("priorita_amazon", 1)
+        salva_config_automatica("attiva", 0)
+        return await mostra_menu_filtri(query)
+
+
+async def richiedi_modifica_filtro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    azione = query.data
+    mappa = {
+        "filter_brand_add": (FILTRO_MARCHIO_AGGIUNGI, "Scrivi il marchio da aggiungere."),
+        "filter_brand_remove": (FILTRO_MARCHIO_RIMUOVI, "Scrivi il marchio da rimuovere."),
+        "filter_word_add": (FILTRO_PAROLA_AGGIUNGI, "Scrivi la parola o l’espressione da escludere."),
+        "filter_word_remove": (FILTRO_PAROLA_RIMUOVI, "Scrivi la parola o l’espressione da rimuovere."),
+    }
+    stato, istruzione = mappa[azione]
+    if "brand" in azione and context.user_data.get("filtro_categoria") not in AUTO_CATEGORIE:
+        await query.edit_message_text("❌ Seleziona prima una categoria.")
+        return ConversationHandler.END
+    await query.edit_message_text(
+        f"{istruzione}\n\nUsa il nome esatto, per esempio: Philips\n"
+        "Per annullare scrivi /annulla"
+    )
+    return stato
+
+
+def _pulisci_valore_filtro(testo):
+    return re.sub(r"\s+", " ", str(testo or "").strip())[:80]
+
+
+async def ricevi_modifica_filtro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    valore = _pulisci_valore_filtro(update.message.text)
+    stato = context.user_data.get("stato_filtro_corrente")
+    if len(valore) < 2:
+        await update.message.reply_text("❌ Inserisci almeno 2 caratteri.")
+        return stato
+
+    # Lo stato viene valorizzato dai quattro wrapper registrati nel ConversationHandler.
+    categoria = context.user_data.get("filtro_categoria")
+    db = sqlite3.connect(DB_PATH)
+    if stato == FILTRO_MARCHIO_AGGIUNGI:
+        db.execute(
+            "INSERT OR IGNORE INTO marchi_qualita (categoria, marchio) VALUES (?, ?)",
+            (categoria, valore),
+        )
+        messaggio = f"✅ Marchio aggiunto in {AUTO_CATEGORIE[categoria][0]}: {valore}"
+    elif stato == FILTRO_MARCHIO_RIMUOVI:
+        cursore = db.execute(
+            "DELETE FROM marchi_qualita WHERE categoria = ? AND marchio = ? COLLATE NOCASE",
+            (categoria, valore),
+        )
+        messaggio = "✅ Marchio rimosso." if cursore.rowcount else "ℹ️ Marchio non trovato."
+    elif stato == FILTRO_PAROLA_AGGIUNGI:
+        db.execute(
+            "INSERT OR IGNORE INTO parole_indesiderate_qualita (parola) VALUES (?)",
+            (valore,),
+        )
+        messaggio = f"✅ Parola esclusa aggiunta: {valore}"
+    else:
+        cursore = db.execute(
+            "DELETE FROM parole_indesiderate_qualita WHERE parola = ? COLLATE NOCASE",
+            (valore,),
+        )
+        messaggio = "✅ Parola rimossa." if cursore.rowcount else "ℹ️ Parola non trovata."
+    db.commit()
+    db.close()
+    salva_config_automatica("attiva", 0)
+    await update.message.reply_text(
+        messaggio + "\n\nL’automazione è stata disattivata: riattivala dopo le modifiche.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⚙️ TORNA AI FILTRI", callback_data="auto_filtri")
+        ]]),
+    )
+    context.user_data.pop("stato_filtro_corrente", None)
+    return ConversationHandler.END
+
+
+def _imposta_stato_filtro(stato):
+    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        context.user_data["stato_filtro_corrente"] = stato
+        return await richiedi_modifica_filtro(update, context)
+    return handler
 
 
 def tastiera_automazione(configurazione):
@@ -935,6 +1269,7 @@ def tastiera_automazione(configurazione):
             f"🎯 QUALITÀ: {etichetta_qualita}",
             callback_data="auto_qualita",
         )],
+        [InlineKeyboardButton("⚙️ FILTRI SELETTIVI", callback_data="auto_filtri")],
         [InlineKeyboardButton("🧪 TESTA RICERCA", callback_data="auto_test")],
         [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
     ])
@@ -1273,13 +1608,17 @@ def valuta_qualita_prodotto(prodotto, categoria, modalita):
     titolo = _normalizza_qualita(prodotto.get("nome"))
     marchio = _normalizza_qualita(prodotto.get("marchio"))
     venditore = _normalizza_qualita(prodotto.get("venditore"))
-    autorizzati = {_normalizza_qualita(x) for x in MARCHI_AUTORIZZATI.get(categoria, set())}
+    configurazione = leggi_config_automatica()
+    autorizzati = {_normalizza_qualita(x) for x in leggi_marchi_qualita(categoria)}
     marchio_noto = bool(marchio) and any(
         marchio == candidato or (len(candidato) >= 4 and candidato in marchio)
         for candidato in autorizzati
     )
     venduto_amazon = "amazon" in venditore
-    indesiderate = [parola for parola in PAROLE_INDESIDERATE if parola in titolo]
+    indesiderate = [
+        parola for parola in leggi_parole_indesiderate()
+        if _normalizza_qualita(parola) in titolo
+    ]
     pertinente = any(
         _normalizza_qualita(parola) in titolo
         for parola in PAROLE_CATEGORIA.get(categoria, set())
@@ -1295,12 +1634,12 @@ def valuta_qualita_prodotto(prodotto, categoria, modalita):
         motivi.append("marchio assente -2")
     else:
         motivi.append("marchio non presente nella lista +0")
-    if venduto_amazon:
+    if venduto_amazon and configurazione["priorita_amazon"]:
         punteggio += 3
         motivi.append("venduto da Amazon +3")
-    if prodotto.get("sconto", 0) >= 30:
+    if prodotto.get("sconto", 0) >= configurazione["bonus_sconto_da"]:
         punteggio += 2
-        motivi.append("sconto almeno 30% +2")
+        motivi.append(f"sconto almeno {configurazione['bonus_sconto_da']}% +2")
     if pertinente:
         punteggio += 1
         motivi.append("titolo pertinente +1")
@@ -1311,7 +1650,7 @@ def valuta_qualita_prodotto(prodotto, categoria, modalita):
     if modalita == "marche":
         approvato = marchio_noto and not indesiderate
     else:
-        approvato = punteggio >= 5
+        approvato = punteggio >= configurazione["punteggio_minimo"]
     return approvato, punteggio, motivi
 
 
@@ -6588,10 +6927,51 @@ def main():
 
     app.add_handler(configurazione_automatica)
 
+    configurazione_filtri = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(
+                _imposta_stato_filtro(FILTRO_MARCHIO_AGGIUNGI),
+                pattern="^filter_brand_add$",
+            ),
+            CallbackQueryHandler(
+                _imposta_stato_filtro(FILTRO_MARCHIO_RIMUOVI),
+                pattern="^filter_brand_remove$",
+            ),
+            CallbackQueryHandler(
+                _imposta_stato_filtro(FILTRO_PAROLA_AGGIUNGI),
+                pattern="^filter_word_add$",
+            ),
+            CallbackQueryHandler(
+                _imposta_stato_filtro(FILTRO_PAROLA_RIMUOVI),
+                pattern="^filter_word_remove$",
+            ),
+        ],
+        states={
+            FILTRO_MARCHIO_AGGIUNGI: [MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_modifica_filtro)],
+            FILTRO_MARCHIO_RIMUOVI: [MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_modifica_filtro)],
+            FILTRO_PAROLA_AGGIUNGI: [MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_modifica_filtro)],
+            FILTRO_PAROLA_RIMUOVI: [MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_modifica_filtro)],
+        },
+        fallbacks=[CommandHandler("annulla", annulla)],
+        allow_reentry=True,
+    )
+    app.add_handler(configurazione_filtri)
+
     app.add_handler(
         CallbackQueryHandler(
             menu_automazione,
             pattern="^auto_menu$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            gestisci_filtri,
+            pattern=(
+                r"^(auto_filtri|filter_brands|filter_brandcat_[a-z]+|filter_words|"
+                r"filter_score|filter_score_[3-8]|filter_bonus|filter_bonus_(20|25|30|35|40)|"
+                r"filter_amazon|filter_summary|filter_reset|filter_reset_yes)$"
+            ),
         )
     )
 
