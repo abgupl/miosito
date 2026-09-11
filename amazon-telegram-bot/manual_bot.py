@@ -1870,7 +1870,7 @@ def crea_immagine_terminata(dati_immagine):
     if LOGO_PATH.exists():
         logo = Image.open(LOGO_PATH).convert("RGBA")
         logo = ImageOps.contain(logo, (195, 170), Image.Resampling.LANCZOS)
-        alpha_logo = logo.getchannel("A").point(lambda valore: valore * 235 // 255)
+        alpha_logo = logo.getchannel("A").point(lambda valore: valore * 150 // 255)
         logo.putalpha(alpha_logo)
         immagine.alpha_composite(logo, (1044 - logo.width, 36))
 
