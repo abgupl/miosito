@@ -113,18 +113,87 @@ AUTO_HASHTAG = {
 }
 
 MARCHI_AUTORIZZATI = {
-    "elettronica": {"apple", "samsung", "google", "xiaomi", "motorola", "honor", "oneplus", "nothing", "sony", "lg", "philips", "panasonic", "amazon", "anker", "belkin", "jbl", "bose", "soundcore"},
-    "informatica": {"apple", "asus", "acer", "lenovo", "hp", "dell", "msi", "logitech", "corsair", "kingston", "crucial", "sandisk", "western digital", "seagate", "tp-link", "netgear", "epson", "canon", "brother"},
-    "smartphone": {"apple", "samsung", "google", "xiaomi", "motorola", "honor", "oneplus", "nothing", "nokia", "oppo", "realme"},
-    "tvaudio": {"samsung", "lg", "sony", "philips", "panasonic", "tcl", "hisense", "jbl", "bose", "sonos", "sennheiser", "marshall", "soundcore", "yamaha", "denon"},
-    "gaming": {"playstation", "sony", "xbox", "microsoft", "nintendo", "logitech", "razer", "corsair", "steelseries", "hyperx", "thrustmaster", "msi", "asus"},
-    "casa": {"bialetti", "lagostina", "tefal", "wmf", "zwilling", "tescoma", "pyrex", "vileda", "brabantia", "leifheit", "joseph joseph", "scotch-brite", "amazon basics"},
-    "elettrodomestici": {"bosch", "philips", "de'longhi", "delonghi", "rowenta", "dyson", "braun", "moulinex", "ninja", "ariete", "gaggia", "krups", "hoover", "electrolux", "samsung", "lg", "karcher", "irobot", "roborock", "dreame"},
-    "persona": {"braun", "philips", "oral-b", "panasonic", "remington", "babyliss", "ghd", "waterpik", "gillette", "veet", "imetec"},
-    "bellezza": {"l'oreal paris", "maybelline", "garnier", "cerave", "la roche-posay", "vichy", "nivea", "bioderma", "eucerin", "avene", "collistar", "olaplex", "revlon", "max factor", "rimmel"},
-    "sport": {"nike", "adidas", "puma", "under armour", "reebok", "asics", "new balance", "garmin", "polar", "suunto", "fitbit", "wilson", "head", "arena", "speedo", "kiprun", "quechua", "domyos"},
-    "faidate": {"bosch", "makita", "dewalt", "black+decker", "stanley", "einhell", "ryobi", "karcher", "beta", "usag", "facom", "fischer", "dremel", "milwaukee"},
-    "giocattoli": {"lego", "mattel", "hasbro", "ravensburger", "clementoni", "giochi preziosi", "fisher-price", "playmobil", "spin master", "barbie", "hot wheels", "nerf", "chicco", "disney", "nintendo"},
+    "elettronica": {
+        "amazon", "amazon basics", "anker", "apple", "baseus", "belkin", "bose",
+        "canon", "dji", "eufy", "fujifilm", "garmin", "google", "gopro", "hama",
+        "huawei", "jabra", "jbl", "kodak", "lg", "logitech", "motorola", "netgear",
+        "nikon", "nokia", "nothing", "oneplus", "oppo", "panasonic", "philips",
+        "polaroid", "realme", "ring", "samsung", "sennheiser", "sony", "soundcore",
+        "spigen", "tapo", "tp-link", "ugreen", "xiaomi",
+    },
+    "informatica": {
+        "aoc", "acer", "amd", "apple", "asrock", "asus", "benq", "brother",
+        "canon", "corsair", "creative", "crucial", "dell", "epson", "gigabyte",
+        "hp", "huawei", "hyperx", "intel", "keychron", "kingston", "lenovo",
+        "lexar", "lg", "logitech", "microsoft", "msi", "netgear", "nvidia",
+        "nzxt", "pny", "razer", "samsung", "sandisk", "seagate", "steelseries",
+        "synology", "tp-link", "trust", "ugreen", "western digital", "wd", "zotac",
+    },
+    "smartphone": {
+        "amazon", "anker", "apple", "baseus", "belkin", "blackview", "crosscall",
+        "esr", "fairphone", "google", "honor", "huawei", "motorola", "nokia",
+        "nothing", "oneplus", "oppo", "otterbox", "realme", "samsung", "spigen",
+        "tcl", "ugreen", "vivo", "xiaomi", "zte",
+    },
+    "tvaudio": {
+        "amazon", "amazon fire tv", "audio-technica", "bang & olufsen", "beats",
+        "bose", "denon", "edifier", "grundig", "harman kardon", "hisense", "jabra",
+        "jbl", "klipsch", "lg", "loewe", "marshall", "panasonic", "philips",
+        "pioneer", "polk audio", "samsung", "sennheiser", "sharp", "skullcandy",
+        "sonos", "sony", "soundcore", "tcl", "technics", "toshiba", "yamaha",
+    },
+    "gaming": {
+        "8bitdo", "acer", "amd", "asus", "corsair", "elgato", "gamesir", "gigabyte",
+        "hori", "hyperx", "lenovo", "logitech", "meta", "microsoft", "msi", "nacon",
+        "nintendo", "nvidia", "oculus", "playstation", "razer", "roccat", "samsung",
+        "seagate", "sony", "steelseries", "thrustmaster", "turtle beach", "xbox",
+    },
+    "casa": {
+        "alessi", "amazon basics", "amefa", "ballarini", "bialetti", "bormioli rocco",
+        "brabantia", "brita", "curver", "fiskars", "guzzini", "ikea", "joseph joseph",
+        "kasanova", "keter", "lagostina", "le creuset", "leifheit", "luminarc",
+        "moneta", "pedrini", "pyrex", "rcr", "risoli", "scotch-brite", "simplehuman",
+        "tefal", "tescoma", "vileda", "wmf", "zwilling",
+    },
+    "elettrodomestici": {
+        "aeg", "aeroccino", "ariete", "beko", "bialetti", "bissell", "black+decker",
+        "bosch", "braun", "candy", "cecotec", "de'longhi", "delonghi", "dreame",
+        "dyson", "electrolux", "gaggia", "haier", "hisense", "hoover", "hotpoint",
+        "imetec", "indesit", "irobot", "karcher", "kenwood", "kitchenaid", "krups",
+        "lavazza", "lg", "miele", "moulinex", "nespresso", "ninja", "panasonic",
+        "philips", "roborock", "rowenta", "samsung", "saeco", "shark", "smeg",
+        "tefal", "whirlpool", "xiaomi",
+    },
+    "persona": {
+        "babyliss", "braun", "colgate", "dyson", "foreo", "ghd", "gillette",
+        "imed", "imetec", "laica", "medisana", "oral-b", "panasonic", "philips",
+        "remington", "rowenta", "sensodyne", "sonicare", "veet", "waterpik",
+    },
+    "bellezza": {
+        "avene", "bioderma", "biotherm", "cerave", "clarins", "clinique", "collistar",
+        "eucerin", "garnier", "kiehl's", "l'oreal paris", "la roche-posay", "lancôme",
+        "mac", "max factor", "maybelline", "nivea", "olaplex", "ordinary", "revlon",
+        "rimmel", "shiseido", "the ordinary", "vichy", "wella",
+    },
+    "sport": {
+        "adidas", "arena", "asics", "brooks", "callaway", "campagnolo", "castelli",
+        "continental", "domyos", "dunlop", "fitbit", "garmin", "head", "joma",
+        "kappa", "kiprun", "mizuno", "new balance", "nike", "oakley", "polar",
+        "puma", "quechua", "reebok", "salomon", "shimano", "speedo", "suunto",
+        "the north face", "under armour", "wilson", "yonex",
+    },
+    "faidate": {
+        "3m", "abb", "bahco", "beta", "black+decker", "bosch", "bostik", "dewalt",
+        "dremel", "einhell", "facom", "fischer", "hilti", "karcher", "knipex", "loctite",
+        "makita", "metabo", "milwaukee", "pattex", "ryobi", "stanley", "tacklife",
+        "usag", "wera", "wiha", "wolfcraft", "worx",
+    },
+    "giocattoli": {
+        "asmodee", "barbie", "bruder", "chicco", "clementoni", "crayola", "disney",
+        "fisher-price", "funko", "geomag", "giochi preziosi", "hasbro", "hot wheels",
+        "lego", "lisciani", "mattel", "mga entertainment", "nerf", "nintendo", "pinypon",
+        "play-doh", "playmobil", "ravensburger", "schleich", "spin master", "vtech",
+    },
 }
 
 PAROLE_INDESIDERATE = {
@@ -902,6 +971,21 @@ def inizializza_automazione():
         )
         cur.execute(
             "INSERT INTO configurazione_automatica (chiave, valore) VALUES ('filtri_seed_v1', '1')"
+        )
+    catalogo_v2 = cur.execute(
+        "SELECT valore FROM configurazione_automatica WHERE chiave = 'marchi_catalogo_v2'"
+    ).fetchone()
+    if not catalogo_v2:
+        # Aggiornamento non distruttivo: conserva i marchi aggiunti dall'utente
+        # e inserisce una sola volta quelli del catalogo ampliato.
+        for categoria, marchi in MARCHI_AUTORIZZATI.items():
+            cur.executemany(
+                "INSERT OR IGNORE INTO marchi_qualita (categoria, marchio) VALUES (?, ?)",
+                [(categoria, marchio.strip()) for marchio in marchi],
+            )
+        cur.execute(
+            "INSERT INTO configurazione_automatica (chiave, valore) "
+            "VALUES ('marchi_catalogo_v2', '1')"
         )
     versione = cur.execute(
         "SELECT valore FROM configurazione_automatica WHERE chiave = 'versione_config'"
