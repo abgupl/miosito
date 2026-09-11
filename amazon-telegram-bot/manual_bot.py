@@ -4,6 +4,7 @@ import sqlite3
 import html
 import re
 import random
+import unicodedata
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -102,6 +103,41 @@ AUTO_HASHTAG = {
     "bellezza": "#Bellezza",
     "faidate": "#FaiDaTe",
     "giocattoli": "#GiochiEGiocattoli",
+}
+
+MARCHI_AUTORIZZATI = {
+    "elettronica": {"apple", "samsung", "google", "xiaomi", "motorola", "honor", "oneplus", "nothing", "sony", "lg", "philips", "panasonic", "amazon", "anker", "belkin", "jbl", "bose", "soundcore"},
+    "informatica": {"apple", "asus", "acer", "lenovo", "hp", "dell", "msi", "logitech", "corsair", "kingston", "crucial", "sandisk", "western digital", "seagate", "tp-link", "netgear", "epson", "canon", "brother"},
+    "smartphone": {"apple", "samsung", "google", "xiaomi", "motorola", "honor", "oneplus", "nothing", "nokia", "oppo", "realme"},
+    "tvaudio": {"samsung", "lg", "sony", "philips", "panasonic", "tcl", "hisense", "jbl", "bose", "sonos", "sennheiser", "marshall", "soundcore", "yamaha", "denon"},
+    "gaming": {"playstation", "sony", "xbox", "microsoft", "nintendo", "logitech", "razer", "corsair", "steelseries", "hyperx", "thrustmaster", "msi", "asus"},
+    "casa": {"bialetti", "lagostina", "tefal", "wmf", "zwilling", "tescoma", "pyrex", "vileda", "brabantia", "leifheit", "joseph joseph", "scotch-brite", "amazon basics"},
+    "elettrodomestici": {"bosch", "philips", "de'longhi", "delonghi", "rowenta", "dyson", "braun", "moulinex", "ninja", "ariete", "gaggia", "krups", "hoover", "electrolux", "samsung", "lg", "karcher", "irobot", "roborock", "dreame"},
+    "persona": {"braun", "philips", "oral-b", "panasonic", "remington", "babyliss", "ghd", "waterpik", "gillette", "veet", "imetec"},
+    "bellezza": {"l'oreal paris", "maybelline", "garnier", "cerave", "la roche-posay", "vichy", "nivea", "bioderma", "eucerin", "avene", "collistar", "olaplex", "revlon", "max factor", "rimmel"},
+    "sport": {"nike", "adidas", "puma", "under armour", "reebok", "asics", "new balance", "garmin", "polar", "suunto", "fitbit", "wilson", "head", "arena", "speedo", "kiprun", "quechua", "domyos"},
+    "faidate": {"bosch", "makita", "dewalt", "black+decker", "stanley", "einhell", "ryobi", "karcher", "beta", "usag", "facom", "fischer", "dremel", "milwaukee"},
+    "giocattoli": {"lego", "mattel", "hasbro", "ravensburger", "clementoni", "giochi preziosi", "fisher-price", "playmobil", "spin master", "barbie", "hot wheels", "nerf", "chicco", "disney", "nintendo"},
+}
+
+PAROLE_INDESIDERATE = {
+    "generico", "senza marca", "confezione vuota", "solo ricambio",
+    "adesivo decorativo", "guscio universale", "compatibile universale",
+}
+
+PAROLE_CATEGORIA = {
+    "elettronica": {"cuffie", "auricolari", "bluetooth", "smart", "elettronica", "speaker", "caricatore"},
+    "informatica": {"pc", "computer", "notebook", "tablet", "ssd", "mouse", "tastiera", "stampante", "router"},
+    "smartphone": {"smartphone", "telefono", "iphone", "galaxy", "pixel", "powerbank", "caricabatterie"},
+    "tvaudio": {"tv", "televisore", "soundbar", "cuffie", "auricolari", "speaker", "audio"},
+    "gaming": {"gaming", "videogioco", "console", "controller", "playstation", "xbox", "nintendo"},
+    "casa": {"casa", "cucina", "pentola", "padella", "pulizia", "contenitore", "organizer"},
+    "elettrodomestici": {"aspirapolvere", "friggitrice", "robot", "frullatore", "macchina", "forno", "elettrodomestico"},
+    "persona": {"rasoio", "spazzolino", "asciugacapelli", "piastra", "epilatore", "cura"},
+    "bellezza": {"bellezza", "crema", "profumo", "cosmetico", "skincare", "makeup", "shampoo"},
+    "sport": {"sport", "fitness", "palestra", "running", "scarpe", "allenamento", "smartwatch"},
+    "faidate": {"trapano", "avvitatore", "utensile", "attrezzo", "bricolage", "fai da te"},
+    "giocattoli": {"gioco", "giocattolo", "lego", "bambini", "bambino", "bambina", "puzzle"},
 }
 
 
@@ -822,6 +858,7 @@ def inizializza_automazione():
         "ora_fine": "21:00",
         "prossimo_invio": "",
         "sconto_minimo": "20",
+        "qualita_prodotti": "selettiva",
     }
     for chiave, valore in defaults.items():
         cur.execute(
@@ -857,6 +894,7 @@ def leggi_config_automatica():
         "ora_fine": valori.get("ora_fine", "21:00"),
         "prossimo_invio": valori.get("prossimo_invio", ""),
         "sconto_minimo": int(valori.get("sconto_minimo", "20")),
+        "qualita_prodotti": valori.get("qualita_prodotti", "selettiva"),
         "categorie": categorie,
     }
 
@@ -873,6 +911,11 @@ def salva_config_automatica(chiave, valore):
 
 def tastiera_automazione(configurazione):
     stato = "🟢 ATTIVA" if configurazione["attiva"] else "🔴 DISATTIVATA"
+    etichetta_qualita = (
+        "SOLO MARCHE"
+        if configurazione["qualita_prodotti"] == "marche"
+        else configurazione["qualita_prodotti"].upper()
+    )
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"STATO: {stato}", callback_data="auto_toggle")],
         [InlineKeyboardButton(
@@ -888,6 +931,10 @@ def tastiera_automazione(configurazione):
             f"📉 SCONTO MINIMO: {configurazione['sconto_minimo']}%",
             callback_data="auto_sconto",
         )],
+        [InlineKeyboardButton(
+            f"🎯 QUALITÀ: {etichetta_qualita}",
+            callback_data="auto_qualita",
+        )],
         [InlineKeyboardButton("🧪 TESTA RICERCA", callback_data="auto_test")],
         [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
     ])
@@ -895,12 +942,18 @@ def tastiera_automazione(configurazione):
 
 def testo_automazione(configurazione):
     categorie = [AUTO_CATEGORIE[x][0] for x in configurazione["categorie"] if x in AUTO_CATEGORIE]
+    etichetta_qualita = (
+        "Solo marche"
+        if configurazione["qualita_prodotti"] == "marche"
+        else configurazione["qualita_prodotti"].capitalize()
+    )
     return (
         "🤖 INVIO AUTOMATICO\n\n"
         f"Stato: {'🟢 Attivo' if configurazione['attiva'] else '🔴 Disattivato'}\n"
         f"Intervallo: {configurazione['intervallo_minuti']} minuti\n"
         f"Orario: {configurazione['ora_inizio']}–{configurazione['ora_fine']}\n"
         f"Sconto minimo: {configurazione['sconto_minimo']}%\n"
+        f"Qualità prodotti: {etichetta_qualita}\n"
         f"Categorie: {', '.join(categorie) if categorie else 'nessuna'}"
     )
 
@@ -991,6 +1044,30 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
         ]
         await query.edit_message_text("📉 Seleziona lo sconto minimo:", reply_markup=InlineKeyboardMarkup(tastiera))
         return
+
+    if azione == "auto_qualita":
+        tastiera = InlineKeyboardMarkup([
+            [InlineKeyboardButton("STANDARD", callback_data="auto_quality_standard")],
+            [InlineKeyboardButton("SELETTIVA", callback_data="auto_quality_selettiva")],
+            [InlineKeyboardButton("SOLO MARCHE", callback_data="auto_quality_marche")],
+            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
+        ])
+        await query.edit_message_text(
+            "🎯 Seleziona la qualità dei prodotti:\n\n"
+            "Standard: usa sconto e categoria.\n"
+            "Selettiva: applica il punteggio qualità.\n"
+            "Solo marche: accetta esclusivamente marchi autorizzati.",
+            reply_markup=tastiera,
+        )
+        return
+
+    if azione.startswith("auto_quality_"):
+        modalita = azione.replace("auto_quality_", "", 1)
+        if modalita not in {"standard", "selettiva", "marche"}:
+            return
+        salva_config_automatica("qualita_prodotti", modalita)
+        salva_config_automatica("attiva", 0)
+        return await aggiorna_menu_automazione(query)
 
     if azione.startswith("auto_disc_"):
         salva_config_automatica("sconto_minimo", int(azione.rsplit("_", 1)[1]))
@@ -1141,6 +1218,16 @@ def estrai_prodotto_creators(item):
         if offerta.merchant_info and offerta.merchant_info.name:
             venditore = offerta.merchant_info.name.strip()
 
+        marchio = None
+        info_linea = getattr(item.item_info, "by_line_info", None)
+        attributo_marchio = getattr(info_linea, "brand", None)
+        if attributo_marchio and getattr(attributo_marchio, "display_value", None):
+            marchio = attributo_marchio.display_value.strip()
+        if not marchio:
+            produttore = getattr(info_linea, "manufacturer", None)
+            if produttore and getattr(produttore, "display_value", None):
+                marchio = produttore.display_value.strip()
+
         deal_end_time = None
         if offerta.deal_details and offerta.deal_details.end_time:
             deal_end_time = offerta.deal_details.end_time
@@ -1156,6 +1243,7 @@ def estrai_prodotto_creators(item):
             "immagine": immagine,
             "link": link,
             "venditore": venditore,
+            "marchio": marchio,
             "deal_end_time": deal_end_time,
         }
     except (AttributeError, IndexError, TypeError, ValueError):
@@ -1168,6 +1256,63 @@ def riga_venditore_categoria(prodotto, categoria):
     if venditore and "amazon" in venditore.lower():
         return f"Venduto e spedito da <i>Amazon</i> - Categoria: {hashtag}"
     return f"Categoria: {hashtag}"
+
+
+def _normalizza_qualita(valore):
+    testo = unicodedata.normalize("NFKD", str(valore or ""))
+    testo = "".join(carattere for carattere in testo if not unicodedata.combining(carattere))
+    return re.sub(r"[^a-z0-9+ -]+", "", testo.lower()).strip()
+
+
+def valuta_qualita_prodotto(prodotto, categoria, modalita):
+    """Restituisce approvazione, punteggio e motivazioni, senza filtri di prezzo."""
+    modalita = modalita if modalita in {"standard", "selettiva", "marche"} else "selettiva"
+    if modalita == "standard":
+        return True, 0, ["Modalità standard: nessun filtro qualità"]
+
+    titolo = _normalizza_qualita(prodotto.get("nome"))
+    marchio = _normalizza_qualita(prodotto.get("marchio"))
+    venditore = _normalizza_qualita(prodotto.get("venditore"))
+    autorizzati = {_normalizza_qualita(x) for x in MARCHI_AUTORIZZATI.get(categoria, set())}
+    marchio_noto = bool(marchio) and any(
+        marchio == candidato or (len(candidato) >= 4 and candidato in marchio)
+        for candidato in autorizzati
+    )
+    venduto_amazon = "amazon" in venditore
+    indesiderate = [parola for parola in PAROLE_INDESIDERATE if parola in titolo]
+    pertinente = any(
+        _normalizza_qualita(parola) in titolo
+        for parola in PAROLE_CATEGORIA.get(categoria, set())
+    )
+
+    punteggio = 0
+    motivi = []
+    if marchio_noto:
+        punteggio += 2
+        motivi.append("marchio conosciuto +2")
+    elif not marchio:
+        punteggio -= 2
+        motivi.append("marchio assente -2")
+    else:
+        motivi.append("marchio non presente nella lista +0")
+    if venduto_amazon:
+        punteggio += 3
+        motivi.append("venduto da Amazon +3")
+    if prodotto.get("sconto", 0) >= 30:
+        punteggio += 2
+        motivi.append("sconto almeno 30% +2")
+    if pertinente:
+        punteggio += 1
+        motivi.append("titolo pertinente +1")
+    if indesiderate:
+        punteggio -= 3
+        motivi.append(f"parole indesiderate -3: {', '.join(indesiderate)}")
+
+    if modalita == "marche":
+        approvato = marchio_noto and not indesiderate
+    else:
+        approvato = punteggio >= 5
+    return approvato, punteggio, motivi
 
 
 def crea_immagine_brandizzata(image_url):
@@ -1207,7 +1352,7 @@ def crea_immagine_brandizzata(image_url):
     logo = Image.open(LOGO_PATH).convert("RGBA")
     logo = ImageOps.contain(logo, (195, 170), Image.Resampling.LANCZOS)
     # Trasparenza molto leggera: il logo conserva circa il 92% di opacità.
-    alpha_logo = logo.getchannel("A").point(lambda valore: valore * 150 // 255)
+    alpha_logo = logo.getchannel("A").point(lambda valore: valore * 235 // 255)
     logo.putalpha(alpha_logo)
     # Margine del logo: 10 px dal profilo nero, in alto e a destra.
     posizione_logo = (1044 - logo.width, 36)
@@ -1358,26 +1503,45 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
     try:
         items = await asyncio.to_thread(search_items, termine, "All", 10)
         prodotti = []
+        scartati_qualita = 0
         for item in items:
             prodotto = estrai_prodotto_creators(item)
-            if prodotto and prodotto["sconto"] >= configurazione["sconto_minimo"]:
+            if not prodotto or prodotto["sconto"] < configurazione["sconto_minimo"]:
+                continue
+            prodotto["categoria"] = categoria
+            approvato, punteggio, motivi = valuta_qualita_prodotto(
+                prodotto,
+                categoria,
+                configurazione["qualita_prodotti"],
+            )
+            prodotto["punteggio_qualita"] = punteggio
+            prodotto["motivi_qualita"] = motivi
+            if approvato:
                 prodotti.append(prodotto)
+            else:
+                scartati_qualita += 1
 
         if not prodotti:
             await attesa.edit_text(
                 "ℹ️ Collegamento riuscito, ma la ricerca non ha trovato prodotti "
-                f"con almeno il {configurazione['sconto_minimo']}% di sconto.\n\n"
+                f"con almeno il {configurazione['sconto_minimo']}% di sconto "
+                f"approvati dalla modalità {configurazione['qualita_prodotti'].capitalize()}.\n"
+                f"Prodotti scartati dal filtro qualità: {scartati_qualita}.\n\n"
                 "Nessun post è stato pubblicato."
             )
             return
 
-        prodotto = max(prodotti, key=lambda x: x["sconto"])
-        prodotto["categoria"] = categoria
+        prodotto = max(prodotti, key=lambda x: (x["punteggio_qualita"], x["sconto"]))
         await attesa.delete()
         tipo_offerta = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
         vecchio = (
             f"\n❌ Prima: <s>{html.escape(prodotto['vecchio_prezzo'])}</s>"
             if prodotto["vecchio_prezzo"] else ""
+        )
+        dettaglio_qualita = (
+            f" — {prodotto['punteggio_qualita']} punti"
+            if configurazione["qualita_prodotti"] != "standard"
+            else ""
         )
         testo = (
             f"🧪 <b>ANTEPRIMA TEST — {tipo_offerta}</b>\n\n"
@@ -1386,6 +1550,9 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
             f"{vecchio}\n"
             f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
             f"{riga_venditore_categoria(prodotto, categoria)}\n\n"
+            f"Marchio: {html.escape(prodotto.get('marchio') or 'non disponibile')}\n"
+            f"Qualità: {configurazione['qualita_prodotti'].capitalize()}"
+            f"{dettaglio_qualita}\n\n"
             f"👉 <a href=\"{html.escape(prodotto['link'], quote=True)}\">Scopri l’offerta su Amazon</a>\n\n"
             "Anteprima non pubblicata"
         )
@@ -1555,6 +1722,19 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
                 if _asin_gia_pubblicato(prodotto["asin"]):
                     continue
                 prodotto["categoria"] = categoria
+                approvato, punteggio, motivi = valuta_qualita_prodotto(
+                    prodotto,
+                    categoria,
+                    configurazione["qualita_prodotti"],
+                )
+                if not approvato:
+                    print(
+                        f"Prodotto scartato dal filtro qualità ({punteggio} punti): "
+                        f"{prodotto['nome']}"
+                    )
+                    continue
+                prodotto["punteggio_qualita"] = punteggio
+                prodotto["motivi_qualita"] = motivi
                 candidati.append(prodotto)
         except Exception as errore:
             print(f"Errore tentativo automatico {numero}: {errore}")
@@ -1563,7 +1743,10 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
 
     if not candidati:
         return None
-    candidati.sort(key=lambda x: (x["sconto"], -x["prezzo_valore"]), reverse=True)
+    candidati.sort(
+        key=lambda x: (x.get("punteggio_qualita", 0), x["sconto"]),
+        reverse=True,
+    )
     return candidati[0]
 
 
@@ -6415,7 +6598,11 @@ def main():
     app.add_handler(
         CallbackQueryHandler(
             gestisci_automazione,
-            pattern=r"^(auto_toggle|auto_sconto|auto_disc_[0-9]+|auto_categorie|auto_cat_[a-z]+)$",
+            pattern=(
+                r"^(auto_toggle|auto_sconto|auto_disc_[0-9]+|"
+                r"auto_categorie|auto_cat_[a-z]+|auto_qualita|"
+                r"auto_quality_(standard|selettiva|marche))$"
+            ),
         )
     )
 
