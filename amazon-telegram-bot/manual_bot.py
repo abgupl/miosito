@@ -4165,8 +4165,14 @@ def menu_utente_principale():
         [
             [
                 InlineKeyboardButton(
-                    "🛍️ SCEGLI LA CATEGORIA",
-                    callback_data="categorie",
+                    "📱 BESTPRICE24H TECH",
+                    url="https://t.me/bestprice_2026",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🏠 BESTPRICE24H CASA",
+                    url=CASA_CHANNEL_URL,
                 )
             ],
             [
@@ -4186,110 +4192,6 @@ def menu_utente_principale():
                 ),
             ],
         ]
-    )
-
-
-def menu_categorie():
-
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🔌 ELETTRONICA",
-                    url="https://t.me/bestprice_2026",
-                ),
-                InlineKeyboardButton(
-                    "🏠 CASA 🚧",
-                    callback_data="wip_casa",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🌿 GIARDINO 🚧",
-                    callback_data="wip_giardino",
-                ),
-                InlineKeyboardButton(
-                    "🔨 FAI DA TE 🚧",
-                    callback_data="wip_faidate",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "👕 MODA 🚧",
-                    callback_data="wip_moda",
-                ),
-                InlineKeyboardButton(
-                    "💄 BELLEZZA 🚧",
-                    callback_data="wip_bellezza",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🏋️ SPORT 🚧",
-                    callback_data="wip_sport",
-                ),
-                InlineKeyboardButton(
-                    "🧸 BAMBINI 🚧",
-                    callback_data="wip_bambini",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🐶 ANIMALI 🚧",
-                    callback_data="wip_animali",
-                ),
-                InlineKeyboardButton(
-                    "🚗 AUTO & MOTO 🚧",
-                    callback_data="wip_auto",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ TORNA AL MENU PRINCIPALE",
-                    callback_data="menu_utente",
-                )
-            ],
-        ]
-    )
-
-
-async def mostra_categorie(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-    await query.answer()
-
-    await query.edit_message_text(
-        "🛍️ SCEGLI LA CATEGORIA\n\n"
-        "Segui solo le offerte che ti interessano 👇",
-        reply_markup=menu_categorie(),
-    )
-
-
-async def categoria_work_in_progress(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-    await query.answer()
-
-    await query.edit_message_text(
-        "🚧 COMING SOON\n\n"
-        "Stiamo preparando questo canale.\n"
-        "Torna presto per scoprire le nuove offerte! 🔥",
-        reply_markup=InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "⬅️ TORNA ALLE CATEGORIE",
-                        callback_data="categorie",
-                    )
-                ]
-            ]
-        ),
     )
 
 
@@ -8988,20 +8890,6 @@ def main():
         )
     )
 
-
-    app.add_handler(
-        CallbackQueryHandler(
-            mostra_categorie,
-            pattern="^categorie$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            categoria_work_in_progress,
-            pattern=r"^wip_",
-        )
-    )
 
     app.add_handler(
         CallbackQueryHandler(
