@@ -69,7 +69,11 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHANNEL_ID = os.environ["TELEGRAM_CHAT_ID"]
 CASA_CHANNEL_ID = os.environ.get("TELEGRAM_CHAT_ID_CASA", "@BestPrice24hCasa")
 CASA_CHANNEL_URL = "https://t.me/BestPrice24hCasa"
-CASA_CATEGORIE = {"casa", "elettrodomestici", "faidate"}
+TECH_CATEGORIE = {"elettronica", "informatica", "smartphone", "tvaudio", "gaming"}
+CASA_CATEGORIE = {
+    "casa", "elettrodomestici", "faidate", "giardino", "arredamento",
+    "illuminazione",
+}
 ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
 DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
 ROMA_TZ = ZoneInfo("Europe/Rome")
@@ -106,6 +110,9 @@ AUTO_CATEGORIE = {
     "bellezza": ("💄 Bellezza", ["prodotti bellezza", "skincare in offerta", "profumi e cosmetici"]),
     "sport": ("🏋️ Sport", ["offerte sport fitness", "attrezzatura sportiva", "abbigliamento sportivo"]),
     "faidate": ("🛠 Fai da te", ["offerte fai da te", "utensili elettrici", "attrezzi bricolage"]),
+    "giardino": ("🌿 Giardino", ["offerte giardino", "attrezzi giardinaggio", "arredo esterno"]),
+    "arredamento": ("🛋 Arredamento", ["offerte arredamento casa", "mobili salvaspazio", "organizzazione casa"]),
+    "illuminazione": ("💡 Illuminazione", ["offerte illuminazione", "lampade led casa", "illuminazione smart"]),
     "giocattoli": ("🧸 Giochi e giocattoli", ["giocattoli in offerta", "giochi da tavolo", "LEGO in offerta"]),
 }
 
@@ -121,6 +128,9 @@ AUTO_HASHTAG = {
     "persona": "#CuraPersonale",
     "bellezza": "#Bellezza",
     "faidate": "#FaiDaTe",
+    "giardino": "#Giardino",
+    "arredamento": "#Arredamento",
+    "illuminazione": "#Illuminazione",
     "giocattoli": "#GiochiEGiocattoli",
 }
 
@@ -200,6 +210,18 @@ MARCHI_AUTORIZZATI = {
         "makita", "metabo", "milwaukee", "pattex", "ryobi", "stanley", "tacklife",
         "usag", "wera", "wiha", "wolfcraft", "worx",
     },
+    "giardino": {
+        "black+decker", "bosch", "einhell", "fiskars", "gardena", "greenworks",
+        "husqvarna", "karcher", "makita", "ryobi", "stihl", "weber", "worx",
+    },
+    "arredamento": {
+        "amazon basics", "brabantia", "curver", "emuca", "ikea", "keter",
+        "songmics", "tontarelli", "vasagle", "wenko", "yamazaki", "zinus",
+    },
+    "illuminazione": {
+        "amazon basics", "artemide", "eglo", "govee", "ledvance", "nanoleaf",
+        "osram", "paulmann", "philips", "philips hue", "tapo", "xiaomi",
+    },
     "giocattoli": {
         "asmodee", "barbie", "bruder", "chicco", "clementoni", "crayola", "disney",
         "fisher-price", "funko", "geomag", "giochi preziosi", "hasbro", "hot wheels",
@@ -225,6 +247,9 @@ PAROLE_CATEGORIA = {
     "bellezza": {"bellezza", "crema", "profumo", "cosmetico", "skincare", "makeup", "shampoo"},
     "sport": {"sport", "fitness", "palestra", "running", "scarpe", "allenamento", "smartwatch"},
     "faidate": {"trapano", "avvitatore", "utensile", "attrezzo", "bricolage", "fai da te"},
+    "giardino": {"giardino", "giardinaggio", "tagliaerba", "decespugliatore", "irrigazione", "barbecue", "esterno"},
+    "arredamento": {"arredamento", "mobile", "scaffale", "scrivania", "sedia", "armadio", "comodino"},
+    "illuminazione": {"lampada", "lampadina", "led", "plafoniera", "applique", "illuminazione", "luce"},
     "giocattoli": {"gioco", "giocattolo", "lego", "bambini", "bambino", "bambina", "puzzle"},
 }
 
@@ -279,6 +304,18 @@ PRODOTTI_PRIORITARI_DEFAULT = {
     "faidate": [
         ("professional", "bosch", 4), ("dewalt", "dewalt", 4),
         ("makita", "makita", 4), ("milwaukee", "milwaukee", 4),
+    ],
+    "giardino": [
+        ("gardena", "gardena", 4), ("fiskars", "fiskars", 3),
+        ("tagliaerba", "bosch", 4), ("barbecue", "weber", 4),
+    ],
+    "arredamento": [
+        ("songmics", "songmics", 3), ("vasagle", "vasagle", 3),
+        ("keter", "keter", 3), ("zinus", "zinus", 3),
+    ],
+    "illuminazione": [
+        ("hue", "philips hue", 5), ("govee", "govee", 4),
+        ("ledvance", "ledvance", 3), ("tapo", "tapo", 3),
     ],
     "giocattoli": [
         ("lego", "lego", 5), ("barbie", "mattel", 4),
@@ -770,6 +807,12 @@ def inizializza_programmazioni():
             "ADD COLUMN foto_file_id TEXT"
         )
 
+    if "telegram_chat_id" not in colonne:
+        cur.execute(
+            "ALTER TABLE programmazioni "
+            "ADD COLUMN telegram_chat_id TEXT"
+        )
+
     db.commit()
     db.close()
 
@@ -780,6 +823,7 @@ def salva_programmazione(
     link,
     prezzo,
     invio_previsto_locale,
+    telegram_chat_id=CHANNEL_ID,
 ):
 
     # Salviamo in UTC per evitare problemi
@@ -820,11 +864,12 @@ def salva_programmazione(
             vecchio_prezzo,
             template,
             foto_file_id,
+            telegram_chat_id,
             invio_previsto,
             stato,
             data_creazione
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'attesa', ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'attesa', ?)
     """, (
         nome,
         messaggio,
@@ -833,6 +878,7 @@ def salva_programmazione(
         vecchio_prezzo,
         template,
         None,
+        telegram_chat_id or CHANNEL_ID,
         invio_previsto_utc.isoformat(
             timespec="seconds"
         ),
@@ -866,7 +912,9 @@ async def invia_offerta_programmata(
         link,
         prezzo,
         foto_file_id,
+        telegram_chat_id,
     ) = programmazione
+    destinazione = telegram_chat_id or CHANNEL_ID
 
     messaggio_html = messaggio.startswith("__RICERCA_HTML__")
     if messaggio_html:
@@ -894,7 +942,7 @@ async def invia_offerta_programmata(
 
     if foto_file_id:
         messaggio_telegram = await bot.send_photo(
-            chat_id=CHANNEL_ID,
+            chat_id=destinazione,
             photo=foto_file_id,
             caption=messaggio_con_link,
             parse_mode="HTML",
@@ -902,7 +950,7 @@ async def invia_offerta_programmata(
         )
     else:
         messaggio_telegram = await bot.send_message(
-            chat_id=CHANNEL_ID,
+            chat_id=destinazione,
             text=messaggio_con_link,
             parse_mode="HTML",
             reply_markup=bottone_offerta,
@@ -922,6 +970,7 @@ async def invia_offerta_programmata(
         foto_file_id=foto_monitoraggio,
         sconto=sconto_programmato,
         soglia_sconto=sconto_programmato,
+        telegram_chat_id=destinazione,
     )
 
     db = sqlite3.connect(DB_PATH)
@@ -972,7 +1021,8 @@ async def controlla_programmazioni(app):
                     messaggio,
                     link,
                     prezzo,
-                    foto_file_id
+                    foto_file_id,
+                    telegram_chat_id
                 FROM programmazioni
                 WHERE stato = 'attesa'
                   AND invio_previsto <= ?
@@ -1089,6 +1139,13 @@ def inizializza_automazione():
         )
     """)
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS categorie_automatiche_canali (
+            canale TEXT NOT NULL,
+            categoria TEXT NOT NULL,
+            PRIMARY KEY (canale, categoria)
+        )
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS marchi_qualita (
             categoria TEXT NOT NULL,
             marchio TEXT NOT NULL COLLATE NOCASE,
@@ -1160,10 +1217,50 @@ def inizializza_automazione():
         "indice_categoria_automatica": "0",
         "indice_categoria_ricerca": "0",
     }
+    defaults_casa = {
+        **defaults,
+        "intervallo_minuti": "60",
+        "ora_inizio": "08:30",
+        "ora_fine": "21:00",
+    }
     for chiave, valore in defaults.items():
         cur.execute(
             "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
             (chiave, valore),
+        )
+        cur.execute(
+            "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
+            (f"casa:{chiave}", defaults_casa[chiave]),
+        )
+
+    # Migrazione eseguita una sola volta: conserva le categorie TECH esistenti,
+    # senza reinserire in futuro quelle che l'utente deciderà di rimuovere.
+    categorie_migrate = cur.execute(
+        "SELECT valore FROM configurazione_automatica "
+        "WHERE chiave = 'categorie_canali_migrate_v1'"
+    ).fetchone()
+    if not categorie_migrate:
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO categorie_automatiche_canali (canale, categoria)
+            SELECT 'tech', categoria FROM categorie_automatiche
+            """
+        )
+        cur.execute(
+            "INSERT INTO configurazione_automatica (chiave, valore) "
+            "VALUES ('categorie_canali_migrate_v1', '1')"
+        )
+    casa_inizializzata = cur.execute(
+        "SELECT valore FROM configurazione_automatica WHERE chiave = 'casa:categorie_seed_v1'"
+    ).fetchone()
+    if not casa_inizializzata:
+        cur.executemany(
+            "INSERT OR IGNORE INTO categorie_automatiche_canali (canale, categoria) VALUES ('casa', ?)",
+            [(categoria,) for categoria in sorted(CASA_CATEGORIE)],
+        )
+        cur.execute(
+            "INSERT INTO configurazione_automatica (chiave, valore) "
+            "VALUES ('casa:categorie_seed_v1', '1')"
         )
     filtri_inizializzati = cur.execute(
         "SELECT valore FROM configurazione_automatica WHERE chiave = 'filtri_seed_v1'"
@@ -1213,6 +1310,19 @@ def inizializza_automazione():
             "INSERT INTO configurazione_automatica (chiave, valore) "
             "VALUES ('marchi_catalogo_v3', '1')"
         )
+    catalogo_v4 = cur.execute(
+        "SELECT valore FROM configurazione_automatica WHERE chiave = 'marchi_catalogo_v4'"
+    ).fetchone()
+    if not catalogo_v4:
+        for categoria, marchi in MARCHI_AUTORIZZATI.items():
+            cur.executemany(
+                "INSERT OR IGNORE INTO marchi_qualita (categoria, marchio) VALUES (?, ?)",
+                [(categoria, marchio.strip()) for marchio in marchi],
+            )
+        cur.execute(
+            "INSERT INTO configurazione_automatica (chiave, valore) "
+            "VALUES ('marchi_catalogo_v4', '1')"
+        )
     priorita_v1 = cur.execute(
         "SELECT valore FROM configurazione_automatica WHERE chiave = 'priorita_seed_v1'"
     ).fetchone()
@@ -1248,13 +1358,38 @@ def inizializza_automazione():
     db.close()
 
 
-def leggi_config_automatica():
+def _chiave_config_canale(canale, chiave):
+    return chiave if canale == "tech" else f"{canale}:{chiave}"
+
+
+def leggi_config_automatica(canale="tech"):
+    if canale not in {"tech", "casa"}:
+        canale = "tech"
     db = sqlite3.connect(DB_PATH)
     cur = db.cursor()
     cur.execute("SELECT chiave, valore FROM configurazione_automatica")
-    valori = dict(cur.fetchall())
-    cur.execute("SELECT categoria FROM categorie_automatiche ORDER BY categoria")
-    categorie = [riga[0] for riga in cur.fetchall()]
+    valori_grezzi = dict(cur.fetchall())
+    valori = {
+        chiave: valore
+        for chiave in (
+            "attiva", "intervallo_minuti", "ora_inizio", "ora_fine",
+            "prossimo_invio", "sconto_minimo", "qualita_prodotti",
+            "punteggio_minimo", "bonus_sconto_da", "priorita_amazon",
+        )
+        if (valore := valori_grezzi.get(_chiave_config_canale(canale, chiave)))
+        is not None
+    }
+    cur.execute(
+        """
+        SELECT categoria FROM categorie_automatiche_canali
+        WHERE canale = ? ORDER BY categoria
+        """,
+        (canale,),
+    )
+    categorie_consentite = TECH_CATEGORIE if canale == "tech" else CASA_CATEGORIE
+    categorie = [
+        riga[0] for riga in cur.fetchall() if riga[0] in categorie_consentite
+    ]
     db.close()
     return {
         "attiva": valori.get("attiva", "0") == "1",
@@ -1271,17 +1406,17 @@ def leggi_config_automatica():
     }
 
 
-def salva_config_automatica(chiave, valore):
+def salva_config_automatica(chiave, valore, canale="tech"):
     db = sqlite3.connect(DB_PATH)
     db.execute(
         "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
-        (chiave, str(valore)),
+        (_chiave_config_canale(canale, chiave), str(valore)),
     )
     db.commit()
     db.close()
 
 
-def ruota_categorie_persistente(categorie, chiave):
+def ruota_categorie_persistente(categorie, chiave, canale="tech"):
     """Ruota le categorie e memorizza il punto di partenza della prossima ricerca."""
     categorie = list(categorie)
     if not categorie:
@@ -1289,14 +1424,14 @@ def ruota_categorie_persistente(categorie, chiave):
     db = sqlite3.connect(DB_PATH)
     riga = db.execute(
         "SELECT valore FROM configurazione_automatica WHERE chiave = ?",
-        (chiave,),
+        (_chiave_config_canale(canale, chiave),),
     ).fetchone()
     indice = int(riga[0]) if riga and str(riga[0]).isdigit() else 0
     indice %= len(categorie)
     ordinate = categorie[indice:] + categorie[:indice]
     db.execute(
         "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
-        (chiave, str((indice + 1) % len(categorie))),
+        (_chiave_config_canale(canale, chiave), str((indice + 1) % len(categorie))),
     )
     db.commit()
     db.close()
@@ -1850,7 +1985,7 @@ async def ricevi_modifica_priorita(update: Update, context: ContextTypes.DEFAULT
     return ConversationHandler.END
 
 
-def tastiera_automazione(configurazione):
+def tastiera_automazione(configurazione, canale):
     stato = "🟢 ATTIVA" if configurazione["attiva"] else "🔴 DISATTIVATA"
     etichetta_qualita = (
         "SOLO MARCHE"
@@ -1876,21 +2011,27 @@ def tastiera_automazione(configurazione):
             f"🎯 QUALITÀ: {etichetta_qualita}",
             callback_data="auto_qualita",
         )],
-        [InlineKeyboardButton("🔎 CERCA OFFERTE", callback_data="offer_search")],
+        [InlineKeyboardButton("🔎 CERCA OFFERTE", callback_data=f"offer_search_{canale}")],
         [InlineKeyboardButton("🧪 TESTA RICERCA", callback_data="auto_test")],
         [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="auto_channels")],
     ])
 
 
-def testo_automazione(configurazione):
+def _auto_canale_corrente(context):
+    canale = context.user_data.get("auto_canale", "tech")
+    return canale if canale in {"tech", "casa"} else "tech"
+
+
+def testo_automazione(configurazione, canale):
     categorie = [AUTO_CATEGORIE[x][0] for x in configurazione["categorie"] if x in AUTO_CATEGORIE]
     etichetta_qualita = (
         "Solo marche"
         if configurazione["qualita_prodotti"] == "marche"
         else configurazione["qualita_prodotti"].capitalize()
     )
+    intestazione = "📱 TECH" if canale == "tech" else "🏠 CASA"
     return (
-        "🤖 INVIO AUTOMATICO — 📱 TECH\n\n"
+        f"🤖 INVIO AUTOMATICO — {intestazione}\n\n"
         f"Stato: {'🟢 Attivo' if configurazione['attiva'] else '🔴 Disattivato'}\n"
         f"Intervallo: {configurazione['intervallo_minuti']} minuti\n"
         f"Orario: {configurazione['ora_inizio']}–{configurazione['ora_fine']}\n"
@@ -1905,7 +2046,16 @@ async def menu_automazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     query = update.callback_query
     await query.answer()
-    await aggiorna_menu_automazione(query)
+    await aggiorna_menu_automazione(query, context)
+
+
+async def seleziona_canale_automazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    context.user_data["auto_canale"] = query.data.rsplit("_", 1)[1]
+    await aggiorna_menu_automazione(query, context)
 
 
 async def mostra_canali_automazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1914,36 +2064,20 @@ async def mostra_canali_automazione(update: Update, context: ContextTypes.DEFAUL
         return
     query = update.callback_query
     await query.answer()
-    configurazione = leggi_config_automatica()
-    stato_tech = "🟢 ATTIVO" if configurazione["attiva"] else "🔴 DISATTIVATO"
+    config_tech = leggi_config_automatica("tech")
+    config_casa = leggi_config_automatica("casa")
+    stato_tech = "🟢 ATTIVO" if config_tech["attiva"] else "🔴 DISATTIVATO"
+    stato_casa = "🟢 ATTIVO" if config_casa["attiva"] else "🔴 DISATTIVATO"
     await query.edit_message_text(
         "🤖 INVIO AUTOMATICO\n\n"
         "Seleziona il canale da gestire:\n\n"
         f"📱 TECH — {stato_tech}\n"
-        "🏠 CASA — ✅ COLLEGATO",
+        f"🏠 CASA — {stato_casa}",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"📱 TECH — {stato_tech}", callback_data="auto_menu")],
-            [InlineKeyboardButton("🏠 CASA — ✅ COLLEGATO", callback_data="auto_channel_casa")],
+            [InlineKeyboardButton(f"📱 TECH — {stato_tech}", callback_data="auto_channel_tech")],
+            [InlineKeyboardButton(f"🏠 CASA — {stato_casa}", callback_data="auto_channel_casa")],
             [InlineKeyboardButton("📊 STATO GENERALE", callback_data="auto_status")],
             [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
-        ]),
-    )
-
-
-async def mostra_canale_casa_collegato(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await controlla_autorizzazione(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "🏠 CANALE CASA\n\n"
-        "Stato: ✅ COLLEGATO\n"
-        "Destinazione: @BestPrice24hCasa\n\n"
-        "I prodotti delle categorie Casa e cucina, Elettrodomestici e "
-        "Fai da te vengono pubblicati automaticamente in questo canale.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔗 APRI IL CANALE", url=CASA_CHANNEL_URL)],
-            [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="auto_channels")]
         ]),
     )
 
@@ -1953,20 +2087,20 @@ async def mostra_stato_automazioni(update: Update, context: ContextTypes.DEFAULT
         return
     query = update.callback_query
     await query.answer()
-    configurazione = leggi_config_automatica()
-    categorie = [
-        AUTO_CATEGORIE[codice][0]
-        for codice in configurazione["categorie"]
-        if codice in AUTO_CATEGORIE
-    ]
+    tech = leggi_config_automatica("tech")
+    casa = leggi_config_automatica("casa")
+    categorie_tech = [AUTO_CATEGORIE[x][0] for x in tech["categorie"]]
+    categorie_casa = [AUTO_CATEGORIE[x][0] for x in casa["categorie"]]
     await query.edit_message_text(
         "📊 STATO GENERALE AUTOMAZIONI\n\n"
-        f"📱 TECH: {'ATTIVO' if configurazione['attiva'] else 'DISATTIVATO'}\n"
-        f"Intervallo: {configurazione['intervallo_minuti']} minuti\n"
-        f"Fascia: {configurazione['ora_inizio']}–{configurazione['ora_fine']}\n"
-        f"Categorie: {', '.join(categorie) if categorie else 'nessuna'}\n\n"
-        "🏠 CASA: COLLEGATO\n"
-        "Categorie instradate: Casa e cucina, Elettrodomestici, Fai da te",
+        f"📱 TECH: {'ATTIVO' if tech['attiva'] else 'DISATTIVATO'}\n"
+        f"Intervallo: {tech['intervallo_minuti']} minuti · "
+        f"{tech['ora_inizio']}–{tech['ora_fine']}\n"
+        f"Categorie: {', '.join(categorie_tech) if categorie_tech else 'nessuna'}\n\n"
+        f"🏠 CASA: {'ATTIVO' if casa['attiva'] else 'DISATTIVATO'}\n"
+        f"Intervallo: {casa['intervallo_minuti']} minuti · "
+        f"{casa['ora_inizio']}–{casa['ora_fine']}\n"
+        f"Categorie: {', '.join(categorie_casa) if categorie_casa else 'nessuna'}",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="auto_channels")]
         ]),
@@ -1978,34 +2112,40 @@ async def mostra_stato_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     query = update.callback_query
     await query.answer()
-    configurazione = leggi_config_automatica()
+    tech = leggi_config_automatica("tech")
+    casa = leggi_config_automatica("casa")
     await query.edit_message_text(
         "📊 STATO DEL BOT\n\n"
         "Bot Telegram: ✅ AVVIATO\n"
         "Database: ✅ COLLEGATO\n"
         "Canale TECH: ✅ COLLEGATO\n"
         "Canale CASA: ✅ COLLEGATO\n"
-        f"Automazione TECH: {'🟢 ATTIVA' if configurazione['attiva'] else '🔴 DISATTIVATA'}\n\n"
-        "Le categorie Casa, Elettrodomestici e Fai da te vengono instradate "
-        "automaticamente su @BestPrice24hCasa.",
+        f"Automazione TECH: {'🟢 ATTIVA' if tech['attiva'] else '🔴 DISATTIVATA'}\n"
+        f"Automazione CASA: {'🟢 ATTIVA' if casa['attiva'] else '🔴 DISATTIVATA'}\n\n"
+        "Le due automazioni hanno impostazioni indipendenti.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ TORNA ALLE IMPOSTAZIONI", callback_data="settings_menu")]
         ]),
     )
 
 
-async def aggiorna_menu_automazione(query):
-    configurazione = leggi_config_automatica()
+async def aggiorna_menu_automazione(query, context):
+    canale = _auto_canale_corrente(context)
+    configurazione = leggi_config_automatica(canale)
     await query.edit_message_text(
-        testo_automazione(configurazione),
-        reply_markup=tastiera_automazione(configurazione),
+        testo_automazione(configurazione, canale),
+        reply_markup=tastiera_automazione(configurazione, canale),
     )
 
 
-async def mostra_categorie_automatiche(query):
-    selezionate = set(leggi_config_automatica()["categorie"])
+async def mostra_categorie_automatiche(query, context):
+    canale = _auto_canale_corrente(context)
+    selezionate = set(leggi_config_automatica(canale)["categorie"])
+    consentite = TECH_CATEGORIE if canale == "tech" else CASA_CATEGORIE
     tastiera = []
     for codice, (etichetta, _) in AUTO_CATEGORIE.items():
+        if codice not in consentite:
+            continue
         segno = "✅" if codice in selezionate else "▫️"
         tastiera.append([
             InlineKeyboardButton(
@@ -2026,38 +2166,40 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     azione = query.data
-    configurazione = leggi_config_automatica()
+    canale = _auto_canale_corrente(context)
+    configurazione = leggi_config_automatica(canale)
 
     if azione == "auto_toggle":
         if configurazione["attiva"]:
-            salva_config_automatica("attiva", 0)
-            salva_config_automatica("prossimo_invio", "")
-            return await aggiorna_menu_automazione(query)
+            salva_config_automatica("attiva", 0, canale)
+            salva_config_automatica("prossimo_invio", "", canale)
+            return await aggiorna_menu_automazione(query, context)
 
         if not configurazione["categorie"]:
             await query.message.reply_text("❌ Seleziona almeno una categoria.")
             return
 
         adesso = datetime.now(ROMA_TZ)
-        salva_config_automatica("attiva", 1)
-        configurazione = leggi_config_automatica()
+        salva_config_automatica("attiva", 1, canale)
+        configurazione = leggi_config_automatica(canale)
 
         if _dentro_fascia_automatica(configurazione, adesso):
             prossimo = _calcola_prossimo_invio(configurazione, adesso)
-            salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"))
-            await aggiorna_menu_automazione(query)
+            salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"), canale)
+            await aggiorna_menu_automazione(query, context)
             await query.message.reply_text("🚀 Automazione attivata. Cerco subito la prima offerta…")
             await esegui_slot_automatico(
                 context.application,
                 configurazione,
                 adesso.date().isoformat(),
                 adesso.strftime("%H:%M"),
+                canale,
             )
             return
 
         prossimo = _prossimo_inizio_fascia(configurazione, adesso)
-        salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"))
-        await aggiorna_menu_automazione(query)
+        salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"), canale)
+        await aggiorna_menu_automazione(query, context)
         await query.message.reply_text(
             f"✅ Automazione attivata. Il primo tentativo partirà alle {prossimo.strftime('%H:%M')}."
         )
@@ -2093,33 +2235,45 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
         modalita = azione.replace("auto_quality_", "", 1)
         if modalita not in {"standard", "selettiva", "marche"}:
             return
-        salva_config_automatica("qualita_prodotti", modalita)
-        salva_config_automatica("attiva", 0)
-        return await aggiorna_menu_automazione(query)
+        salva_config_automatica("qualita_prodotti", modalita, canale)
+        salva_config_automatica("attiva", 0, canale)
+        return await aggiorna_menu_automazione(query, context)
 
     if azione.startswith("auto_disc_"):
-        salva_config_automatica("sconto_minimo", int(azione.rsplit("_", 1)[1]))
-        salva_config_automatica("attiva", 0)
-        return await aggiorna_menu_automazione(query)
+        salva_config_automatica("sconto_minimo", int(azione.rsplit("_", 1)[1]), canale)
+        salva_config_automatica("attiva", 0, canale)
+        return await aggiorna_menu_automazione(query, context)
 
     if azione == "auto_categorie":
-        return await mostra_categorie_automatiche(query)
+        return await mostra_categorie_automatiche(query, context)
 
     if azione.startswith("auto_cat_"):
         categoria = azione.replace("auto_cat_", "", 1)
         if categoria not in AUTO_CATEGORIE:
             return
+        consentite = TECH_CATEGORIE if canale == "tech" else CASA_CATEGORIE
+        if categoria not in consentite:
+            return
         db = sqlite3.connect(DB_PATH)
         cur = db.cursor()
-        cur.execute("SELECT 1 FROM categorie_automatiche WHERE categoria = ?", (categoria,))
+        cur.execute(
+            "SELECT 1 FROM categorie_automatiche_canali WHERE canale = ? AND categoria = ?",
+            (canale, categoria),
+        )
         if cur.fetchone():
-            cur.execute("DELETE FROM categorie_automatiche WHERE categoria = ?", (categoria,))
+            cur.execute(
+                "DELETE FROM categorie_automatiche_canali WHERE canale = ? AND categoria = ?",
+                (canale, categoria),
+            )
         else:
-            cur.execute("INSERT INTO categorie_automatiche (categoria) VALUES (?)", (categoria,))
+            cur.execute(
+                "INSERT INTO categorie_automatiche_canali (canale, categoria) VALUES (?, ?)",
+                (canale, categoria),
+            )
         db.commit()
         db.close()
-        salva_config_automatica("attiva", 0)
-        return await mostra_categorie_automatiche(query)
+        salva_config_automatica("attiva", 0, canale)
+        return await mostra_categorie_automatiche(query, context)
 
 
 async def richiedi_intervallo_automatico(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2147,13 +2301,14 @@ async def ricevi_intervallo_automatico(update: Update, context: ContextTypes.DEF
     if minuti < 29 or minuti > 1440:
         await update.message.reply_text("❌ Inserisci un valore tra 29 e 1440 minuti.")
         return AUTO_INTERVALLO
-    salva_config_automatica("intervallo_minuti", minuti)
-    salva_config_automatica("attiva", 0)
-    configurazione = leggi_config_automatica()
+    canale = _auto_canale_corrente(context)
+    salva_config_automatica("intervallo_minuti", minuti, canale)
+    salva_config_automatica("attiva", 0, canale)
+    configurazione = leggi_config_automatica(canale)
     await update.message.reply_text(
         f"✅ Intervallo salvato: {minuti} minuti.\n\n"
         "L’automazione resta disattivata finché non la riattivi.",
-        reply_markup=tastiera_automazione(configurazione),
+        reply_markup=tastiera_automazione(configurazione, canale),
     )
     return ConversationHandler.END
 
@@ -2193,14 +2348,15 @@ async def ricevi_fascia_automatica(update: Update, context: ContextTypes.DEFAULT
         return AUTO_FASCIA
     ora_inizio = inizio.strftime("%H:%M")
     ora_fine = fine.strftime("%H:%M")
-    salva_config_automatica("ora_inizio", ora_inizio)
-    salva_config_automatica("ora_fine", ora_fine)
-    salva_config_automatica("attiva", 0)
-    configurazione = leggi_config_automatica()
+    canale = _auto_canale_corrente(context)
+    salva_config_automatica("ora_inizio", ora_inizio, canale)
+    salva_config_automatica("ora_fine", ora_fine, canale)
+    salva_config_automatica("attiva", 0, canale)
+    configurazione = leggi_config_automatica(canale)
     await update.message.reply_text(
         f"✅ Orario salvato: dalle {ora_inizio} alle {ora_fine}.\n\n"
         f"Alle {ora_fine} il bot si fermerà.",
-        reply_markup=tastiera_automazione(configurazione),
+        reply_markup=tastiera_automazione(configurazione, canale),
     )
     return ConversationHandler.END
 
@@ -2303,9 +2459,9 @@ def _testo_contiene_termine(testo, termine):
     return bool(re.search(rf"(?<![a-z0-9]){re.escape(termine)}(?![a-z0-9])", testo))
 
 
-def carica_snapshot_filtri(categoria=None):
+def carica_snapshot_filtri(categoria=None, configurazione=None):
     """Legge una sola volta dal database tutti i filtri usati nella ricerca."""
-    configurazione = leggi_config_automatica()
+    configurazione = configurazione or leggi_config_automatica()
     categorie = [categoria] if categoria else list(AUTO_CATEGORIE)
     return {
         "configurazione": configurazione,
@@ -2600,7 +2756,8 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
         return
     query = update.callback_query
     await query.answer()
-    configurazione = leggi_config_automatica()
+    canale = _auto_canale_corrente(context)
+    configurazione = leggi_config_automatica(canale)
     if not configurazione["categorie"]:
         await query.message.reply_text("❌ Prima seleziona almeno una categoria.")
         return
@@ -2618,7 +2775,7 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
             else random.choice(termini)
         )
         tentativi.append((categoria, etichetta, termine))
-    snapshot_filtri = carica_snapshot_filtri()
+    snapshot_filtri = carica_snapshot_filtri(configurazione=configurazione)
     attesa = await query.message.reply_text(
         "🔎 Avvio fino a 3 ricerche di prova…\n"
         f"Sconto minimo richiesto: {configurazione['sconto_minimo']}%"
@@ -2747,8 +2904,10 @@ def _pulisci_stato_ricerca_offerte(context, conserva_risultati=False):
         context.user_data.pop("ricerca_offerte_risultati", None)
 
 
-async def menu_ricerca_offerte(query, context):
+async def menu_ricerca_offerte(query, context, canale=None):
     _pulisci_stato_ricerca_offerte(context)
+    context.user_data["ricerca_offerte_canale"] = canale
+    indietro = "auto_menu" if canale else "menu_admin"
     await query.message.reply_text(
         "🔎 CERCA OFFERTE\n\n"
         "Seleziona lo sconto minimo. La ricerca non pubblicherà nulla automaticamente.",
@@ -2759,25 +2918,32 @@ async def menu_ricerca_offerte(query, context):
                 InlineKeyboardButton("40%", callback_data="os_disc_40"),
                 InlineKeyboardButton("50%", callback_data="os_disc_50"),
             ],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
+            [InlineKeyboardButton("⬅️ INDIETRO", callback_data=indietro)],
         ]),
     )
 
 
 async def menu_categoria_ricerca_offerte(query, context, sconto):
     context.user_data["ricerca_offerte_sconto"] = sconto
-    configurazione = leggi_config_automatica()
+    canale = context.user_data.get("ricerca_offerte_canale")
+    configurazione = leggi_config_automatica(canale or "tech")
     selezionate = set(configurazione["categorie"])
+    consentite = (
+        TECH_CATEGORIE if canale == "tech"
+        else CASA_CATEGORIE if canale == "casa"
+        else set(AUTO_CATEGORIE)
+    )
     categorie = [
         codice for codice in AUTO_CATEGORIE
-        if not selezionate or codice in selezionate
+        if codice in consentite and (not selezionate or codice in selezionate)
     ]
     tastiera = [[InlineKeyboardButton(
         AUTO_CATEGORIE[codice][0].upper(),
         callback_data=f"os_cat_{codice}",
     )] for codice in categorie]
     tastiera.insert(0, [InlineKeyboardButton("🌐 TUTTE LE CATEGORIE", callback_data="os_cat_tutte")])
-    tastiera.append([InlineKeyboardButton("⬅️ INDIETRO", callback_data="offer_search")])
+    ritorno = f"offer_search_{canale}" if canale else "offer_search"
+    tastiera.append([InlineKeyboardButton("⬅️ INDIETRO", callback_data=ritorno)])
     await query.edit_message_text(
         f"🔎 Sconto selezionato: dal {sconto}%\n\nScegli dove cercare:",
         reply_markup=InlineKeyboardMarkup(tastiera),
@@ -2803,7 +2969,7 @@ async def menu_quantita_ricerca_offerte(query, context, categoria):
     )
 
 
-def _piano_ricerca_offerte(categoria, configurazione, quantita):
+def _piano_ricerca_offerte(categoria, configurazione, quantita, canale="tech"):
     if categoria != "tutte":
         prioritari = termini_prioritari_categoria(categoria)
         termini = prioritari[:2] + list(AUTO_CATEGORIE[categoria][1])
@@ -2814,7 +2980,9 @@ def _piano_ricerca_offerte(categoria, configurazione, quantita):
         return [(categoria, termine) for termine in unici[:3]]
 
     categorie = list(configurazione["categorie"]) or list(AUTO_CATEGORIE)
-    categorie = ruota_categorie_persistente(categorie, "indice_categoria_ricerca")
+    categorie = ruota_categorie_persistente(
+        categorie, "indice_categoria_ricerca", canale or "tech"
+    )
     massimo_chiamate = 4 if quantita <= 5 else 6 if quantita <= 10 else 8
     piano = []
     for indice_parola in range(3):
@@ -2831,12 +2999,17 @@ def _piano_ricerca_offerte(categoria, configurazione, quantita):
 
 
 async def esegui_ricerca_offerte(query, context, quantita):
-    configurazione = leggi_config_automatica()
+    canale = context.user_data.get("ricerca_offerte_canale")
+    configurazione = leggi_config_automatica(canale or "tech")
+    if not canale:
+        configurazione = {**configurazione, "categorie": list(AUTO_CATEGORIE)}
     sconto = int(context.user_data.get("ricerca_offerte_sconto", 30))
     categoria_scelta = context.user_data.get("ricerca_offerte_categoria", "tutte")
     context.user_data["ricerca_offerte_quantita"] = quantita
-    piano = _piano_ricerca_offerte(categoria_scelta, configurazione, quantita)
-    snapshot_filtri = carica_snapshot_filtri()
+    piano = _piano_ricerca_offerte(
+        categoria_scelta, configurazione, quantita, canale or "tech"
+    )
+    snapshot_filtri = carica_snapshot_filtri(configurazione=configurazione)
     attesa = await query.message.reply_text(
         f"🔄 Cerco offerte con almeno il {sconto}% di sconto…\n"
         f"Ricerche previste: massimo {len(piano)}."
@@ -2891,11 +3064,12 @@ async def esegui_ricerca_offerte(query, context, quantita):
     await attesa.delete()
     if not risultati:
         dettaglio = "" if not errori else f"\nRicerche non riuscite: {errori}."
+        callback_ricerca = f"offer_search_{canale}" if canale else "offer_search"
         await query.message.reply_text(
             f"ℹ️ Nessun prodotto nuovo con almeno il {sconto}% ha superato i filtri."
             f"{dettaglio}",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 CAMBIA RICERCA", callback_data="offer_search")],
+                [InlineKeyboardButton("🔄 CAMBIA RICERCA", callback_data=callback_ricerca)],
                 [InlineKeyboardButton("⬅️ MENU AUTOMATICO", callback_data="auto_menu")],
             ]),
         )
@@ -2920,8 +3094,10 @@ async def mostra_lista_ricerca_offerte(messaggio, context):
             f"{indice + 1}. -{prodotto['sconto']}% · {titolo[:35]}",
             callback_data=f"os_view_{indice}",
         )])
+    canale = context.user_data.get("ricerca_offerte_canale")
+    callback_ricerca = f"offer_search_{canale}" if canale else "offer_search"
     tastiera.extend([
-        [InlineKeyboardButton("🔄 NUOVA RICERCA", callback_data="offer_search")],
+        [InlineKeyboardButton("🔄 NUOVA RICERCA", callback_data=callback_ricerca)],
         [InlineKeyboardButton("⬅️ MENU AUTOMATICO", callback_data="auto_menu")],
     ])
     await messaggio.reply_text(
@@ -2943,7 +3119,8 @@ async def mostra_prodotto_ricerca_offerte(query, context, indice):
         await query.message.reply_text("❌ Risultato scaduto. Avvia una nuova ricerca.")
         return
     context.user_data["ricerca_offerte_indice"] = indice
-    configurazione = leggi_config_automatica()
+    canale = context.user_data.get("ricerca_offerte_canale")
+    configurazione = leggi_config_automatica(canale or "tech")
     tipo = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
     prima = (
         f"\n❌ Prima: <s>{html.escape(prodotto['vecchio_prezzo'])}</s>"
@@ -3020,8 +3197,9 @@ async def pubblica_prodotto_ricerca_offerte(query, context, indice):
         )
         return
     try:
+        canale = context.user_data.get("ricerca_offerte_canale")
         message_id, foto_file_id, telegram_chat_id = await pubblica_offerta_automatica(
-            context.bot, prodotto
+            context.bot, prodotto, canale
         )
         _registra_offerta_cercata(
             prodotto, message_id, foto_file_id,
@@ -3045,6 +3223,11 @@ async def gestisci_ricerca_offerte(update: Update, context: ContextTypes.DEFAULT
     azione = query.data
     if azione == "offer_search":
         return await menu_ricerca_offerte(query, context)
+    if azione.startswith("offer_search_"):
+        canale = azione.rsplit("_", 1)[1]
+        if canale not in {"tech", "casa"}:
+            return
+        return await menu_ricerca_offerte(query, context, canale)
     if azione.startswith("os_disc_"):
         return await menu_categoria_ricerca_offerte(query, context, int(azione.rsplit("_", 1)[1]))
     if azione.startswith("os_cat_"):
@@ -3097,6 +3280,12 @@ async def prepara_programmazione_ricerca_offerte(update: Update, context: Contex
     )
     context.user_data["foto_file_id"] = prodotto.get("foto_file_id") or prodotto["immagine"]
     context.user_data["messaggio"] = _messaggio_programmato_da_prodotto(prodotto)
+    canale = context.user_data.get("ricerca_offerte_canale")
+    context.user_data["telegram_chat_id"] = (
+        CASA_CHANNEL_ID if canale == "casa"
+        else CHANNEL_ID if canale == "tech"
+        else canale_pubblicazione_per_categoria(prodotto.get("categoria"))
+    )
     await query.message.reply_text(
         "📅 PROGRAMMA INVIO\n\nScegli il giorno:",
         reply_markup=InlineKeyboardMarkup([
@@ -3237,7 +3426,7 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
         indice = categorie.index(categoria_iniziale)
         categorie = categorie[indice:] + categorie[:indice]
 
-    snapshot_filtri = carica_snapshot_filtri()
+    snapshot_filtri = carica_snapshot_filtri(configurazione=configurazione)
 
     tentativi = []
     for numero in range(3):
@@ -3302,7 +3491,7 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
     return candidati[0]
 
 
-async def pubblica_offerta_automatica(bot, prodotto):
+async def pubblica_offerta_automatica(bot, prodotto, canale=None):
     nome = prodotto["nome"]
     prezzo_numero = _prezzo_italiano(prodotto["prezzo_valore"])
     vecchio_numero = None
@@ -3335,8 +3524,10 @@ async def pubblica_offerta_automatica(bot, prodotto):
         InlineKeyboardButton("🛒 APRI", url=prodotto["link"]),
     ]])
     foto = await prepara_foto_automatica(prodotto["immagine"])
-    telegram_chat_id = canale_pubblicazione_per_categoria(
-        prodotto.get("categoria")
+    telegram_chat_id = (
+        CASA_CHANNEL_ID if canale == "casa"
+        else CHANNEL_ID if canale == "tech"
+        else canale_pubblicazione_per_categoria(prodotto.get("categoria"))
     )
     messaggio_telegram = await bot.send_photo(
         chat_id=telegram_chat_id,
@@ -3365,30 +3556,24 @@ async def pubblica_offerta_automatica(bot, prodotto):
     return messaggio_telegram.message_id, foto_telegram, telegram_chat_id
 
 
-async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
+async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canale="tech"):
     categorie = configurazione["categorie"]
     if not categorie:
         return
     categorie_ruotate = ruota_categorie_persistente(
         categorie,
         "indice_categoria_automatica",
+        canale,
     )
     categoria = categorie_ruotate[0]
-    if not _prenota_slot_automatico(data_slot, ora_slot, categoria):
+    slot_ora_db = f"{canale}:{ora_slot}"
+    if not _prenota_slot_automatico(data_slot, slot_ora_db, categoria):
         return
 
     try:
-        if minuti_rimanenti_prima_del_prossimo_invio() > 0:
-            _aggiorna_slot_automatico(data_slot, ora_slot, "saltata_distanza")
-            await _notifica_admin_automazione(
-                app.bot,
-                f"⏭ Invio automatico delle {ora_slot} saltato: troppo vicino a un altro post.",
-            )
-            return
-
         prodotto = await cerca_offerta_automatica(configurazione, categoria)
         if not prodotto:
-            _aggiorna_slot_automatico(data_slot, ora_slot, "nessuna_offerta")
+            _aggiorna_slot_automatico(data_slot, slot_ora_db, "nessuna_offerta")
             await _notifica_admin_automazione(
                 app.bot,
                 f"ℹ️ Alle {ora_slot} non ho trovato offerte nuove con almeno "
@@ -3397,11 +3582,11 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
             return
 
         message_id, foto_file_id, telegram_chat_id = await pubblica_offerta_automatica(
-            app.bot, prodotto
+            app.bot, prodotto, canale
         )
         _aggiorna_slot_automatico(
             data_slot,
-            ora_slot,
+            slot_ora_db,
             "pubblicata",
             prodotto,
             telegram_message_id=message_id,
@@ -3416,7 +3601,7 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
             f"{prodotto['nome']}\nSconto: -{prodotto['sconto']}%",
         )
     except Exception as errore:
-        _aggiorna_slot_automatico(data_slot, ora_slot, "errore")
+        _aggiorna_slot_automatico(data_slot, slot_ora_db, "errore")
         print(f"Errore invio automatico: {errore}")
         await _notifica_admin_automazione(
             app.bot,
@@ -3460,8 +3645,10 @@ def _calcola_prossimo_invio(configurazione, riferimento):
 async def controlla_invii_automatici(app):
     while True:
         try:
-            configurazione = leggi_config_automatica()
-            if configurazione["attiva"]:
+            for canale in ("tech", "casa"):
+                configurazione = leggi_config_automatica(canale)
+                if not configurazione["attiva"]:
+                    continue
                 adesso = datetime.now(ROMA_TZ)
                 prossimo_testo = configurazione.get("prossimo_invio")
                 prossimo = None
@@ -3477,23 +3664,25 @@ async def controlla_invii_automatici(app):
 
                 if prossimo is None:
                     prossimo = _prossimo_inizio_fascia(configurazione, adesso)
-                    salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"))
+                    salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"), canale)
 
                 if adesso >= prossimo:
                     if not _dentro_fascia_automatica(configurazione, adesso):
                         prossimo = _prossimo_inizio_fascia(configurazione, adesso)
-                        salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"))
+                        salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"), canale)
                     else:
                         successivo = _calcola_prossimo_invio(configurazione, adesso)
-                        salva_config_automatica("prossimo_invio", successivo.isoformat(timespec="seconds"))
+                        salva_config_automatica("prossimo_invio", successivo.isoformat(timespec="seconds"), canale)
                         data_slot = adesso.date().isoformat()
                         ora_slot = adesso.strftime("%H:%M")
-                        if not _slot_automatico_gia_gestito(data_slot, ora_slot):
+                        slot_ora_db = f"{canale}:{ora_slot}"
+                        if not _slot_automatico_gia_gestito(data_slot, slot_ora_db):
                             await esegui_slot_automatico(
                                 app,
                                 configurazione,
                                 data_slot,
                                 ora_slot,
+                                canale,
                             )
         except Exception as errore:
             print(f"Errore controllo automazione: {errore}")
@@ -3889,8 +4078,8 @@ async def mostra_gestione_canali(update: Update, context: ContextTypes.DEFAULT_T
         "📢 GESTIONE CANALI\n\n"
         "📱 TECH — ✅ COLLEGATO\n"
         "🏠 CASA — ✅ COLLEGATO\n\n"
-        "Casa e cucina, Elettrodomestici e Fai da te vengono indirizzati "
-        "automaticamente a @BestPrice24hCasa.",
+        "Casa e cucina, Elettrodomestici, Fai da te, Giardino, Arredamento "
+        "e Illuminazione vengono indirizzati a @BestPrice24hCasa.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📱 CANALE TECH", callback_data="channel_info_tech")],
             [InlineKeyboardButton("🏠 CANALE CASA", callback_data="channel_info_casa")],
@@ -3916,8 +4105,9 @@ async def mostra_info_canale(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "🏠 CANALE CASA\n\n"
             "Stato collegamento: ✅ COLLEGATO\n"
             "Destinazione: @BestPrice24hCasa\n"
-            "Pubblicazioni automatiche: ATTIVE PER CATEGORIA\n\n"
-            "Categorie: Casa e cucina, Elettrodomestici, Fai da te."
+            "Automazione: CONFIGURABILE E INDIPENDENTE\n\n"
+            "Categorie disponibili: Casa e cucina, Elettrodomestici, "
+            "Fai da te, Giardino, Arredamento, Illuminazione."
         )
     await query.edit_message_text(
         testo,
@@ -5037,6 +5227,7 @@ async def ricevi_ora_programmazione(
         link,
         prezzo,
         data_locale,
+        context.user_data.get("telegram_chat_id", CHANNEL_ID),
     )
 
     salva_foto_programmazione(
@@ -5364,6 +5555,7 @@ async def conferma_orario_vicino(
         link,
         prezzo,
         data_locale,
+        context.user_data.get("telegram_chat_id", CHANNEL_ID),
     )
 
     salva_foto_programmazione(
@@ -8511,8 +8703,8 @@ def main():
     )
     app.add_handler(
         CallbackQueryHandler(
-            mostra_canale_casa_collegato,
-            pattern="^auto_channel_casa$",
+            seleziona_canale_automazione,
+            pattern=r"^auto_channel_(tech|casa)$",
         )
     )
     app.add_handler(
@@ -8523,7 +8715,7 @@ def main():
         CallbackQueryHandler(
             gestisci_ricerca_offerte,
             pattern=(
-                r"^(offer_search|os_disc_(20|30|40|50)|os_cat_[a-z]+|"
+                r"^(offer_search|offer_search_(tech|casa)|os_disc_(20|30|40|50)|os_cat_[a-z]+|"
                 r"os_count_(5|10|20)|os_view_[0-9]+|os_publish_[0-9]+|os_back)$"
             ),
         )
