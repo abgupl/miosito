@@ -411,6 +411,21 @@ def inizializza_recap():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS recap_giorni_canali (
+            data TEXT NOT NULL,
+            canale TEXT NOT NULL,
+            inviato_il TEXT NOT NULL,
+            PRIMARY KEY (data, canale)
+        )
+    """)
+    # Conserva lo stato dei vecchi recap TECH, evitando di reinviarli dopo
+    # l'aggiornamento. CASA mantiene invece un proprio stato indipendente.
+    cur.execute("""
+        INSERT OR IGNORE INTO recap_giorni_canali (data, canale, inviato_il)
+        SELECT data, 'tech', inviato_il FROM recap_giorni
+    """)
+
     # Campi aggiuntivi per poter reinviare rapidamente i post storici.
     cur.execute("PRAGMA table_info(recap_offerte)")
     colonne_recap = {riga[1] for riga in cur.fetchall()}
@@ -774,7 +789,7 @@ def estrai_sconto_da_messaggio(messaggio):
     return int(match.group(1)) if match else 0
 
 
-def offerte_recap_di_oggi():
+def offerte_recap_di_oggi(telegram_chat_id):
 
     oggi = datetime.now(ROMA_TZ).date().isoformat()
 
@@ -790,8 +805,9 @@ def offerte_recap_di_oggi():
             pubblicata_il
         FROM recap_offerte
         WHERE substr(pubblicata_il, 1, 10) = ?
+          AND telegram_chat_id = ?
         ORDER BY pubblicata_il DESC
-    """, (oggi,))
+    """, (oggi, str(telegram_chat_id)))
 
     risultati = cur.fetchall()
     db.close()
@@ -799,14 +815,14 @@ def offerte_recap_di_oggi():
     return risultati
 
 
-def recap_gia_inviato(oggi):
+def recap_gia_inviato(oggi, canale):
 
     db = sqlite3.connect(DB_PATH)
     cur = db.cursor()
 
     cur.execute(
-        "SELECT 1 FROM recap_giorni WHERE data = ?",
-        (oggi,),
+        "SELECT 1 FROM recap_giorni_canali WHERE data = ? AND canale = ?",
+        (oggi, canale),
     )
 
     trovato = cur.fetchone() is not None
@@ -815,16 +831,17 @@ def recap_gia_inviato(oggi):
     return trovato
 
 
-def segna_recap_inviato(oggi):
+def segna_recap_inviato(oggi, canale):
 
     db = sqlite3.connect(DB_PATH)
     cur = db.cursor()
 
     cur.execute("""
-        INSERT OR REPLACE INTO recap_giorni (data, inviato_il)
-        VALUES (?, ?)
+        INSERT OR REPLACE INTO recap_giorni_canali (data, canale, inviato_il)
+        VALUES (?, ?, ?)
     """, (
         oggi,
+        canale,
         datetime.now(ROMA_TZ).isoformat(timespec="seconds"),
     ))
 
@@ -836,29 +853,36 @@ def crea_righe_recap(offerte):
 
     righe = []
 
-    for nome, link, prezzo, vecchio, _ in offerte:
+    for numero, (nome, link, prezzo, vecchio, _) in enumerate(offerte, start=1):
 
         nome_breve = accorcia_nome_articolo(nome)
         nome_html = html.escape(str(nome_breve))
         link_html = html.escape(str(link), quote=True)
-        prezzo_html = html.escape(str(prezzo or "—"))
+        prezzo_testo = str(prezzo or "—").strip()
+        if prezzo_testo != "—" and "€" not in prezzo_testo:
+            prezzo_testo += " €"
+        prezzo_html = html.escape(prezzo_testo)
 
         if vecchio and str(vecchio).upper() != "NO":
-            vecchio_html = html.escape(str(vecchio))
+            vecchio_testo = str(vecchio).strip()
+            if "€" not in vecchio_testo:
+                vecchio_testo += " €"
+            vecchio_html = html.escape(vecchio_testo)
         else:
             vecchio_html = "—"
 
         righe.append(
-            f'🛒 <a href="{link_html}">{nome_html}</a> | '
-            f'❌ {vecchio_html}€ → ✅ {prezzo_html}€'
+            f'#<b>{numero}</b> <a href="{link_html}">{nome_html}</a>\n'
+            f'❌ Prima: <s>{vecchio_html}</s>\n'
+            f'✅ Ora: <b>{prezzo_html}</b>'
         )
 
     return righe
 
 
-async def invia_recap_giornaliero(bot):
+async def invia_recap_giornaliero(bot, canale, telegram_chat_id):
 
-    offerte = offerte_recap_di_oggi()
+    offerte = offerte_recap_di_oggi(telegram_chat_id)
 
     if not offerte:
         return False
@@ -866,7 +890,7 @@ async def invia_recap_giornaliero(bot):
     righe = crea_righe_recap(offerte)
 
     intestazione = (
-        "🔥 <b>RECAP OFFERTE DI OGGI</b>\n\n"
+        f"🔥 <b>RECAP {canale.upper()} DI OGGI</b>\n\n"
     )
 
     club_footer = (
@@ -900,7 +924,7 @@ async def invia_recap_giornaliero(bot):
 
     for testo in messaggi:
         await bot.send_message(
-            chat_id=CHANNEL_ID,
+            chat_id=telegram_chat_id,
             text=testo,
             parse_mode="HTML",
             disable_web_page_preview=True,
@@ -922,15 +946,20 @@ async def controlla_recap(app):
                 or (adesso.hour == 22 and adesso.minute >= 1)
             )
 
-            if (
-                orario_recap_raggiunto
-                and not recap_gia_inviato(oggi)
-            ):
-                inviato = await invia_recap_giornaliero(app.bot)
+            if orario_recap_raggiunto:
+                for canale, telegram_chat_id in (
+                    ("tech", CHANNEL_ID),
+                    ("casa", CASA_CHANNEL_ID),
+                ):
+                    if recap_gia_inviato(oggi, canale):
+                        continue
+                    inviato = await invia_recap_giornaliero(
+                        app.bot, canale, telegram_chat_id
+                    )
 
-                # Segniamo la giornata solo se c'erano offerte.
-                if inviato:
-                    segna_recap_inviato(oggi)
+                    # Ogni canale viene segnato soltanto se aveva offerte.
+                    if inviato:
+                        segna_recap_inviato(oggi, canale)
 
         except Exception as errore:
             print(f"Errore recap giornaliero: {errore}")
@@ -4394,7 +4423,7 @@ async def _modifica_post_terminato(
     destinazione = telegram_chat_id or CHANNEL_ID
     hashtag = AUTO_HASHTAG.get(categoria, "#OfferteAmazon")
     didascalia = (
-        "⛔ <b>OFFERTA TERMINATA</b>\n\n"
+        "🔴 ⛔ <b>OFFERTA TERMINATA</b>\n\n"
         f"🛒 {html.escape(nome)}\n\n"
         "Questa promozione non risulta più disponibile.\n\n"
         f"Categoria: {hashtag}\n\n"
@@ -4483,12 +4512,19 @@ async def controlla_offerte_terminate(app):
                     prodotto = prodotti.get(asin)
                     non_disponibile = not prodotto
                     fallimenti = _aggiorna_verifica_offerta(invio_id, non_disponibile)
+                    sconto_attuale = (
+                        int(prodotto.get("sconto") or 0) if prodotto else None
+                    )
+                    sconto_azzerato = bool(
+                        prodotto
+                        and int(sconto_iniziale or soglia or 0) > 0
+                        and sconto_attuale == 0
+                    )
 
-                    # Un calo dello sconto non significa che il prodotto sia terminato:
-                    # il post resta online e l'amministratore riceve un solo avviso.
-                    if prodotto:
+                    # Un calo ancora superiore allo 0% genera soltanto un avviso.
+                    # Quando lo sconto arriva allo 0%, l'offerta viene terminata.
+                    if prodotto and not sconto_azzerato:
                         soglia_confronto = int(soglia or sconto_iniziale or 0)
-                        sconto_attuale = int(prodotto.get("sconto") or 0)
                         if soglia_confronto and sconto_attuale < soglia_confronto:
                             if not sconto_notificato:
                                 await _notifica_admin_automazione(
@@ -4503,7 +4539,7 @@ async def controlla_offerte_terminate(app):
                         elif sconto_notificato:
                             _imposta_notifica_sconto_modificato(invio_id, False)
 
-                    if non_disponibile and fallimenti >= 2:
+                    if sconto_azzerato or (non_disponibile and fallimenti >= 2):
                         try:
                             await _modifica_post_terminato(
                                 app.bot,
@@ -4516,7 +4552,13 @@ async def controlla_offerte_terminate(app):
                             )
                             await _notifica_admin_automazione(
                                 app.bot,
-                                f"⛔ Offerta terminata aggiornata nel canale:\n{nome}",
+                                "🔴 ⛔ OFFERTA TERMINATA\n\n"
+                                f"{nome}\n"
+                                + (
+                                    "Motivo: lo sconto è sceso allo 0%."
+                                    if sconto_azzerato
+                                    else "Motivo: prodotto non più disponibile."
+                                ),
                             )
                         except Exception as errore:
                             print(f"Errore modifica post terminato: {errore}")
