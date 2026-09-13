@@ -513,7 +513,7 @@ def salva_offerta_recap(
     db.close()
 
 
-def offerte_pubblicate_per_web(limit=60):
+def offerte_pubblicate_per_web(limit=60, base_url=""):
     """Restituisce le stesse offerte già pubblicate su Telegram."""
     limite = max(1, min(int(limit or 60), 100))
     db = sqlite3.connect(DB_PATH)
@@ -523,7 +523,7 @@ def offerte_pubblicate_per_web(limit=60):
             """
             SELECT id, nome, link, prezzo, vecchio_prezzo, pubblicata_il,
                    asin, categoria, telegram_chat_id, origine, sconto,
-                   telegram_message_id
+                   telegram_message_id, foto_file_id
             FROM recap_offerte
             WHERE stato='pubblicata' AND link IS NOT NULL AND link<>''
             ORDER BY pubblicata_il DESC, id DESC
@@ -560,13 +560,50 @@ def offerte_pubblicate_per_web(limit=60):
             "sconto": int(riga["sconto"] or 0),
             "telegram_url": telegram_url,
             "immagine": (
-                "https://ws-eu.amazon-adsystem.com/widgets/q"
-                f"?_encoding=UTF8&ASIN={asin}&Format=_SL500_&ID=AsinImage"
-                "&MarketPlace=IT&ServiceVersion=20070822"
-                if asin else None
+                f"{base_url}/api/offerte/{riga['id']}/immagine"
+                if base_url and riga["foto_file_id"] else None
             ),
         })
     return offerte
+
+
+def foto_offerta_per_web(offerta_id):
+    db = sqlite3.connect(DB_PATH)
+    try:
+        riga = db.execute(
+            "SELECT foto_file_id FROM recap_offerte WHERE id=? AND stato='pubblicata'",
+            (int(offerta_id),),
+        ).fetchone()
+    finally:
+        db.close()
+    if not riga or not riga[0]:
+        return None, None
+
+    riferimento = str(riga[0]).strip()
+    if riferimento.startswith(("http://", "https://")):
+        risposta = requests.get(riferimento, timeout=15)
+    else:
+        info = requests.get(
+            f"https://api.telegram.org/bot{TOKEN}/getFile",
+            params={"file_id": riferimento},
+            timeout=10,
+        )
+        info.raise_for_status()
+        percorso = info.json().get("result", {}).get("file_path")
+        if not percorso:
+            return None, None
+        risposta = requests.get(
+            f"https://api.telegram.org/file/bot{TOKEN}/{percorso}",
+            timeout=15,
+        )
+    risposta.raise_for_status()
+    contenuto = risposta.content
+    if not contenuto or len(contenuto) > 10 * 1024 * 1024:
+        return None, None
+    tipo = risposta.headers.get("Content-Type", "image/jpeg").split(";", 1)[0]
+    if not tipo.startswith("image/"):
+        tipo = "image/jpeg"
+    return contenuto, tipo
 
 
 class OfferteWebHandler(BaseHTTPRequestHandler):
@@ -587,13 +624,40 @@ class OfferteWebHandler(BaseHTTPRequestHandler):
             return
         if percorso == "/api/offerte":
             try:
+                dominio = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+                if dominio:
+                    base_url = f"https://{dominio.strip().strip('/')}"
+                else:
+                    host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host", "")
+                    host = host if re.fullmatch(r"[A-Za-z0-9.:-]+", host) else ""
+                    protocollo = self.headers.get("X-Forwarded-Proto", "https")
+                    protocollo = protocollo if protocollo in {"http", "https"} else "https"
+                    base_url = f"{protocollo}://{host}" if host else ""
                 self._json({
-                    "offerte": offerte_pubblicate_per_web(),
+                    "offerte": offerte_pubblicate_per_web(base_url=base_url),
                     "aggiornato_il": datetime.now(ROMA_TZ).isoformat(timespec="seconds"),
                 })
             except Exception as exc:
                 print(f"Errore API offerte web: {exc}")
                 self._json({"offerte": [], "errore": "temporaneo"}, status=500)
+            return
+        immagine = re.fullmatch(r"/api/offerte/(\d+)/immagine", percorso)
+        if immagine:
+            try:
+                contenuto, tipo = foto_offerta_per_web(immagine.group(1))
+                if not contenuto:
+                    self._json({"errore": "immagine non disponibile"}, status=404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", tipo)
+                self.send_header("Content-Length", str(len(contenuto)))
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(contenuto)
+            except Exception as exc:
+                print(f"Errore immagine offerta web: {exc}")
+                self._json({"errore": "immagine non disponibile"}, status=404)
             return
         self._json({"errore": "non trovato"}, status=404)
 
