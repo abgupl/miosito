@@ -96,7 +96,8 @@ def canale_pubblicazione_per_categoria(categoria):
     PRIORITA_RIMUOVI,
     PRIORITA_ACCESSORIO_AGGIUNGI,
     PRIORITA_ACCESSORIO_RIMUOVI,
-) = range(300, 310)
+    ARCHIVIO_RICERCA,
+) = range(300, 311)
 
 AUTO_CATEGORIE = {
     "elettronica": ("📱 Elettronica", ["offerte elettronica", "cuffie bluetooth", "dispositivi smart home"]),
@@ -419,6 +420,30 @@ def inizializza_recap():
     if "template" not in colonne_recap:
         cur.execute("ALTER TABLE recap_offerte ADD COLUMN template TEXT DEFAULT 'pulito'")
 
+    nuove_colonne_recap = {
+        "asin": "TEXT",
+        "categoria": "TEXT DEFAULT 'manuale'",
+        "telegram_chat_id": "TEXT",
+        "origine": "TEXT DEFAULT 'manuale'",
+        "sconto": "INTEGER DEFAULT 0",
+        "telegram_message_id": "INTEGER",
+        "stato": "TEXT DEFAULT 'pubblicata'",
+    }
+    cur.execute("PRAGMA table_info(recap_offerte)")
+    colonne_recap = {riga[1] for riga in cur.fetchall()}
+    for colonna, definizione in nuove_colonne_recap.items():
+        if colonna not in colonne_recap:
+            cur.execute(f"ALTER TABLE recap_offerte ADD COLUMN {colonna} {definizione}")
+    # Le pubblicazioni precedenti alla creazione del canale CASA erano TECH.
+    cur.execute(
+        "UPDATE recap_offerte SET telegram_chat_id=? WHERE telegram_chat_id IS NULL OR telegram_chat_id=''",
+        (CHANNEL_ID,),
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_recap_data ON recap_offerte(pubblicata_il DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_recap_canale ON recap_offerte(telegram_chat_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_recap_asin ON recap_offerte(asin)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_recap_origine ON recap_offerte(origine)")
+
     db.commit()
     db.close()
 
@@ -431,6 +456,13 @@ def salva_offerta_recap(
     messaggio=None,
     foto_file_id=None,
     template="pulito",
+    asin=None,
+    categoria="manuale",
+    telegram_chat_id=None,
+    origine="manuale",
+    sconto=0,
+    telegram_message_id=None,
+    stato="pubblicata",
 ):
 
     if not nome or not link:
@@ -441,6 +473,7 @@ def salva_offerta_recap(
     db = sqlite3.connect(DB_PATH)
     cur = db.cursor()
 
+    asin = asin or risolvi_asin_da_link(link)
     cur.execute("""
         INSERT INTO recap_offerte (
             nome,
@@ -450,9 +483,10 @@ def salva_offerta_recap(
             pubblicata_il,
             messaggio,
             foto_file_id,
-            template
+            template, asin, categoria, telegram_chat_id, origine,
+            sconto, telegram_message_id, stato
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         nome,
         link,
@@ -462,6 +496,13 @@ def salva_offerta_recap(
         messaggio,
         foto_file_id,
         template or "pulito",
+        asin,
+        categoria or "manuale",
+        telegram_chat_id or CHANNEL_ID,
+        origine or "manuale",
+        int(sconto or 0),
+        telegram_message_id,
+        stato or "pubblicata",
     ))
 
     db.commit()
@@ -1002,6 +1043,11 @@ async def invia_offerta_programmata(
         estrai_vecchio_prezzo_da_messaggio(messaggio),
         messaggio=messaggio,
         foto_file_id=foto_file_id,
+        asin=risolvi_asin_da_link(link),
+        telegram_chat_id=destinazione,
+        origine="programmato",
+        sconto=sconto_programmato,
+        telegram_message_id=messaggio_telegram.message_id,
     )
 
 
@@ -1214,6 +1260,9 @@ def inizializza_automazione():
         "punteggio_minimo": "5",
         "bonus_sconto_da": "30",
         "priorita_amazon": "1",
+        "tentativi_ricerca": "6",
+        "giorni_blocco_duplicati": "10",
+        "raggruppa_varianti": "1",
         "indice_categoria_automatica": "0",
         "indice_categoria_ricerca": "0",
     }
@@ -1231,6 +1280,41 @@ def inizializza_automazione():
         cur.execute(
             "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
             (f"casa:{chiave}", defaults_casa[chiave]),
+        )
+
+    # Nuova configurazione selettiva: applicata una sola volta e senza
+    # cancellare marchi, parole o priorità personalizzati.
+    selettiva_v2 = cur.execute(
+        "SELECT valore FROM configurazione_automatica WHERE chiave='selettiva_v2'"
+    ).fetchone()
+    if not selettiva_v2:
+        for prefisso in ("", "casa:"):
+            cur.execute(
+                "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES (?, '0')",
+                (f"{prefisso}attiva",),
+            )
+            cur.execute(
+                "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES (?, '')",
+                (f"{prefisso}prossimo_invio",),
+            )
+            cur.execute(
+                "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES (?, '4')",
+                (f"{prefisso}punteggio_minimo",),
+            )
+            cur.execute(
+                "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, '6')",
+                (f"{prefisso}tentativi_ricerca",),
+            )
+            cur.execute(
+                "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, '10')",
+                (f"{prefisso}giorni_blocco_duplicati",),
+            )
+            cur.execute(
+                "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, '1')",
+                (f"{prefisso}raggruppa_varianti",),
+            )
+        cur.execute(
+            "INSERT INTO configurazione_automatica (chiave, valore) VALUES ('selettiva_v2', '1')"
         )
 
     # Migrazione eseguita una sola volta: conserva le categorie TECH esistenti,
@@ -1375,6 +1459,7 @@ def leggi_config_automatica(canale="tech"):
             "attiva", "intervallo_minuti", "ora_inizio", "ora_fine",
             "prossimo_invio", "sconto_minimo", "qualita_prodotti",
             "punteggio_minimo", "bonus_sconto_da", "priorita_amazon",
+            "tentativi_ricerca", "giorni_blocco_duplicati", "raggruppa_varianti",
         )
         if (valore := valori_grezzi.get(_chiave_config_canale(canale, chiave)))
         is not None
@@ -1399,9 +1484,12 @@ def leggi_config_automatica(canale="tech"):
         "prossimo_invio": valori.get("prossimo_invio", ""),
         "sconto_minimo": int(valori.get("sconto_minimo", "20")),
         "qualita_prodotti": valori.get("qualita_prodotti", "selettiva"),
-        "punteggio_minimo": int(valori.get("punteggio_minimo", "5")),
+        "punteggio_minimo": int(valori.get("punteggio_minimo", "4")),
         "bonus_sconto_da": int(valori.get("bonus_sconto_da", "30")),
         "priorita_amazon": valori.get("priorita_amazon", "1") == "1",
+        "tentativi_ricerca": int(valori.get("tentativi_ricerca", "6")),
+        "giorni_blocco_duplicati": int(valori.get("giorni_blocco_duplicati", "10")),
+        "raggruppa_varianti": valori.get("raggruppa_varianti", "1") == "1",
         "categorie": categorie,
     }
 
@@ -1540,7 +1628,17 @@ async def mostra_menu_filtri(query):
     )
 
 
-async def mostra_categorie_marchi(query):
+def _callback_ritorno_filtri(context):
+    return "selective_menu" if context.user_data.get("filtri_da_selettiva") else "auto_filtri"
+
+
+def _categorie_filtri_context(context):
+    if not context.user_data.get("filtri_da_selettiva"):
+        return set(AUTO_CATEGORIE)
+    return TECH_CATEGORIE if _auto_canale_corrente(context) == "tech" else CASA_CATEGORIE
+
+
+async def mostra_categorie_marchi(query, context):
     conteggi = {}
     for categoria, _ in leggi_marchi_qualita():
         conteggi[categoria] = conteggi.get(categoria, 0) + 1
@@ -1550,8 +1648,9 @@ async def mostra_categorie_marchi(query):
             callback_data=f"filter_brandcat_{codice}",
         )]
         for codice, (etichetta, _) in AUTO_CATEGORIE.items()
+        if codice in _categorie_filtri_context(context)
     ]
-    tastiera.append([InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_filtri")])
+    tastiera.append([InlineKeyboardButton("⬅️ INDIETRO", callback_data=_callback_ritorno_filtri(context))])
     await query.edit_message_text(
         "🏷 Scegli la categoria di cui vuoi gestire i marchi:",
         reply_markup=InlineKeyboardMarkup(tastiera),
@@ -1561,7 +1660,7 @@ async def mostra_categorie_marchi(query):
 async def mostra_gestione_marchi(query, context, categoria=None):
     categoria = categoria or context.user_data.get("filtro_categoria")
     if categoria not in AUTO_CATEGORIE:
-        return await mostra_categorie_marchi(query)
+        return await mostra_categorie_marchi(query, context)
     context.user_data["filtro_categoria"] = categoria
     marchi = leggi_marchi_qualita(categoria)
     etichetta = AUTO_CATEGORIE[categoria][0]
@@ -1574,12 +1673,12 @@ async def mostra_gestione_marchi(query, context, categoria=None):
         [InlineKeyboardButton("➕ AGGIUNGI MARCHIO", callback_data="filter_brand_add")],
         [InlineKeyboardButton("➖ RIMUOVI MARCHIO", callback_data="filter_brand_remove")],
         [InlineKeyboardButton("⬅️ CAMBIA CATEGORIA", callback_data="filter_brands")],
-        [InlineKeyboardButton("⚙️ MENU FILTRI", callback_data="auto_filtri")],
+        [InlineKeyboardButton("⚙️ MENU FILTRI", callback_data=_callback_ritorno_filtri(context))],
     ])
     await query.edit_message_text(testo[:4000], reply_markup=tastiera)
 
 
-async def mostra_gestione_parole(query):
+async def mostra_gestione_parole(query, context):
     parole = leggi_parole_indesiderate()
     await query.edit_message_text(
         "🚫 Parole escluse\n\n"
@@ -1588,7 +1687,7 @@ async def mostra_gestione_parole(query):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ AGGIUNGI PAROLA", callback_data="filter_word_add")],
             [InlineKeyboardButton("➖ RIMUOVI PAROLA", callback_data="filter_word_remove")],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_filtri")],
+            [InlineKeyboardButton("⬅️ INDIETRO", callback_data=_callback_ritorno_filtri(context))],
         ]),
     )
 
@@ -1599,16 +1698,21 @@ async def gestisci_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     azione = query.data
+    canale_filtri = (
+        _auto_canale_corrente(context)
+        if context.user_data.get("filtri_da_selettiva") else "tech"
+    )
 
     if azione == "auto_filtri":
+        context.user_data["filtri_da_selettiva"] = False
         return await mostra_menu_filtri(query)
     if azione == "filter_brands":
-        return await mostra_categorie_marchi(query)
+        return await mostra_categorie_marchi(query, context)
     if azione.startswith("filter_brandcat_"):
         categoria = azione.replace("filter_brandcat_", "", 1)
         return await mostra_gestione_marchi(query, context, categoria)
     if azione == "filter_words":
-        return await mostra_gestione_parole(query)
+        return await mostra_gestione_parole(query, context)
     if azione == "filter_score":
         tastiera = [
             [InlineKeyboardButton(str(v), callback_data=f"filter_score_{v}") for v in range(3, 7)],
@@ -1621,8 +1725,8 @@ async def gestisci_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     if azione.startswith("filter_score_"):
         valore = int(azione.rsplit("_", 1)[1])
-        salva_config_automatica("punteggio_minimo", valore)
-        salva_config_automatica("attiva", 0)
+        salva_config_automatica("punteggio_minimo", valore, canale_filtri)
+        salva_config_automatica("attiva", 0, canale_filtri)
         return await mostra_menu_filtri(query)
     if azione == "filter_bonus":
         valori = (20, 25, 30, 35, 40)
@@ -1635,16 +1739,16 @@ async def gestisci_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     if azione.startswith("filter_bonus_"):
         valore = int(azione.rsplit("_", 1)[1])
-        salva_config_automatica("bonus_sconto_da", valore)
-        salva_config_automatica("attiva", 0)
+        salva_config_automatica("bonus_sconto_da", valore, canale_filtri)
+        salva_config_automatica("attiva", 0, canale_filtri)
         return await mostra_menu_filtri(query)
     if azione == "filter_amazon":
-        attiva = leggi_config_automatica()["priorita_amazon"]
-        salva_config_automatica("priorita_amazon", 0 if attiva else 1)
-        salva_config_automatica("attiva", 0)
+        attiva = leggi_config_automatica(canale_filtri)["priorita_amazon"]
+        salva_config_automatica("priorita_amazon", 0 if attiva else 1, canale_filtri)
+        salva_config_automatica("attiva", 0, canale_filtri)
         return await mostra_menu_filtri(query)
     if azione == "filter_summary":
-        config = leggi_config_automatica()
+        config = leggi_config_automatica(canale_filtri)
         conteggio_marchi = len(leggi_marchi_qualita())
         conteggio_parole = len(leggi_parole_indesiderate())
         conteggio_priorita = len(leggi_prodotti_prioritari())
@@ -1685,10 +1789,10 @@ async def gestisci_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         db.commit()
         db.close()
-        salva_config_automatica("punteggio_minimo", 5)
-        salva_config_automatica("bonus_sconto_da", 30)
-        salva_config_automatica("priorita_amazon", 1)
-        salva_config_automatica("attiva", 0)
+        salva_config_automatica("punteggio_minimo", 4, canale_filtri)
+        salva_config_automatica("bonus_sconto_da", 30, canale_filtri)
+        salva_config_automatica("priorita_amazon", 1, canale_filtri)
+        salva_config_automatica("attiva", 0, canale_filtri)
         return await mostra_menu_filtri(query)
 
 
@@ -1757,11 +1861,12 @@ async def ricevi_modifica_filtro(update: Update, context: ContextTypes.DEFAULT_T
         messaggio = "✅ Parola rimossa." if cursore.rowcount else "ℹ️ Parola non trovata."
     db.commit()
     db.close()
-    salva_config_automatica("attiva", 0)
+    canale = _auto_canale_corrente(context) if context.user_data.get("filtri_da_selettiva") else "tech"
+    salva_config_automatica("attiva", 0, canale)
     await update.message.reply_text(
         messaggio + "\n\nL’automazione è stata disattivata: riattivala dopo le modifiche.",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⚙️ TORNA AI FILTRI", callback_data="auto_filtri")
+            InlineKeyboardButton("⚙️ TORNA AI FILTRI", callback_data=_callback_ritorno_filtri(context))
         ]]),
     )
     context.user_data.pop("stato_filtro_corrente", None)
@@ -1775,8 +1880,9 @@ def _imposta_stato_filtro(stato):
     return handler
 
 
-async def mostra_menu_priorita(query):
-    regole = leggi_prodotti_prioritari()
+async def mostra_menu_priorita(query, context):
+    consentite = _categorie_filtri_context(context)
+    regole = [riga for riga in leggi_prodotti_prioritari() if riga[1] in consentite]
     await query.edit_message_text(
         "🚀 PRODOTTI PRIORITARI\n\n"
         "Le priorità servono a far emergere prodotti importanti prima delle offerte comuni.\n"
@@ -1785,19 +1891,20 @@ async def mostra_menu_priorita(query):
             [InlineKeyboardButton("📂 PRIORITÀ PER CATEGORIA", callback_data="priority_categories")],
             [InlineKeyboardButton("🚫 PAROLE ANTI-ACCESSORIO", callback_data="priority_accessories")],
             [InlineKeyboardButton("♻️ RIPRISTINA PRIORITÀ", callback_data="priority_reset")],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_filtri")],
+            [InlineKeyboardButton("⬅️ INDIETRO", callback_data=_callback_ritorno_filtri(context))],
         ]),
     )
 
 
-async def mostra_categorie_priorita(query):
+async def mostra_categorie_priorita(query, context):
     conteggi = {}
     for _, categoria, _, _, _ in leggi_prodotti_prioritari():
         conteggi[categoria] = conteggi.get(categoria, 0) + 1
     tastiera = [[InlineKeyboardButton(
         f"{etichetta.upper()} ({conteggi.get(codice, 0)})",
         callback_data=f"priority_cat_{codice}",
-    )] for codice, (etichetta, _) in AUTO_CATEGORIE.items()]
+    )] for codice, (etichetta, _) in AUTO_CATEGORIE.items()
+       if codice in _categorie_filtri_context(context)]
     tastiera.append([InlineKeyboardButton("⬅️ INDIETRO", callback_data="priority_menu")])
     await query.edit_message_text(
         "🚀 Scegli la categoria:", reply_markup=InlineKeyboardMarkup(tastiera)
@@ -1807,7 +1914,7 @@ async def mostra_categorie_priorita(query):
 async def mostra_regole_priorita(query, context, categoria=None):
     categoria = categoria or context.user_data.get("priorita_categoria")
     if categoria not in AUTO_CATEGORIE:
-        return await mostra_categorie_priorita(query)
+        return await mostra_categorie_priorita(query, context)
     context.user_data["priorita_categoria"] = categoria
     regole = leggi_prodotti_prioritari(categoria)
     righe = [f"🚀 PRIORITÀ — {AUTO_CATEGORIE[categoria][0]}\n"]
@@ -1847,9 +1954,9 @@ async def gestisci_priorita(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     azione = query.data
     if azione == "priority_menu":
-        return await mostra_menu_priorita(query)
+        return await mostra_menu_priorita(query, context)
     if azione == "priority_categories":
-        return await mostra_categorie_priorita(query)
+        return await mostra_categorie_priorita(query, context)
     if azione.startswith("priority_cat_"):
         return await mostra_regole_priorita(
             query, context, azione.replace("priority_cat_", "", 1)
@@ -1879,8 +1986,9 @@ async def gestisci_priorita(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         db.commit()
         db.close()
-        salva_config_automatica("attiva", 0)
-        return await mostra_menu_priorita(query)
+        canale = _auto_canale_corrente(context) if context.user_data.get("filtri_da_selettiva") else "tech"
+        salva_config_automatica("attiva", 0, canale)
+        return await mostra_menu_priorita(query, context)
 
 
 async def richiedi_modifica_priorita(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1974,7 +2082,8 @@ async def ricevi_modifica_priorita(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("❌ Valore non valido. Controlla il formato e riprova.")
         return stato
     db.close()
-    salva_config_automatica("attiva", 0)
+    canale = _auto_canale_corrente(context) if context.user_data.get("filtri_da_selettiva") else "tech"
+    salva_config_automatica("attiva", 0, canale)
     context.user_data.pop("stato_priorita_corrente", None)
     await update.message.reply_text(
         messaggio + "\n\nL’automazione è stata disattivata: riattivala dopo le modifiche.",
@@ -1992,7 +2101,7 @@ def tastiera_automazione(configurazione, canale):
         if configurazione["qualita_prodotti"] == "marche"
         else configurazione["qualita_prodotti"].upper()
     )
-    return InlineKeyboardMarkup([
+    righe = [
         [InlineKeyboardButton(f"STATO: {stato}", callback_data="auto_toggle")],
         [InlineKeyboardButton(
             f"⏱ OGNI {configurazione['intervallo_minuti']} MINUTI",
@@ -2011,15 +2120,139 @@ def tastiera_automazione(configurazione, canale):
             f"🎯 QUALITÀ: {etichetta_qualita}",
             callback_data="auto_qualita",
         )],
+    ]
+    if configurazione["qualita_prodotti"] == "selettiva":
+        righe.append([
+            InlineKeyboardButton("⚙️ PERSONALIZZA SELETTIVA", callback_data="selective_menu")
+        ])
+    righe.extend([
         [InlineKeyboardButton("🔎 CERCA OFFERTE", callback_data=f"offer_search_{canale}")],
         [InlineKeyboardButton("🧪 TESTA RICERCA", callback_data="auto_test")],
         [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="auto_channels")],
     ])
+    return InlineKeyboardMarkup(righe)
 
 
 def _auto_canale_corrente(context):
     canale = context.user_data.get("auto_canale", "tech")
     return canale if canale in {"tech", "casa"} else "tech"
+
+
+async def mostra_menu_selettiva(query, context):
+    """Impostazioni selettive indipendenti per il canale scelto."""
+    canale = _auto_canale_corrente(context)
+    configurazione = leggi_config_automatica(canale)
+    context.user_data["filtri_da_selettiva"] = True
+    context.user_data["filtro_canale"] = canale
+    nome_canale = "TECH" if canale == "tech" else "CASA"
+    amazon = "ATTIVA" if configurazione["priorita_amazon"] else "DISATTIVATA"
+    varianti = "ATTIVO" if configurazione["raggruppa_varianti"] else "DISATTIVO"
+    await query.edit_message_text(
+        f"⚙️ MODALITÀ SELETTIVA — {nome_canale}\n\n"
+        "Il punteggio ordina i prodotti migliori; un articolo affidabile e pertinente "
+        "può essere usato come riserva se non ci sono candidati sopra soglia.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏷 MARCHI AUTORIZZATI", callback_data="filter_brands")],
+            [InlineKeyboardButton("🚫 PAROLE ESCLUSE", callback_data="filter_words")],
+            [InlineKeyboardButton("🚀 PRODOTTI PRIORITARI", callback_data="priority_menu")],
+            [InlineKeyboardButton(
+                f"⭐ PUNTEGGIO PREFERITO: {configurazione['punteggio_minimo']}",
+                callback_data="selective_score",
+            )],
+            [InlineKeyboardButton(
+                f"📉 BONUS SCONTO: DAL {configurazione['bonus_sconto_da']}%",
+                callback_data="selective_bonus",
+            )],
+            [InlineKeyboardButton(
+                f"🏪 PRIORITÀ AMAZON: {amazon}", callback_data="selective_amazon"
+            )],
+            [InlineKeyboardButton(
+                f"🔎 TENTATIVI RICERCA: {configurazione['tentativi_ricerca']}",
+                callback_data="selective_searches",
+            )],
+            [InlineKeyboardButton(
+                f"🔁 BLOCCO DUPLICATI: {configurazione['giorni_blocco_duplicati']} GIORNI",
+                callback_data="selective_duplicates",
+            )],
+            [InlineKeyboardButton(
+                f"🧩 RAGGRUPPA VARIANTI: {varianti}", callback_data="selective_variants"
+            )],
+            [InlineKeyboardButton("♻️ RIPRISTINA CONSIGLIATI", callback_data="selective_reset")],
+            [InlineKeyboardButton("⬅️ TORNA ALL'AUTOMAZIONE", callback_data="auto_menu")],
+        ]),
+    )
+
+
+async def gestisci_selettiva(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    azione = query.data
+    canale = _auto_canale_corrente(context)
+    configurazione = leggi_config_automatica(canale)
+
+    if azione == "selective_menu":
+        return await mostra_menu_selettiva(query, context)
+    menu_valori = {
+        "selective_score": ("Punteggio preferito", (3, 4, 5, 6, 7, 8), "selective_score"),
+        "selective_bonus": ("Bonus +2 a partire dallo sconto", (20, 25, 30, 35, 40), "selective_bonus"),
+        "selective_searches": ("Numero massimo di ricerche per invio", (3, 6, 9), "selective_searches"),
+        "selective_duplicates": ("Dopo quanti giorni un prodotto può tornare", (3, 7, 10, 14, 30), "selective_duplicates"),
+    }
+    if azione in menu_valori:
+        titolo, valori, prefisso = menu_valori[azione]
+        suffisso = "%" if azione == "selective_bonus" else " GIORNI" if azione == "selective_duplicates" else ""
+        righe = []
+        for indice in range(0, len(valori), 3):
+            righe.append([
+                InlineKeyboardButton(f"{valore}{suffisso}", callback_data=f"{prefisso}_{valore}")
+                for valore in valori[indice:indice + 3]
+            ])
+        righe.append([InlineKeyboardButton("⬅️ INDIETRO", callback_data="selective_menu")])
+        return await query.edit_message_text(titolo, reply_markup=InlineKeyboardMarkup(righe))
+
+    modificata = False
+    associazioni = {
+        "selective_score_": "punteggio_minimo",
+        "selective_bonus_": "bonus_sconto_da",
+        "selective_searches_": "tentativi_ricerca",
+        "selective_duplicates_": "giorni_blocco_duplicati",
+    }
+    for prefisso, chiave in associazioni.items():
+        if azione.startswith(prefisso):
+            salva_config_automatica(chiave, int(azione[len(prefisso):]), canale)
+            modificata = True
+            break
+    if azione == "selective_amazon":
+        salva_config_automatica("priorita_amazon", 0 if configurazione["priorita_amazon"] else 1, canale)
+        modificata = True
+    elif azione == "selective_variants":
+        salva_config_automatica("raggruppa_varianti", 0 if configurazione["raggruppa_varianti"] else 1, canale)
+        modificata = True
+    elif azione == "selective_reset":
+        return await query.edit_message_text(
+            "Ripristinare i valori consigliati per questo canale?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ SÌ", callback_data="selective_reset_yes")],
+                [InlineKeyboardButton("❌ ANNULLA", callback_data="selective_menu")],
+            ]),
+        )
+    elif azione == "selective_reset_yes":
+        for chiave, valore in {
+            "punteggio_minimo": 4,
+            "bonus_sconto_da": 30,
+            "priorita_amazon": 1,
+            "tentativi_ricerca": 6,
+            "giorni_blocco_duplicati": 10,
+            "raggruppa_varianti": 1,
+        }.items():
+            salva_config_automatica(chiave, valore, canale)
+        modificata = True
+    if modificata:
+        salva_config_automatica("attiva", 0, canale)
+        salva_config_automatica("prossimo_invio", "", canale)
+    await mostra_menu_selettiva(query, context)
 
 
 def testo_automazione(configurazione, canale):
@@ -2509,7 +2742,9 @@ def valuta_priorita_prodotto(prodotto, categoria, snapshot=None):
     return migliore_bonus, migliore_nome
 
 
-def valuta_qualita_prodotto(prodotto, categoria, modalita, snapshot=None):
+def valuta_qualita_prodotto(
+    prodotto, categoria, modalita, snapshot=None, bonus_priorita=0
+):
     """Restituisce approvazione, punteggio e motivazioni, senza filtri di prezzo."""
     modalita = modalita if modalita in {"standard", "selettiva", "marche"} else "selettiva"
     if modalita == "standard":
@@ -2554,6 +2789,9 @@ def valuta_qualita_prodotto(prodotto, categoria, modalita, snapshot=None):
     if pertinente:
         punteggio += 1
         motivi.append("titolo pertinente +1")
+    if bonus_priorita:
+        punteggio += int(bonus_priorita)
+        motivi.append(f"prodotto prioritario +{int(bonus_priorita)}")
     if indesiderate:
         punteggio -= 3
         motivi.append(f"parole indesiderate -3: {', '.join(indesiderate)}")
@@ -2561,7 +2799,11 @@ def valuta_qualita_prodotto(prodotto, categoria, modalita, snapshot=None):
     if modalita == "marche":
         approvato = marchio_noto and not indesiderate
     else:
-        approvato = punteggio >= configurazione["punteggio_minimo"]
+        # In selettiva la soglia serve soprattutto a ordinare. Blocchiamo solo
+        # articoli indesiderati, non pertinenti o senza alcun segnale affidabile.
+        affidabile = marchio_noto or venduto_amazon or bonus_priorita > 0
+        coerente = pertinente or bonus_priorita > 0
+        approvato = affidabile and coerente and not indesiderate
     return approvato, punteggio, motivi
 
 
@@ -2801,18 +3043,19 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
                 if not prodotto or prodotto["sconto"] < configurazione["sconto_minimo"]:
                     continue
                 prodotto["categoria"] = categoria
+                bonus_priorita, nome_priorita = valuta_priorita_prodotto(
+                    prodotto, categoria, snapshot_filtri
+                )
                 approvato, punteggio, motivi = valuta_qualita_prodotto(
                     prodotto,
                     categoria,
                     configurazione["qualita_prodotti"],
                     snapshot_filtri,
+                    bonus_priorita,
                 )
                 prodotto["punteggio_qualita"] = punteggio
                 prodotto["motivi_qualita"] = motivi
                 if approvato:
-                    bonus_priorita, nome_priorita = valuta_priorita_prodotto(
-                        prodotto, categoria, snapshot_filtri
-                    )
                     prodotto["bonus_priorita"] = bonus_priorita
                     prodotto["nome_priorita"] = nome_priorita
                     prodotti.append(prodotto)
@@ -2913,8 +3156,11 @@ async def menu_ricerca_offerte(query, context, canale=None):
         "Seleziona lo sconto minimo. La ricerca non pubblicherà nulla automaticamente.",
         reply_markup=InlineKeyboardMarkup([
             [
+                InlineKeyboardButton("10%", callback_data="os_disc_10"),
                 InlineKeyboardButton("20%", callback_data="os_disc_20"),
                 InlineKeyboardButton("30%", callback_data="os_disc_30"),
+            ],
+            [
                 InlineKeyboardButton("40%", callback_data="os_disc_40"),
                 InlineKeyboardButton("50%", callback_data="os_disc_50"),
             ],
@@ -3024,22 +3270,25 @@ async def esegui_ricerca_offerte(query, context, quantita):
                 prodotto = estrai_prodotto_creators(item)
                 if not prodotto or prodotto["sconto"] < sconto:
                     continue
-                if prodotto["asin"] in trovati or _asin_gia_pubblicato(prodotto["asin"]):
+                if prodotto["asin"] in trovati or _asin_gia_pubblicato(
+                    prodotto["asin"], configurazione["giorni_blocco_duplicati"]
+                ):
                     continue
                 prodotto["categoria"] = categoria
+                bonus_priorita, nome_priorita = valuta_priorita_prodotto(
+                    prodotto, categoria, snapshot_filtri
+                )
                 approvato, punteggio, motivi = valuta_qualita_prodotto(
                     prodotto,
                     categoria,
                     configurazione["qualita_prodotti"],
                     snapshot_filtri,
+                    bonus_priorita,
                 )
                 if not approvato:
                     continue
                 prodotto["punteggio_qualita"] = punteggio
                 prodotto["motivi_qualita"] = motivi
-                bonus_priorita, nome_priorita = valuta_priorita_prodotto(
-                    prodotto, categoria, snapshot_filtri
-                )
                 prodotto["bonus_priorita"] = bonus_priorita
                 prodotto["nome_priorita"] = nome_priorita
                 trovati[prodotto["asin"]] = prodotto
@@ -3051,8 +3300,15 @@ async def esegui_ricerca_offerte(query, context, quantita):
         if numero < len(piano):
             await asyncio.sleep(1.0)
 
+    candidati = list(trovati.values())
+    if configurazione.get("raggruppa_varianti", True):
+        candidati = _raggruppa_varianti_prodotti(candidati)
+    preferiti = [
+        prodotto for prodotto in candidati
+        if prodotto.get("punteggio_qualita", 0) >= configurazione["punteggio_minimo"]
+    ]
     risultati = sorted(
-        trovati.values(),
+        preferiti or candidati,
         key=lambda p: (
             p.get("bonus_priorita", 0),
             p.get("punteggio_qualita", 0),
@@ -3199,7 +3455,7 @@ async def pubblica_prodotto_ricerca_offerte(query, context, indice):
     try:
         canale = context.user_data.get("ricerca_offerte_canale")
         message_id, foto_file_id, telegram_chat_id = await pubblica_offerta_automatica(
-            context.bot, prodotto, canale
+            context.bot, prodotto, canale, origine="ricerca"
         )
         _registra_offerta_cercata(
             prodotto, message_id, foto_file_id,
@@ -3385,16 +3641,58 @@ def _aggiorna_slot_automatico(
     db.close()
 
 
-def _asin_gia_pubblicato(asin):
+def _asin_gia_pubblicato(asin, giorni=10):
     if not asin:
         return True
     db = sqlite3.connect(DB_PATH)
     riga = db.execute(
-        "SELECT 1 FROM invii_automatici WHERE asin = ? AND stato = 'pubblicata' LIMIT 1",
+        """
+        SELECT creato_il FROM invii_automatici
+        WHERE asin = ? AND stato IN ('pubblicata', 'terminata')
+        ORDER BY creato_il DESC LIMIT 1
+        """,
         (asin,),
     ).fetchone()
     db.close()
-    return bool(riga)
+    if not riga:
+        return False
+    try:
+        pubblicata = datetime.fromisoformat(riga[0])
+        if pubblicata.tzinfo is None:
+            pubblicata = pubblicata.replace(tzinfo=ROMA_TZ)
+        return pubblicata >= datetime.now(ROMA_TZ) - timedelta(days=max(1, int(giorni)))
+    except (TypeError, ValueError):
+        return True
+
+
+def _chiave_famiglia_prodotto(prodotto):
+    """Raggruppa colori, capacità e confezioni dello stesso modello."""
+    titolo = _normalizza_qualita(prodotto.get("nome"))
+    titolo = re.sub(r"\([^)]*\)|\[[^]]*\]", " ", titolo)
+    titolo = re.sub(
+        r"\b(?:\d+\s?(?:gb|tb|mb|ml|cl|l|w|mah|hz|pollici)|"
+        r"nero|bianco|blu|rosso|verde|grigio|rosa|viola|silver|gold|"
+        r"confezione|pack|pezzi|pz)\b",
+        " ",
+        titolo,
+    )
+    parole = [p for p in titolo.split() if len(p) > 1]
+    return " ".join(parole[:12]) or prodotto.get("asin") or titolo
+
+
+def _raggruppa_varianti_prodotti(prodotti):
+    migliori = {}
+    for prodotto in prodotti:
+        chiave = _chiave_famiglia_prodotto(prodotto)
+        valore = (
+            prodotto.get("bonus_priorita", 0),
+            prodotto.get("punteggio_qualita", 0),
+            prodotto.get("sconto", 0),
+        )
+        precedente = migliori.get(chiave)
+        if precedente is None or valore > precedente[0]:
+            migliori[chiave] = (valore, prodotto)
+    return [elemento[1] for elemento in migliori.values()]
 
 
 def _numero_slot_del_giorno(data_slot):
@@ -3428,38 +3726,64 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
 
     snapshot_filtri = carica_snapshot_filtri(configurazione=configurazione)
 
+    massimo = max(3, min(9, int(configurazione.get("tentativi_ricerca", 6))))
     tentativi = []
-    for numero in range(3):
-        categoria = categorie[numero % len(categorie)]
-        termini = AUTO_CATEGORIE[categoria][1]
+    visti = set()
+    indice = 0
+    while len(tentativi) < massimo:
+        categoria = categorie[(indice // 2) % len(categorie)]
+        generici = AUTO_CATEGORIE[categoria][1]
         prioritari = termini_prioritari_categoria(categoria)
-        if prioritari and numero % 2 == 0:
-            termine = prioritari[numero % len(prioritari)]
+        if indice % 2 == 0 and prioritari:
+            termine = prioritari[(indice // 2) % len(prioritari)]
         else:
-            termine = termini[numero % len(termini)]
-        tentativi.append((categoria, termine))
+            termine = generici[(indice // 2) % len(generici)]
+        chiave = (categoria, termine.lower())
+        if chiave not in visti:
+            tentativi.append((categoria, termine))
+            visti.add(chiave)
+        indice += 1
+        if indice > massimo * 10:
+            break
 
+    statistiche = {
+        "ricerche": 0, "prodotti": 0, "incompleti": 0,
+        "sconto": 0, "duplicati": 0, "qualita": 0, "errori": 0,
+        "varianti": 0, "riserva": False,
+    }
     candidati = []
     for numero, (categoria, termine) in enumerate(tentativi, start=1):
-        print(f"Ricerca automatica {numero}/3: {categoria} - {termine}")
+        print(f"Ricerca automatica {numero}/{len(tentativi)}: {categoria} - {termine}")
+        statistiche["ricerche"] += 1
         try:
             items = await asyncio.to_thread(search_items, termine, "All", 10)
             for item in items:
+                statistiche["prodotti"] += 1
                 prodotto = estrai_prodotto_creators(item)
                 if not prodotto:
+                    statistiche["incompleti"] += 1
                     continue
                 if prodotto["sconto"] < configurazione["sconto_minimo"]:
+                    statistiche["sconto"] += 1
                     continue
-                if _asin_gia_pubblicato(prodotto["asin"]):
+                if _asin_gia_pubblicato(
+                    prodotto["asin"], configurazione["giorni_blocco_duplicati"]
+                ):
+                    statistiche["duplicati"] += 1
                     continue
                 prodotto["categoria"] = categoria
+                bonus_priorita, nome_priorita = valuta_priorita_prodotto(
+                    prodotto, categoria, snapshot_filtri
+                )
                 approvato, punteggio, motivi = valuta_qualita_prodotto(
                     prodotto,
                     categoria,
                     configurazione["qualita_prodotti"],
                     snapshot_filtri,
+                    bonus_priorita,
                 )
                 if not approvato:
+                    statistiche["qualita"] += 1
                     print(
                         f"Prodotto scartato dal filtro qualità ({punteggio} punti): "
                         f"{prodotto['nome']}"
@@ -3467,19 +3791,32 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
                     continue
                 prodotto["punteggio_qualita"] = punteggio
                 prodotto["motivi_qualita"] = motivi
-                bonus_priorita, nome_priorita = valuta_priorita_prodotto(
-                    prodotto, categoria, snapshot_filtri
-                )
                 prodotto["bonus_priorita"] = bonus_priorita
                 prodotto["nome_priorita"] = nome_priorita
                 candidati.append(prodotto)
         except Exception as errore:
+            statistiche["errori"] += 1
             print(f"Errore tentativo automatico {numero}: {errore}")
+        # Strategia 3+3: se i primi tre tentativi bastano, non consumiamo altre richieste.
+        if numero == 3 and candidati:
+            break
         if numero < len(tentativi):
             await asyncio.sleep(1.2)
 
     if not candidati:
-        return None
+        return None, statistiche
+    if configurazione.get("raggruppa_varianti", True):
+        prima = len(candidati)
+        candidati = _raggruppa_varianti_prodotti(candidati)
+        statistiche["varianti"] = prima - len(candidati)
+    preferiti = [
+        prodotto for prodotto in candidati
+        if prodotto.get("punteggio_qualita", 0) >= configurazione["punteggio_minimo"]
+    ]
+    if preferiti:
+        candidati = preferiti
+    else:
+        statistiche["riserva"] = True
     candidati.sort(
         key=lambda x: (
             x.get("bonus_priorita", 0),
@@ -3488,10 +3825,10 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
         ),
         reverse=True,
     )
-    return candidati[0]
+    return candidati[0], statistiche
 
 
-async def pubblica_offerta_automatica(bot, prodotto, canale=None):
+async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="automatico"):
     nome = prodotto["nome"]
     prezzo_numero = _prezzo_italiano(prodotto["prezzo_valore"])
     vecchio_numero = None
@@ -3552,6 +3889,12 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None):
         messaggio=corpo_messaggio,
         foto_file_id=foto_telegram,
         template="automatico",
+        asin=prodotto.get("asin"),
+        categoria=prodotto.get("categoria", "manuale"),
+        telegram_chat_id=telegram_chat_id,
+        origine=origine,
+        sconto=prodotto.get("sconto", 0),
+        telegram_message_id=messaggio_telegram.message_id,
     )
     return messaggio_telegram.message_id, foto_telegram, telegram_chat_id
 
@@ -3571,13 +3914,17 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canal
         return
 
     try:
-        prodotto = await cerca_offerta_automatica(configurazione, categoria)
+        prodotto, statistiche = await cerca_offerta_automatica(configurazione, categoria)
         if not prodotto:
             _aggiorna_slot_automatico(data_slot, slot_ora_db, "nessuna_offerta")
             await _notifica_admin_automazione(
                 app.bot,
                 f"ℹ️ Alle {ora_slot} non ho trovato offerte nuove con almeno "
-                f"il {configurazione['sconto_minimo']}% di sconto dopo 3 tentativi.",
+                f"il {configurazione['sconto_minimo']}% di sconto.\n\n"
+                f"🔎 Ricerche: {statistiche['ricerche']} · prodotti analizzati: {statistiche['prodotti']}\n"
+                f"📉 Sotto sconto: {statistiche['sconto']} · duplicati: {statistiche['duplicati']}\n"
+                f"🎯 Scartati qualità: {statistiche['qualita']} · dati incompleti: {statistiche['incompleti']}\n"
+                f"⚠️ Errori API: {statistiche['errori']}",
             )
             return
 
@@ -3598,7 +3945,9 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canal
         await _notifica_admin_automazione(
             app.bot,
             f"✅ Offerta automatica pubblicata alle {ora_slot}:\n"
-            f"{prodotto['nome']}\nSconto: -{prodotto['sconto']}%",
+            f"{prodotto['nome']}\nSconto: -{prodotto['sconto']}%\n"
+            f"Ricerche eseguite: {statistiche['ricerche']}"
+            + (" · usata riserva selettiva" if statistiche["riserva"] else ""),
         )
     except Exception as errore:
         _aggiorna_slot_automatico(data_slot, slot_ora_db, "errore")
@@ -3867,6 +4216,16 @@ async def _modifica_post_terminato(
             reply_markup=None,
         )
     _segna_offerta_terminata(invio_id)
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        """
+        UPDATE recap_offerte SET stato='terminata'
+        WHERE asin = (SELECT asin FROM invii_automatici WHERE id = ?)
+        """,
+        (invio_id,),
+    )
+    db.commit()
+    db.close()
 
 
 async def controlla_offerte_terminate(app):
@@ -4029,7 +4388,8 @@ async def mostra_menu_pubblicazione(update: Update, context: ContextTypes.DEFAUL
 
 def menu_storico():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 ULTIME OFFERTE", callback_data="ultime")],
+        [InlineKeyboardButton("🗂 TUTTI I PRODOTTI", callback_data="archive_all")],
+        [InlineKeyboardButton("🕒 ULTIME PUBBLICAZIONI", callback_data="ultime")],
         [InlineKeyboardButton("🔁 INVIA DI NUOVO", callback_data="reinvia_menu")],
         [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
     ])
@@ -4042,7 +4402,8 @@ async def mostra_menu_storico(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     await query.edit_message_text(
         "📚 STORICO E REINVIO\n\n"
-        "Consulta le ultime offerte oppure scegli un post da pubblicare nuovamente.",
+        "Consulta l'archivio completo, le ultime pubblicazioni oppure scegli un post "
+        "da pubblicare nuovamente.",
         reply_markup=menu_storico(),
     )
 
@@ -7488,6 +7849,11 @@ async def conferma(
             messaggio=messaggio,
             foto_file_id=foto_file_id,
             template=context.user_data.get("template", "pulito"),
+            asin=context.user_data.get("asin") or risolvi_asin_da_link(link),
+            telegram_chat_id=CHANNEL_ID,
+            origine="manuale",
+            sconto=sconto_manuale,
+            telegram_message_id=messaggio_telegram.message_id,
         )
 
         context.user_data.clear()
@@ -7514,6 +7880,183 @@ async def conferma(
 # ULTIME OFFERTE
 # =========================================================
 
+ARCHIVIO_PER_PAGINA = 10
+
+
+def _condizioni_archivio(filtro="tutti", ricerca=""):
+    condizioni, parametri = [], []
+    if filtro == "tech":
+        condizioni.append("telegram_chat_id = ?")
+        parametri.append(str(CHANNEL_ID))
+    elif filtro == "casa":
+        condizioni.append("telegram_chat_id = ?")
+        parametri.append(str(CASA_CHANNEL_ID))
+    elif filtro == "manuale":
+        condizioni.append("origine <> 'automatico'")
+    elif filtro in {"automatico", "programmato", "reinvio", "ricerca"}:
+        condizioni.append("origine = ?")
+        parametri.append(filtro)
+    if ricerca:
+        condizioni.append("nome LIKE ? COLLATE NOCASE")
+        parametri.append(f"%{ricerca}%")
+    return (" WHERE " + " AND ".join(condizioni)) if condizioni else "", parametri
+
+
+def conta_archivio(filtro="tutti", ricerca=""):
+    where, parametri = _condizioni_archivio(filtro, ricerca)
+    db = sqlite3.connect(DB_PATH)
+    totale = db.execute(f"SELECT COUNT(*) FROM recap_offerte{where}", parametri).fetchone()[0]
+    db.close()
+    return totale
+
+
+def leggi_archivio(pagina=0, filtro="tutti", ricerca=""):
+    where, parametri = _condizioni_archivio(filtro, ricerca)
+    db = sqlite3.connect(DB_PATH)
+    righe = db.execute(
+        f"""
+        SELECT r.id, r.nome, r.link, r.prezzo, r.pubblicata_il,
+               COALESCE(r.categoria, 'manuale'), COALESCE(r.telegram_chat_id, ''),
+               COALESCE(r.origine, 'manuale'), COALESCE(r.sconto, 0),
+               COALESCE((SELECT i.stato FROM invii_automatici i
+                         WHERE i.asin = r.asin ORDER BY i.id DESC LIMIT 1), r.stato, 'pubblicata')
+        FROM recap_offerte r{where}
+        ORDER BY r.pubblicata_il DESC, r.id DESC LIMIT ? OFFSET ?
+        """,
+        (*parametri, ARCHIVIO_PER_PAGINA, pagina * ARCHIVIO_PER_PAGINA),
+    ).fetchall()
+    db.close()
+    return righe
+
+
+def _data_archivio(valore):
+    try:
+        data = datetime.fromisoformat(valore)
+        if data.tzinfo is None:
+            data = data.replace(tzinfo=ROMA_TZ)
+        return data.astimezone(ROMA_TZ).strftime("%d/%m/%Y %H:%M")
+    except (TypeError, ValueError):
+        return "data non disponibile"
+
+
+async def mostra_archivio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    azione = query.data
+    if azione == "archive_all":
+        context.user_data["archivio_filtro"] = "tutti"
+        context.user_data.pop("archivio_ricerca", None)
+        pagina = 0
+    elif azione.startswith("archive_filter_"):
+        context.user_data["archivio_filtro"] = azione.replace("archive_filter_", "", 1)
+        pagina = 0
+    else:
+        try:
+            pagina = int(azione.rsplit("_", 1)[1])
+        except (ValueError, IndexError):
+            pagina = 0
+    filtro = context.user_data.get("archivio_filtro", "tutti")
+    ricerca = context.user_data.get("archivio_ricerca", "")
+    totale = conta_archivio(filtro, ricerca)
+    totale_pagine = max(1, (totale + ARCHIVIO_PER_PAGINA - 1) // ARCHIVIO_PER_PAGINA)
+    pagina = max(0, min(pagina, totale_pagine - 1))
+    context.user_data["archivio_pagina"] = pagina
+    righe = leggi_archivio(pagina, filtro, ricerca)
+    testo = [f"🗂 ARCHIVIO PRODOTTI — {totale} TOTALI"]
+    if ricerca:
+        testo.append(f"Ricerca: {ricerca}")
+    tastiera = []
+    for offerta_id, nome, _, prezzo, data, _, chat_id, origine, sconto, stato in righe:
+        canale = "CASA" if str(chat_id) == str(CASA_CHANNEL_ID) else "TECH"
+        icona = "⛔" if stato == "terminata" else "✅"
+        breve = accorcia_nome_articolo(nome)
+        if len(breve) > 58:
+            breve = breve[:55].rsplit(" ", 1)[0] + "…"
+        testo.append(
+            f"\n#{offerta_id} {icona} {breve}\n"
+            f"-{int(sconto or 0)}% · {prezzo} · {canale} · {origine} · {_data_archivio(data)}"
+        )
+        tastiera.append([InlineKeyboardButton(
+            f"#{offerta_id} · {breve[:34]}", callback_data=f"archive_view_{offerta_id}"
+        )])
+    if not righe:
+        testo.append("\nNessun prodotto corrisponde ai filtri.")
+    nav = []
+    if pagina > 0:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"archive_page_{pagina - 1}"))
+    nav.append(InlineKeyboardButton(f"📄 {pagina + 1}/{totale_pagine}", callback_data="archive_nop"))
+    if pagina < totale_pagine - 1:
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"archive_page_{pagina + 1}"))
+    tastiera.append(nav)
+    tastiera.extend([
+        [InlineKeyboardButton("📱 TECH", callback_data="archive_filter_tech"),
+         InlineKeyboardButton("🏠 CASA", callback_data="archive_filter_casa")],
+        [InlineKeyboardButton("🤖 AUTOMATICI", callback_data="archive_filter_automatico"),
+         InlineKeyboardButton("✍️ MANUALI", callback_data="archive_filter_manuale")],
+        [InlineKeyboardButton("🔎 CERCA PER NOME", callback_data="archive_search")],
+        [InlineKeyboardButton("🗂 MOSTRA TUTTI", callback_data="archive_all")],
+        [InlineKeyboardButton("⬅️ TORNA ALLO STORICO", callback_data="history_menu")],
+    ])
+    await query.edit_message_text(
+        "\n".join(testo)[:4000], reply_markup=InlineKeyboardMarkup(tastiera)
+    )
+
+
+async def mostra_scheda_archivio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    offerta_id = int(query.data.rsplit("_", 1)[1])
+    riga = leggi_offerta_da_reinviare(offerta_id)
+    if not riga:
+        return await query.message.reply_text("❌ Prodotto non trovato.")
+    _, nome, link, prezzo, vecchio, data, *_ = riga
+    pagina = context.user_data.get("archivio_pagina", 0)
+    await query.edit_message_text(
+        f"📦 {html.escape(nome)}\n\n"
+        f"Prezzo: {html.escape(str(prezzo))}\n"
+        f"Prima: {html.escape(str(vecchio))}\n"
+        f"Pubblicato: {_data_archivio(data)}",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛒 APRI SU AMAZON", url=link)],
+            [InlineKeyboardButton("🔁 INVIA DI NUOVO", callback_data=f"reinvia_scegli_{offerta_id}_{offerta_id}")],
+            [InlineKeyboardButton("⬅️ TORNA ALL'ARCHIVIO", callback_data=f"archive_page_{pagina}")],
+        ]),
+    )
+
+
+async def richiedi_ricerca_archivio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "🔎 Scrivi una parte del nome del prodotto.\n\nPer annullare scrivi /annulla"
+    )
+    return ARCHIVIO_RICERCA
+
+
+async def ricevi_ricerca_archivio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    ricerca = re.sub(r"\s+", " ", update.message.text.strip())[:80]
+    if len(ricerca) < 2:
+        await update.message.reply_text("❌ Scrivi almeno 2 caratteri.")
+        return ARCHIVIO_RICERCA
+    context.user_data["archivio_ricerca"] = ricerca
+    context.user_data["archivio_filtro"] = "tutti"
+    await update.message.reply_text(
+        f"✅ Ricerca impostata: {ricerca}",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🗂 MOSTRA RISULTATI", callback_data="archive_page_0")
+        ]]),
+    )
+    return ConversationHandler.END
+
 async def ultime(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -7522,30 +8065,18 @@ async def ultime(
     if not await controlla_autorizzazione(update):
         return
 
-    if not ultime_offerte:
-
-        testo = (
-            "📋 Nessuna offerta pubblicata "
-            "da quando il bot è stato avviato."
-        )
-
+    offerte = leggi_archivio(0, "tutti", "")[:10]
+    if not offerte:
+        testo = "📋 Nessuna offerta ancora registrata."
     else:
-
-        righe = [
-            "📋 ULTIME OFFERTE\n"
-        ]
-
-        for numero, offerta in enumerate(
-            ultime_offerte,
-            start=1,
-        ):
-
+        righe = ["🕒 ULTIME PUBBLICAZIONI\n"]
+        for numero, (_, nome, _, prezzo, data, _, chat_id, origine, sconto, stato) in enumerate(offerte, 1):
+            canale = "CASA" if str(chat_id) == str(CASA_CHANNEL_ID) else "TECH"
+            icona = "⛔" if stato == "terminata" else "✅"
             righe.append(
-                f"{numero}. "
-                f"{offerta['nome']} "
-                f"— {offerta['prezzo']} €"
+                f"{numero}. {icona} {accorcia_nome_articolo(nome)}\n"
+                f"-{int(sconto or 0)}% · {prezzo} · {canale} · {origine} · {_data_archivio(data)}"
             )
-
         testo = "\n\n".join(righe)
 
     if update.message:
@@ -8050,6 +8581,11 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
         messaggio=messaggio,
         foto_file_id=draft.get("foto_file_id"),
         template=draft.get("template", "pulito"),
+        asin=risolvi_asin_da_link(draft["link"]),
+        telegram_chat_id=CHANNEL_ID,
+        origine="reinvio",
+        sconto=sconto_reinvio,
+        telegram_message_id=messaggio_telegram.message_id,
     )
 
     numero = context.user_data.get("reinvia_numero")
@@ -8578,6 +9114,20 @@ def main():
     )
     app.add_handler(configurazione_priorita)
 
+    ricerca_archivio = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(richiedi_ricerca_archivio, pattern="^archive_search$")
+        ],
+        states={
+            ARCHIVIO_RICERCA: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_ricerca_archivio)
+            ]
+        },
+        fallbacks=[CommandHandler("annulla", annulla)],
+        allow_reentry=True,
+    )
+    app.add_handler(ricerca_archivio)
+
     # Nuovi menu principali raggruppati.
     app.add_handler(
         CallbackQueryHandler(mostra_menu_pubblicazione, pattern="^publish_menu$")
@@ -8617,7 +9167,7 @@ def main():
         CallbackQueryHandler(
             gestisci_ricerca_offerte,
             pattern=(
-                r"^(offer_search|offer_search_(tech|casa)|os_disc_(20|30|40|50)|os_cat_[a-z]+|"
+                r"^(offer_search|offer_search_(tech|casa)|os_disc_(10|20|30|40|50)|os_cat_[a-z]+|"
                 r"os_count_(5|10|20)|os_view_[0-9]+|os_publish_[0-9]+|os_back)$"
             ),
         )
@@ -8627,6 +9177,19 @@ def main():
         CallbackQueryHandler(
             menu_automazione,
             pattern="^auto_menu$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            gestisci_selettiva,
+            pattern=(
+                r"^(selective_menu|selective_score|selective_score_[3-8]|"
+                r"selective_bonus|selective_bonus_(20|25|30|35|40)|selective_amazon|"
+                r"selective_searches|selective_searches_(3|6|9)|selective_duplicates|"
+                r"selective_duplicates_(3|7|10|14|30)|selective_variants|"
+                r"selective_reset|selective_reset_yes)$"
+            ),
         )
     )
 
@@ -8675,6 +9238,19 @@ def main():
             pattern="^ultime$",
         )
     )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            mostra_archivio,
+            pattern=r"^(archive_all|archive_page_[0-9]+|archive_filter_(tech|casa|automatico|manuale))$",
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(mostra_scheda_archivio, pattern=r"^archive_view_[0-9]+$")
+    )
+
+    app.add_handler(CallbackQueryHandler(reinvia_nop, pattern="^archive_nop$"))
 
     app.add_handler(
         CallbackQueryHandler(
