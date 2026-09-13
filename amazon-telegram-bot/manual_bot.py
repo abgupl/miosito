@@ -170,14 +170,14 @@ MARCHI_AUTORIZZATI = {
     },
     "persona": {
         "babyliss", "braun", "colgate", "dyson", "foreo", "ghd", "gillette",
-        "imed", "imetec", "laica", "medisana", "oral-b", "panasonic", "philips",
+        "imetec", "laica", "medisana", "oral-b", "panasonic", "philips",
         "remington", "rowenta", "sensodyne", "sonicare", "veet", "waterpik",
     },
     "bellezza": {
         "avene", "bioderma", "biotherm", "cerave", "clarins", "clinique", "collistar",
         "eucerin", "garnier", "kiehl's", "l'oreal paris", "la roche-posay", "lancôme",
         "mac", "max factor", "maybelline", "nivea", "olaplex", "ordinary", "revlon",
-        "rimmel", "shiseido", "the ordinary", "vichy", "wella",
+        "foreo", "rimmel", "shiseido", "the ordinary", "vichy", "wella",
     },
     "sport": {
         "adidas", "arena", "asics", "brooks", "callaway", "campagnolo", "castelli",
@@ -282,6 +282,19 @@ PAROLE_ACCESSORI_PRIORITA_DEFAULT = {
     "accessorio", "adattatore", "cavo", "caricatore", "case", "compatibile",
     "cover", "cinturino", "custodia", "pellicola", "protezione", "ricambio",
     "supporto", "vetro temperato",
+}
+
+# Alcuni prodotti arrivano dalle API con il marchio commerciale invece
+# della società proprietaria (es. PlayStation invece di Sony).
+MARCHI_ALIAS_PRIORITA = {
+    "sony": {"sony", "playstation"},
+    "playstation": {"sony", "playstation"},
+    "microsoft": {"microsoft", "xbox"},
+    "xbox": {"microsoft", "xbox"},
+    "meta": {"meta", "oculus"},
+    "oculus": {"meta", "oculus"},
+    "google": {"google", "fitbit", "nest"},
+    "amazon": {"amazon", "kindle", "fire tv", "ring", "eero"},
 }
 
 
@@ -410,6 +423,78 @@ def salva_offerta_recap(
     db.close()
 
 
+def crea_caption_con_link(messaggio, link, messaggio_gia_html=False):
+    """Crea una didascalia uniforme senza mostrare l'URL completo."""
+    corpo = messaggio if messaggio_gia_html else html.escape(str(messaggio or ""))
+    link_sicuro = html.escape(str(link or ""), quote=True)
+    return (
+        f"{corpo}\n\n"
+        f"👉 <a href=\"{link_sicuro}\">Scopri l’offerta su Amazon</a>\n\n"
+        "⚡ Prezzo e disponibilità possono variare."
+    )
+
+
+def rimuovi_link_finale_da_messaggio(messaggio):
+    """Pulisce recap storici che contenevano già link e avvertenza finali."""
+    testo = str(messaggio or "")
+    testo = re.sub(
+        r"\n\n👉\s*(?:<a\s+href=\"[^\"]+\">Scopri l’offerta su Amazon</a>|https?://\S+)"
+        r"\n\n⚡\s*Prezzo e disponibilità\s+possono variare\.?\s*$",
+        "",
+        testo,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return testo.strip()
+
+
+def registra_pubblicazione_monitorata(
+    *,
+    nome,
+    link,
+    message_id,
+    foto_file_id=None,
+    categoria="manuale",
+    sconto=0,
+    soglia_sconto=0,
+    asin=None,
+    deal_end_time=None,
+):
+    """Registra qualsiasi post Amazon per duplicati e controllo disponibilità."""
+    asin = asin or risolvi_asin_da_link(link)
+    if not asin:
+        return False
+
+    adesso = datetime.now(ROMA_TZ)
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        """
+        INSERT OR IGNORE INTO invii_automatici (
+            asin, nome, link, categoria, sconto, slot_data, slot_ora, stato,
+            creato_il, telegram_message_id, telegram_photo_file_id,
+            soglia_sconto, deal_end_time, ultima_verifica
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pubblicata', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            asin,
+            nome,
+            link,
+            categoria or "manuale",
+            int(sconto or 0),
+            adesso.date().isoformat(),
+            "P" + adesso.strftime("%H%M%S%f"),
+            adesso.isoformat(timespec="seconds"),
+            message_id,
+            foto_file_id,
+            int(soglia_sconto or 0),
+            deal_end_time,
+            adesso.isoformat(timespec="seconds"),
+        ),
+    )
+    db.commit()
+    db.close()
+    return True
+
+
 def estrai_vecchio_prezzo_da_messaggio(messaggio):
 
     if not messaggio:
@@ -426,6 +511,13 @@ def estrai_vecchio_prezzo_da_messaggio(messaggio):
 
     valore = match.group(1).strip()
     return valore or "NO"
+
+
+def estrai_sconto_da_messaggio(messaggio):
+    """Legge percentuali sia dai template manuali sia da quelli HTML."""
+    testo = re.sub(r"<[^>]+>", "", str(messaggio or ""))
+    match = re.search(r"(?:sconto\s*:?[ ]*|📉\s*)-?(\d{1,3})%", testo, re.IGNORECASE)
+    return int(match.group(1)) if match else 0
 
 
 def offerte_recap_di_oggi():
@@ -769,18 +861,11 @@ async def invia_offerta_programmata(
     messaggio_html = messaggio.startswith("__RICERCA_HTML__")
     if messaggio_html:
         messaggio = messaggio.replace("__RICERCA_HTML__", "", 1)
-        messaggio_con_link = (
-            f"{messaggio}\n\n"
-            f"👉 <a href=\"{html.escape(link, quote=True)}\">Scopri l’offerta su Amazon</a>\n\n"
-            "⚡ Prezzo e disponibilità possono variare."
-        )
-    else:
-        messaggio_con_link = (
-            f"{messaggio}\n\n"
-            f"👉 {link}\n\n"
-            "⚡ Prezzo e disponibilità "
-            "possono variare."
-        )
+    messaggio_con_link = crea_caption_con_link(
+        messaggio,
+        link,
+        messaggio_gia_html=messaggio_html,
+    )
 
     bottone_offerta = InlineKeyboardMarkup(
         [
@@ -798,20 +883,36 @@ async def invia_offerta_programmata(
     )
 
     if foto_file_id:
-        await bot.send_photo(
+        messaggio_telegram = await bot.send_photo(
             chat_id=CHANNEL_ID,
             photo=foto_file_id,
             caption=messaggio_con_link,
-            parse_mode="HTML" if messaggio_html else None,
+            parse_mode="HTML",
             reply_markup=bottone_offerta,
         )
     else:
-        await bot.send_message(
+        messaggio_telegram = await bot.send_message(
             chat_id=CHANNEL_ID,
             text=messaggio_con_link,
-            parse_mode="HTML" if messaggio_html else None,
+            parse_mode="HTML",
             reply_markup=bottone_offerta,
         )
+
+    foto_monitoraggio = foto_file_id
+    if getattr(messaggio_telegram, "photo", None):
+        foto_monitoraggio = messaggio_telegram.photo[-1].file_id
+    sconto_programmato = estrai_sconto_da_messaggio(messaggio) or calcola_sconto(
+        prezzo,
+        estrai_vecchio_prezzo_da_messaggio(messaggio),
+    ) or 0
+    registra_pubblicazione_monitorata(
+        nome=nome,
+        link=link,
+        message_id=messaggio_telegram.message_id,
+        foto_file_id=foto_monitoraggio,
+        sconto=sconto_programmato,
+        soglia_sconto=sconto_programmato,
+    )
 
     db = sqlite3.connect(DB_PATH)
     cur = db.cursor()
@@ -1029,6 +1130,7 @@ def inizializza_automazione():
         "deal_end_time": "TEXT",
         "ultima_verifica": "TEXT",
         "telegram_photo_file_id": "TEXT",
+        "sconto_modificato_notificato": "INTEGER DEFAULT 0",
     }
     for colonna, definizione in nuove_colonne.items():
         if colonna not in colonne_invii:
@@ -1044,6 +1146,8 @@ def inizializza_automazione():
         "punteggio_minimo": "5",
         "bonus_sconto_da": "30",
         "priorita_amazon": "1",
+        "indice_categoria_automatica": "0",
+        "indice_categoria_ricerca": "0",
     }
     for chiave, valore in defaults.items():
         cur.execute(
@@ -1080,6 +1184,23 @@ def inizializza_automazione():
         cur.execute(
             "INSERT INTO configurazione_automatica (chiave, valore) "
             "VALUES ('marchi_catalogo_v2', '1')"
+        )
+    catalogo_v3 = cur.execute(
+        "SELECT valore FROM configurazione_automatica WHERE chiave = 'marchi_catalogo_v3'"
+    ).fetchone()
+    if not catalogo_v3:
+        for categoria, marchi in MARCHI_AUTORIZZATI.items():
+            cur.executemany(
+                "INSERT OR IGNORE INTO marchi_qualita (categoria, marchio) VALUES (?, ?)",
+                [(categoria, marchio.strip()) for marchio in marchi],
+            )
+        # Corregge una voce errata presente nel primo catalogo distribuito.
+        cur.execute(
+            "DELETE FROM marchi_qualita WHERE categoria = 'persona' AND lower(marchio) = 'imed'"
+        )
+        cur.execute(
+            "INSERT INTO configurazione_automatica (chiave, valore) "
+            "VALUES ('marchi_catalogo_v3', '1')"
         )
     priorita_v1 = cur.execute(
         "SELECT valore FROM configurazione_automatica WHERE chiave = 'priorita_seed_v1'"
@@ -1147,6 +1268,28 @@ def salva_config_automatica(chiave, valore):
     )
     db.commit()
     db.close()
+
+
+def ruota_categorie_persistente(categorie, chiave):
+    """Ruota le categorie e memorizza il punto di partenza della prossima ricerca."""
+    categorie = list(categorie)
+    if not categorie:
+        return []
+    db = sqlite3.connect(DB_PATH)
+    riga = db.execute(
+        "SELECT valore FROM configurazione_automatica WHERE chiave = ?",
+        (chiave,),
+    ).fetchone()
+    indice = int(riga[0]) if riga and str(riga[0]).isdigit() else 0
+    indice %= len(categorie)
+    ordinate = categorie[indice:] + categorie[:indice]
+    db.execute(
+        "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
+        (chiave, str((indice + 1) % len(categorie))),
+    )
+    db.commit()
+    db.close()
+    return ordinate
 
 
 def leggi_marchi_qualita(categoria=None):
@@ -1241,7 +1384,7 @@ async def mostra_menu_filtri(query):
         )],
         [InlineKeyboardButton("📊 RIEPILOGO FILTRI", callback_data="filter_summary")],
         [InlineKeyboardButton("♻️ RIPRISTINA PREDEFINITI", callback_data="filter_reset")],
-        [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
+        [InlineKeyboardButton("⬅️ TORNA ALLE IMPOSTAZIONI", callback_data="settings_menu")],
     ])
     await query.edit_message_text(
         "⚙️ Filtri della modalità selettiva\n\n"
@@ -1722,10 +1865,9 @@ def tastiera_automazione(configurazione):
             f"🎯 QUALITÀ: {etichetta_qualita}",
             callback_data="auto_qualita",
         )],
-        [InlineKeyboardButton("⚙️ FILTRI SELETTIVI", callback_data="auto_filtri")],
         [InlineKeyboardButton("🔎 CERCA OFFERTE", callback_data="offer_search")],
         [InlineKeyboardButton("🧪 TESTA RICERCA", callback_data="auto_test")],
-        [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
+        [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="auto_channels")],
     ])
 
 
@@ -1737,7 +1879,7 @@ def testo_automazione(configurazione):
         else configurazione["qualita_prodotti"].capitalize()
     )
     return (
-        "🤖 INVIO AUTOMATICO\n\n"
+        "🤖 INVIO AUTOMATICO — 📱 TECH\n\n"
         f"Stato: {'🟢 Attivo' if configurazione['attiva'] else '🔴 Disattivato'}\n"
         f"Intervallo: {configurazione['intervallo_minuti']} minuti\n"
         f"Orario: {configurazione['ora_inizio']}–{configurazione['ora_fine']}\n"
@@ -1753,6 +1895,88 @@ async def menu_automazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await aggiorna_menu_automazione(query)
+
+
+async def mostra_canali_automazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Primo livello dell'invio automatico: selezione del canale."""
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    configurazione = leggi_config_automatica()
+    stato_tech = "🟢 ATTIVO" if configurazione["attiva"] else "🔴 DISATTIVATO"
+    await query.edit_message_text(
+        "🤖 INVIO AUTOMATICO\n\n"
+        "Seleziona il canale da configurare:\n\n"
+        f"📱 TECH — {stato_tech}\n"
+        "🏠 CASA — ⚪ DA COLLEGARE",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"📱 TECH — {stato_tech}", callback_data="auto_menu")],
+            [InlineKeyboardButton("🏠 CASA — DA COLLEGARE", callback_data="auto_channel_casa")],
+            [InlineKeyboardButton("📊 STATO GENERALE", callback_data="auto_status")],
+            [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
+        ]),
+    )
+
+
+async def mostra_canale_casa_non_collegato(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "🏠 CANALE CASA\n\n"
+        "Stato: ⚪ DA COLLEGARE\n\n"
+        "Il menu è già predisposto. Finché il canale non sarà creato, "
+        "l’automazione Casa resterà disattivata e non potrà inviare post.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="auto_channels")]
+        ]),
+    )
+
+
+async def mostra_stato_automazioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    configurazione = leggi_config_automatica()
+    categorie = [
+        AUTO_CATEGORIE[codice][0]
+        for codice in configurazione["categorie"]
+        if codice in AUTO_CATEGORIE
+    ]
+    await query.edit_message_text(
+        "📊 STATO GENERALE AUTOMAZIONI\n\n"
+        f"📱 TECH: {'ATTIVO' if configurazione['attiva'] else 'DISATTIVATO'}\n"
+        f"Intervallo: {configurazione['intervallo_minuti']} minuti\n"
+        f"Fascia: {configurazione['ora_inizio']}–{configurazione['ora_fine']}\n"
+        f"Categorie: {', '.join(categorie) if categorie else 'nessuna'}\n\n"
+        "🏠 CASA: DA COLLEGARE",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="auto_channels")]
+        ]),
+    )
+
+
+async def mostra_stato_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    configurazione = leggi_config_automatica()
+    await query.edit_message_text(
+        "📊 STATO DEL BOT\n\n"
+        "Bot Telegram: ✅ AVVIATO\n"
+        "Database: ✅ COLLEGATO\n"
+        "Canale TECH: ✅ COLLEGATO\n"
+        "Canale CASA: ⚪ DA COLLEGARE\n"
+        f"Automazione TECH: {'🟢 ATTIVA' if configurazione['attiva'] else '🔴 DISATTIVATA'}\n\n"
+        "Per verificare anche le Creator API usa TESTA RICERCA nel canale TECH.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ TORNA ALLE IMPOSTAZIONI", callback_data="settings_menu")]
+        ]),
+    )
 
 
 async def aggiorna_menu_automazione(query):
@@ -2043,7 +2267,9 @@ def riga_venditore_categoria(prodotto, categoria):
     hashtag = AUTO_HASHTAG.get(categoria, "#OfferteAmazon")
     venditore = prodotto.get("venditore")
     if venditore and "amazon" in venditore.lower():
-        return f"Venduto e spedito da <i>Amazon</i> - Categoria: {hashtag}"
+        # Le Creators API espongono il venditore, ma non garantiscono sempre
+        # un campo separato e affidabile per il gestore della spedizione.
+        return f"Venduto da <i>Amazon</i> - Categoria: {hashtag}"
     return f"Categoria: {hashtag}"
 
 
@@ -2053,25 +2279,58 @@ def _normalizza_qualita(valore):
     return re.sub(r"[^a-z0-9+ -]+", "", testo.lower()).strip()
 
 
-def valuta_priorita_prodotto(prodotto, categoria):
+def _testo_contiene_termine(testo, termine):
+    """Cerca parole o frasi complete evitando corrispondenze accidentali."""
+    testo = _normalizza_qualita(testo)
+    termine = _normalizza_qualita(termine)
+    if not termine:
+        return False
+    return bool(re.search(rf"(?<![a-z0-9]){re.escape(termine)}(?![a-z0-9])", testo))
+
+
+def carica_snapshot_filtri(categoria=None):
+    """Legge una sola volta dal database tutti i filtri usati nella ricerca."""
+    configurazione = leggi_config_automatica()
+    categorie = [categoria] if categoria else list(AUTO_CATEGORIE)
+    return {
+        "configurazione": configurazione,
+        "marchi": {
+            nome: {_normalizza_qualita(x) for x in leggi_marchi_qualita(nome)}
+            for nome in categorie
+        },
+        "indesiderate": tuple(leggi_parole_indesiderate()),
+        "priorita": {
+            nome: tuple(leggi_prodotti_prioritari(nome))
+            for nome in categorie
+        },
+        "accessori": tuple(leggi_parole_accessori_priorita()),
+    }
+
+
+def valuta_priorita_prodotto(prodotto, categoria, snapshot=None):
     """Restituisce bonus e nome della priorità; gli accessori non ricevono bonus."""
     titolo = _normalizza_qualita(prodotto.get("nome"))
     marchio = _normalizza_qualita(prodotto.get("marchio"))
-    parole_accessori = {
-        _normalizza_qualita(parola) for parola in leggi_parole_accessori_priorita()
-    }
-    if any(parola and parola in titolo for parola in parole_accessori):
+    snapshot = snapshot or carica_snapshot_filtri(categoria)
+    parole_accessori = snapshot["accessori"]
+    if any(_testo_contiene_termine(titolo, parola) for parola in parole_accessori):
         return 0, None
 
     migliore_bonus = 0
     migliore_nome = None
-    for _, _, parola, marchio_richiesto, bonus in leggi_prodotti_prioritari(categoria):
+    for _, _, parola, marchio_richiesto, bonus in snapshot["priorita"].get(categoria, ()):
         parola_norm = _normalizza_qualita(parola)
-        marchio_norm = _normalizza_qualita(marchio_richiesto)
-        parola_presente = parola_norm and parola_norm in titolo
-        marchio_corretto = marchio_norm and (
-            marchio == marchio_norm
-            or (len(marchio_norm) >= 4 and marchio_norm in marchio)
+        parola_presente = _testo_contiene_termine(titolo, parola_norm)
+        alias_richiesti = {
+            _normalizza_qualita(alias)
+            for parte_originale in str(marchio_richiesto).split("|")
+            for parte in [_normalizza_qualita(parte_originale)]
+            for alias in MARCHI_ALIAS_PRIORITA.get(parte, {parte})
+            if parte
+        }
+        marchio_corretto = any(
+            marchio == alias or (len(alias) >= 4 and alias in marchio)
+            for alias in alias_richiesti
         )
         if parola_presente and marchio_corretto and bonus > migliore_bonus:
             migliore_bonus = int(bonus)
@@ -2079,7 +2338,7 @@ def valuta_priorita_prodotto(prodotto, categoria):
     return migliore_bonus, migliore_nome
 
 
-def valuta_qualita_prodotto(prodotto, categoria, modalita):
+def valuta_qualita_prodotto(prodotto, categoria, modalita, snapshot=None):
     """Restituisce approvazione, punteggio e motivazioni, senza filtri di prezzo."""
     modalita = modalita if modalita in {"standard", "selettiva", "marche"} else "selettiva"
     if modalita == "standard":
@@ -2088,19 +2347,20 @@ def valuta_qualita_prodotto(prodotto, categoria, modalita):
     titolo = _normalizza_qualita(prodotto.get("nome"))
     marchio = _normalizza_qualita(prodotto.get("marchio"))
     venditore = _normalizza_qualita(prodotto.get("venditore"))
-    configurazione = leggi_config_automatica()
-    autorizzati = {_normalizza_qualita(x) for x in leggi_marchi_qualita(categoria)}
+    snapshot = snapshot or carica_snapshot_filtri(categoria)
+    configurazione = snapshot["configurazione"]
+    autorizzati = snapshot["marchi"].get(categoria, set())
     marchio_noto = bool(marchio) and any(
         marchio == candidato or (len(candidato) >= 4 and candidato in marchio)
         for candidato in autorizzati
     )
     venduto_amazon = "amazon" in venditore
     indesiderate = [
-        parola for parola in leggi_parole_indesiderate()
-        if _normalizza_qualita(parola) in titolo
+        parola for parola in snapshot["indesiderate"]
+        if _testo_contiene_termine(titolo, parola)
     ]
     pertinente = any(
-        _normalizza_qualita(parola) in titolo
+        _testo_contiene_termine(titolo, parola)
         for parola in PAROLE_CATEGORIA.get(categoria, set())
     )
 
@@ -2274,27 +2534,42 @@ def crea_immagine_terminata(dati_immagine):
         logo.putalpha(alpha_logo)
         immagine.alpha_composite(logo, (1044 - logo.width, 36))
 
-    # Fascia chiara e scritta rossa centrale.
+    # Fascia chiara più alta e testo su due righe, grande e leggibile.
     fascia = Image.new("RGBA", immagine.size, (0, 0, 0, 0))
-    ImageDraw.Draw(fascia).rectangle((35, 430, 1045, 650), fill=(255, 255, 255, 210))
+    ImageDraw.Draw(fascia).rounded_rectangle(
+        (35, 345, 1045, 735),
+        radius=34,
+        fill=(255, 255, 255, 232),
+        outline=(227, 6, 19, 255),
+        width=6,
+    )
     immagine = Image.alpha_composite(immagine, fascia)
     disegno = ImageDraw.Draw(immagine)
-    testo = "OFFERTA TERMINATA"
-    dimensione = 82
+    testo = "OFFERTA\nTERMINATA"
+    dimensione = 150
     font = _font_terminata(dimensione)
-    while disegno.textbbox((0, 0), testo, font=font)[2] > 930 and dimensione > 40:
-        dimensione -= 4
+    while (
+        disegno.multiline_textbbox(
+            (0, 0), testo, font=font, spacing=4, stroke_width=4, align="center"
+        )[2] > 900
+        and dimensione > 96
+    ):
+        dimensione -= 6
         font = _font_terminata(dimensione)
-    riquadro = disegno.textbbox((0, 0), testo, font=font, stroke_width=2)
+    riquadro = disegno.multiline_textbbox(
+        (0, 0), testo, font=font, spacing=4, stroke_width=4, align="center"
+    )
     larghezza = riquadro[2] - riquadro[0]
     altezza = riquadro[3] - riquadro[1]
     posizione = ((1080 - larghezza) // 2, (1080 - altezza) // 2 - riquadro[1])
-    disegno.text(
+    disegno.multiline_text(
         posizione,
         testo,
         font=font,
         fill="#E30613",
-        stroke_width=2,
+        spacing=4,
+        align="center",
+        stroke_width=4,
         stroke_fill="white",
     )
 
@@ -2315,42 +2590,64 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
         await query.message.reply_text("❌ Prima seleziona almeno una categoria.")
         return
 
-    categoria = random.choice(configurazione["categorie"])
-    etichetta, termini = AUTO_CATEGORIE[categoria]
-    prioritari = termini_prioritari_categoria(categoria)
-    termine = (
-        random.choice(prioritari)
-        if prioritari and random.random() < 0.6
-        else random.choice(termini)
-    )
+    categorie_test = list(configurazione["categorie"])
+    random.shuffle(categorie_test)
+    tentativi = []
+    for numero in range(3):
+        categoria = categorie_test[numero % len(categorie_test)]
+        etichetta, termini = AUTO_CATEGORIE[categoria]
+        prioritari = termini_prioritari_categoria(categoria)
+        termine = (
+            random.choice(prioritari)
+            if prioritari and numero < 2
+            else random.choice(termini)
+        )
+        tentativi.append((categoria, etichetta, termine))
+    snapshot_filtri = carica_snapshot_filtri()
     attesa = await query.message.reply_text(
-        f"🔎 Cerco una prova in {etichetta}…\n"
+        "🔎 Avvio fino a 3 ricerche di prova…\n"
         f"Sconto minimo richiesto: {configurazione['sconto_minimo']}%"
     )
 
     try:
-        items = await asyncio.to_thread(search_items, termine, "All", 10)
         prodotti = []
         scartati_qualita = 0
-        for item in items:
-            prodotto = estrai_prodotto_creators(item)
-            if not prodotto or prodotto["sconto"] < configurazione["sconto_minimo"]:
-                continue
-            prodotto["categoria"] = categoria
-            approvato, punteggio, motivi = valuta_qualita_prodotto(
-                prodotto,
-                categoria,
-                configurazione["qualita_prodotti"],
+        errori_ricerca = 0
+        for numero, (categoria, etichetta, termine) in enumerate(tentativi, start=1):
+            await attesa.edit_text(
+                f"🔎 Ricerca di prova {numero}/3 in {etichetta}…\n"
+                f"Sconto minimo: {configurazione['sconto_minimo']}%"
             )
-            prodotto["punteggio_qualita"] = punteggio
-            prodotto["motivi_qualita"] = motivi
-            if approvato:
-                bonus_priorita, nome_priorita = valuta_priorita_prodotto(prodotto, categoria)
-                prodotto["bonus_priorita"] = bonus_priorita
-                prodotto["nome_priorita"] = nome_priorita
-                prodotti.append(prodotto)
-            else:
-                scartati_qualita += 1
+            try:
+                items = await asyncio.to_thread(search_items, termine, "All", 10)
+            except Exception as errore:
+                errori_ricerca += 1
+                print(f"Errore test Creators API {numero}/3: {errore}")
+                items = []
+            for item in items:
+                prodotto = estrai_prodotto_creators(item)
+                if not prodotto or prodotto["sconto"] < configurazione["sconto_minimo"]:
+                    continue
+                prodotto["categoria"] = categoria
+                approvato, punteggio, motivi = valuta_qualita_prodotto(
+                    prodotto,
+                    categoria,
+                    configurazione["qualita_prodotti"],
+                    snapshot_filtri,
+                )
+                prodotto["punteggio_qualita"] = punteggio
+                prodotto["motivi_qualita"] = motivi
+                if approvato:
+                    bonus_priorita, nome_priorita = valuta_priorita_prodotto(
+                        prodotto, categoria, snapshot_filtri
+                    )
+                    prodotto["bonus_priorita"] = bonus_priorita
+                    prodotto["nome_priorita"] = nome_priorita
+                    prodotti.append(prodotto)
+                else:
+                    scartati_qualita += 1
+            if numero < len(tentativi):
+                await asyncio.sleep(1.0)
 
         if not prodotti:
             await attesa.edit_text(
@@ -2358,6 +2655,7 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
                 f"con almeno il {configurazione['sconto_minimo']}% di sconto "
                 f"approvati dalla modalità {configurazione['qualita_prodotti'].capitalize()}.\n"
                 f"Prodotti scartati dal filtro qualità: {scartati_qualita}.\n\n"
+                f"Ricerche non riuscite per errore tecnico: {errori_ricerca}.\n\n"
                 "Nessun post è stato pubblicato."
             )
             return
@@ -2390,7 +2688,7 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
             f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
             f"{vecchio}\n"
             f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
-            f"{riga_venditore_categoria(prodotto, categoria)}\n\n"
+            f"{riga_venditore_categoria(prodotto, prodotto['categoria'])}\n\n"
             f"Marchio: {html.escape(prodotto.get('marchio') or 'non disponibile')}\n"
             f"Qualità: {configurazione['qualita_prodotti'].capitalize()}"
             f"{dettaglio_qualita}{dettaglio_priorita}\n\n"
@@ -2501,7 +2799,7 @@ def _piano_ricerca_offerte(categoria, configurazione, quantita):
         return [(categoria, termine) for termine in unici[:3]]
 
     categorie = list(configurazione["categorie"]) or list(AUTO_CATEGORIE)
-    random.shuffle(categorie)
+    categorie = ruota_categorie_persistente(categorie, "indice_categoria_ricerca")
     massimo_chiamate = 4 if quantita <= 5 else 6 if quantita <= 10 else 8
     piano = []
     for indice_parola in range(3):
@@ -2523,6 +2821,7 @@ async def esegui_ricerca_offerte(query, context, quantita):
     categoria_scelta = context.user_data.get("ricerca_offerte_categoria", "tutte")
     context.user_data["ricerca_offerte_quantita"] = quantita
     piano = _piano_ricerca_offerte(categoria_scelta, configurazione, quantita)
+    snapshot_filtri = carica_snapshot_filtri()
     attesa = await query.message.reply_text(
         f"🔄 Cerco offerte con almeno il {sconto}% di sconto…\n"
         f"Ricerche previste: massimo {len(piano)}."
@@ -2541,13 +2840,18 @@ async def esegui_ricerca_offerte(query, context, quantita):
                     continue
                 prodotto["categoria"] = categoria
                 approvato, punteggio, motivi = valuta_qualita_prodotto(
-                    prodotto, categoria, configurazione["qualita_prodotti"]
+                    prodotto,
+                    categoria,
+                    configurazione["qualita_prodotti"],
+                    snapshot_filtri,
                 )
                 if not approvato:
                     continue
                 prodotto["punteggio_qualita"] = punteggio
                 prodotto["motivi_qualita"] = motivi
-                bonus_priorita, nome_priorita = valuta_priorita_prodotto(prodotto, categoria)
+                bonus_priorita, nome_priorita = valuta_priorita_prodotto(
+                    prodotto, categoria, snapshot_filtri
+                )
                 prodotto["bonus_priorita"] = bonus_priorita
                 prodotto["nome_priorita"] = nome_priorita
                 trovati[prodotto["asin"]] = prodotto
@@ -2909,6 +3213,8 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
         indice = categorie.index(categoria_iniziale)
         categorie = categorie[indice:] + categorie[:indice]
 
+    snapshot_filtri = carica_snapshot_filtri()
+
     tentativi = []
     for numero in range(3):
         categoria = categorie[numero % len(categorie)]
@@ -2938,6 +3244,7 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
                     prodotto,
                     categoria,
                     configurazione["qualita_prodotti"],
+                    snapshot_filtri,
                 )
                 if not approvato:
                     print(
@@ -2947,7 +3254,9 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
                     continue
                 prodotto["punteggio_qualita"] = punteggio
                 prodotto["motivi_qualita"] = motivi
-                bonus_priorita, nome_priorita = valuta_priorita_prodotto(prodotto, categoria)
+                bonus_priorita, nome_priorita = valuta_priorita_prodotto(
+                    prodotto, categoria, snapshot_filtri
+                )
                 prodotto["bonus_priorita"] = bonus_priorita
                 prodotto["nome_priorita"] = nome_priorita
                 candidati.append(prodotto)
@@ -2983,17 +3292,19 @@ async def pubblica_offerta_automatica(bot, prodotto):
         if prodotto["vecchio_prezzo"] else ""
     )
     tipo_offerta = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
-    link_html = html.escape(prodotto["link"], quote=True)
     riga_venditore = riga_venditore_categoria(prodotto, prodotto.get("categoria"))
-    messaggio = (
+    corpo_messaggio = (
         f"<b>{tipo_offerta}</b>\n\n"
         f"🛒 {html.escape(nome)}\n\n"
         f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
         f"{prima}\n"
         f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
-        f"{riga_venditore}\n\n"
-        f"👉 <a href=\"{link_html}\">Scopri l’offerta su Amazon</a>\n\n"
-        "⚡ Prezzo e disponibilità possono variare."
+        f"{riga_venditore}"
+    )
+    messaggio = crea_caption_con_link(
+        corpo_messaggio,
+        prodotto["link"],
+        messaggio_gia_html=True,
     )
     tastiera = InlineKeyboardMarkup([[
         InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
@@ -3020,7 +3331,7 @@ async def pubblica_offerta_automatica(bot, prodotto):
         prodotto["link"],
         prezzo_numero,
         vecchio_numero or "NO",
-        messaggio=messaggio,
+        messaggio=corpo_messaggio,
         foto_file_id=foto_telegram,
         template="automatico",
     )
@@ -3031,8 +3342,11 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
     categorie = configurazione["categorie"]
     if not categorie:
         return
-    indice = _numero_slot_del_giorno(data_slot) % len(categorie)
-    categoria = categorie[indice]
+    categorie_ruotate = ruota_categorie_persistente(
+        categorie,
+        "indice_categoria_automatica",
+    )
+    categoria = categorie_ruotate[0]
     if not _prenota_slot_automatico(data_slot, ora_slot, categoria):
         return
 
@@ -3169,7 +3483,8 @@ def _offerte_da_verificare():
         SELECT id, asin, nome, categoria, telegram_message_id,
                COALESCE(soglia_sconto, 0), COALESCE(verifiche_fallite, 0),
                creato_il, deal_end_time, ultima_verifica,
-               telegram_photo_file_id
+               telegram_photo_file_id, COALESCE(sconto, 0),
+               COALESCE(sconto_modificato_notificato, 0)
         FROM invii_automatici
         WHERE stato = 'pubblicata'
           AND telegram_message_id IS NOT NULL
@@ -3203,7 +3518,7 @@ def _offerte_da_verificare():
             intervallo = timedelta(hours=24)
 
         if not ultima_verifica or adesso - ultima_verifica >= intervallo:
-            da_verificare.append(riga[:7] + (riga[10],))
+            da_verificare.append(riga[:7] + (riga[10], riga[11], riga[12]))
     return da_verificare
 
 
@@ -3259,6 +3574,20 @@ def _segna_offerta_terminata(invio_id):
         WHERE id = ?
         """,
         (datetime.now(ROMA_TZ).isoformat(timespec="seconds"), invio_id),
+    )
+    db.commit()
+    db.close()
+
+
+def _imposta_notifica_sconto_modificato(invio_id, notificato):
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        """
+        UPDATE invii_automatici
+        SET sconto_modificato_notificato = ?
+        WHERE id = ?
+        """,
+        (1 if notificato else 0, invio_id),
     )
     db.commit()
     db.close()
@@ -3337,11 +3666,42 @@ async def controlla_offerte_terminate(app):
                     if asin:
                         prodotti[asin] = estrai_prodotto_creators(item)
 
-                for invio_id, asin, nome, categoria, message_id, soglia, _, foto_file_id in gruppo:
+                for (
+                    invio_id,
+                    asin,
+                    nome,
+                    categoria,
+                    message_id,
+                    soglia,
+                    _,
+                    foto_file_id,
+                    sconto_iniziale,
+                    sconto_notificato,
+                ) in gruppo:
                     prodotto = prodotti.get(asin)
-                    non_valida = not prodotto or prodotto["sconto"] < soglia
-                    fallimenti = _aggiorna_verifica_offerta(invio_id, non_valida)
-                    if non_valida and fallimenti >= 2:
+                    non_disponibile = not prodotto
+                    fallimenti = _aggiorna_verifica_offerta(invio_id, non_disponibile)
+
+                    # Un calo dello sconto non significa che il prodotto sia terminato:
+                    # il post resta online e l'amministratore riceve un solo avviso.
+                    if prodotto:
+                        soglia_confronto = int(soglia or sconto_iniziale or 0)
+                        sconto_attuale = int(prodotto.get("sconto") or 0)
+                        if soglia_confronto and sconto_attuale < soglia_confronto:
+                            if not sconto_notificato:
+                                await _notifica_admin_automazione(
+                                    app.bot,
+                                    "⚠️ OFFERTA MODIFICATA\n\n"
+                                    f"{nome}\n"
+                                    f"Sconto iniziale: -{sconto_iniziale}%\n"
+                                    f"Sconto attuale: -{sconto_attuale}%\n\n"
+                                    "Il prodotto risulta ancora disponibile, quindi il post non è stato oscurato.",
+                                )
+                                _imposta_notifica_sconto_modificato(invio_id, True)
+                        elif sconto_notificato:
+                            _imposta_notifica_sconto_modificato(invio_id, False)
+
+                    if non_disponibile and fallimenti >= 2:
                         try:
                             await _modifica_post_terminato(
                                 app.bot,
@@ -3375,42 +3735,32 @@ def menu_principale():
         [
             [
                 InlineKeyboardButton(
-                    "➕ NUOVA OFFERTA",
-                    callback_data="nuova",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⚡ MODALITÀ RAPIDA",
-                    callback_data="rapido",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🎨 TEMPLATE",
-                    callback_data="template",
-                ),
-                InlineKeyboardButton(
-                    "📋 ULTIME",
-                    callback_data="ultime",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🔁 INVIA DI NUOVO",
-                    callback_data="reinvia_menu",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "📅 PROGRAMMATI",
-                    callback_data="programmati",
+                    "📤 PUBBLICA OFFERTA",
+                    callback_data="publish_menu",
                 )
             ],
             [
                 InlineKeyboardButton(
                     "🤖 INVIO AUTOMATICO",
-                    callback_data="auto_menu",
+                    callback_data="auto_channels",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔎 CERCA OFFERTE",
+                    callback_data="offer_search",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📅 POST PROGRAMMATI",
+                    callback_data="programmati",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📚 STORICO E REINVIO",
+                    callback_data="history_menu",
                 )
             ],
             [
@@ -3419,7 +3769,123 @@ def menu_principale():
                     callback_data="admin_club",
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    "⚙️ IMPOSTAZIONI",
+                    callback_data="settings_menu",
+                )
+            ],
         ]
+    )
+
+
+def menu_pubblicazione():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔗 INSERIMENTO DA LINK", callback_data="nuova")],
+        [InlineKeyboardButton("⚡ MODALITÀ RAPIDA", callback_data="rapido")],
+        [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
+    ])
+
+
+async def mostra_menu_pubblicazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "📤 PUBBLICA OFFERTA\n\n"
+        "Scegli come vuoi inserire il prodotto.\n\n"
+        "Per ora la destinazione resta il canale TECH. Quando collegheremo CASA, "
+        "il bot proporrà automaticamente il canale corretto.",
+        reply_markup=menu_pubblicazione(),
+    )
+
+
+def menu_storico():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 ULTIME OFFERTE", callback_data="ultime")],
+        [InlineKeyboardButton("🔁 INVIA DI NUOVO", callback_data="reinvia_menu")],
+        [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
+    ])
+
+
+async def mostra_menu_storico(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "📚 STORICO E REINVIO\n\n"
+        "Consulta le ultime offerte oppure scegli un post da pubblicare nuovamente.",
+        reply_markup=menu_storico(),
+    )
+
+
+def menu_impostazioni():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 GESTIONE CANALI", callback_data="channels_manage")],
+        [InlineKeyboardButton("🎨 GRAFICA E TEMPLATE", callback_data="template")],
+        [InlineKeyboardButton("🎯 FILTRI E PRIORITÀ", callback_data="auto_filtri")],
+        [InlineKeyboardButton("📊 STATO DEL BOT", callback_data="bot_status")],
+        [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
+    ])
+
+
+async def mostra_menu_impostazioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "⚙️ IMPOSTAZIONI\n\n"
+        "Gestisci canali, grafica, filtri e stato generale del bot.",
+        reply_markup=menu_impostazioni(),
+    )
+
+
+async def mostra_gestione_canali(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "📢 GESTIONE CANALI\n\n"
+        "📱 TECH — ✅ COLLEGATO\n"
+        "🏠 CASA — ⚪ DA COLLEGARE\n\n"
+        "Il canale Casa è già previsto nel menu, ma non riceverà post finché "
+        "non verrà configurato.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📱 CANALE TECH", callback_data="channel_info_tech")],
+            [InlineKeyboardButton("🏠 CANALE CASA", callback_data="channel_info_casa")],
+            [InlineKeyboardButton("⬅️ TORNA ALLE IMPOSTAZIONI", callback_data="settings_menu")],
+        ]),
+    )
+
+
+async def mostra_info_canale(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    if query.data == "channel_info_tech":
+        testo = (
+            "📱 CANALE TECH\n\n"
+            "Stato collegamento: ✅ COLLEGATO\n"
+            "Pubblicazioni manuali: ATTIVE\n"
+            "Automazione: CONFIGURABILE"
+        )
+    else:
+        testo = (
+            "🏠 CANALE CASA\n\n"
+            "Stato collegamento: ⚪ DA COLLEGARE\n\n"
+            "Quando il canale sarà creato servirà il suo collegamento Telegram. "
+            "Il bot dovrà inoltre essere aggiunto come amministratore."
+        )
+    await query.edit_message_text(
+        testo,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="channels_manage")]
+        ]),
     )
 
 
@@ -3430,7 +3896,7 @@ def menu_dopo_pubblicazione():
             [
                 InlineKeyboardButton(
                     "➕ INVIA UN NUOVO POST",
-                    callback_data="nuova",
+                    callback_data="publish_menu",
                 )
             ],
             [
@@ -3679,54 +4145,6 @@ async def start(
 
     return ConversationHandler.END
 
-    # ADMIN
-    if autorizzato(update):
-
-        await update.message.reply_text(
-            "🔥 AMAZON OFFERTE BOT\n\n"
-            "🛠 Modalità amministratore\n\n"
-            "Cosa vuoi fare?",
-            reply_markup=menu_principale(),
-        )
-
-        return ConversationHandler.END
-
-    # UTENTE
-    invitato_da = None
-
-    if context.args:
-
-        try:
-            invitato_da = int(context.args[0])
-
-        except (ValueError, TypeError):
-            invitato_da = None
-
-    registra_utente(
-        user,
-        invitato_da
-    )
-
-    testo = (
-        "🔥 BENVENUTO SU BESTPRICE24H\\n\\n"
-        "Meno offerte. Più affari.\\n\\n"
-        "Qui trovi una selezione delle migliori offerte Amazon, "
-        "organizzate per categoria, così puoi seguire solo quello "
-        "che ti interessa.\\n\\n"
-        "📲 Scegli i tuoi canali preferiti e non perderti "
-        "le occasioni migliori.\\n\\n"
-        "🎁 Con il Club BestPrice24h puoi invitare amici, "
-        "accumulare punti e ottenere premi.\\n\\n"
-        "👇 Da dove vuoi iniziare?"
-    )
-
-    await update.message.reply_text(
-        testo,
-        reply_markup=menu_utente_principale(),
-    )
-
-    return ConversationHandler.END
-
 
 # =========================================================
 # TELEGRAM ID
@@ -3902,17 +4320,27 @@ def estrai_asin_da_link(link):
     return corrispondenza.group(1).upper() if corrispondenza else None
 
 
+def risolvi_asin_da_link(link):
+    """Estrae l'ASIN anche dai collegamenti brevi amzn.to/amzn.eu."""
+    asin = estrai_asin_da_link(link)
+    if asin:
+        return asin
+    try:
+        with requests.get(
+            link,
+            timeout=15,
+            allow_redirects=True,
+            stream=True,
+            headers={"User-Agent": "Mozilla/5.0"},
+        ) as risposta:
+            return estrai_asin_da_link(risposta.url)
+    except requests.RequestException:
+        return None
+
+
 def leggi_prodotto_creators_da_link(link):
     """Recupera dati e foto dalle Creator API partendo anche da un link corto."""
-    link_risolto = link
-    asin = estrai_asin_da_link(link_risolto)
-    if not asin:
-        try:
-            risposta = requests.get(link, timeout=15, allow_redirects=True)
-            link_risolto = risposta.url
-            asin = estrai_asin_da_link(link_risolto)
-        except requests.RequestException:
-            asin = None
+    asin = risolvi_asin_da_link(link)
     if not asin:
         return None
     items = get_items([asin])
@@ -4010,6 +4438,7 @@ async def ricevi_link(
     if dati_creators:
         dati = dati_creators
         context.user_data["foto_url_automatica"] = dati_creators.get("immagine")
+        context.user_data["asin"] = dati_creators.get("asin")
 
     # Se le Creator API non rispondono, prova fino a 3 volte dalla pagina Amazon.
     # Tra un tentativo e l'altro aspetta un attimo, utile quando Amazon
@@ -4127,12 +4556,15 @@ async def conferma_dati_automatici(
 
         link = context.user_data.get("link")
         foto_url_automatica = context.user_data.get("foto_url_automatica")
+        asin = context.user_data.get("asin")
 
         context.user_data.clear()
 
         context.user_data["link"] = link
         if foto_url_automatica:
             context.user_data["foto_url_automatica"] = foto_url_automatica
+        if asin:
+            context.user_data["asin"] = asin
 
         await query.edit_message_text(
             "✏️ Inserimento manuale selezionato."
@@ -5318,14 +5750,19 @@ async def invia_scheda_programmato(
         else post["invio_previsto"]
     )
 
+    messaggio_post = post["messaggio"]
+    messaggio_html = messaggio_post.startswith("__RICERCA_HTML__")
+    if messaggio_html:
+        messaggio_post = messaggio_post.replace("__RICERCA_HTML__", "", 1)
     testo = (
         f"📅 POST PROGRAMMATO #{post['id']}\n"
         f"🕒 {quando}\n\n"
         "👀 ANTEPRIMA\n\n"
-        f"{post['messaggio']}\n\n"
-        f"👉 {post['link']}\n\n"
-        "⚡ Prezzo e disponibilità "
-        "possono variare."
+        + crea_caption_con_link(
+            messaggio_post,
+            post["link"],
+            messaggio_gia_html=messaggio_html,
+        )
     )
 
     tastiera = InlineKeyboardMarkup(
@@ -5359,11 +5796,13 @@ async def invia_scheda_programmato(
         await messaggio.reply_photo(
             photo=post["foto_file_id"],
             caption=testo,
+            parse_mode="HTML",
             reply_markup=tastiera,
         )
     else:
         await messaggio.reply_text(
             testo,
+            parse_mode="HTML",
             reply_markup=tastiera,
         )
 
@@ -6538,9 +6977,7 @@ async def mostra_anteprima(
     testo = (
         "👀 ANTEPRIMA\n\n"
         "──────────────\n\n"
-        f"{messaggio}\n\n"
-        f"👉 {link}\n\n"
-        "⚡ Prezzo e disponibilità possono variare."
+        + crea_caption_con_link(messaggio, link)
     )
 
     foto_file_id = context.user_data.get(
@@ -6553,6 +6990,7 @@ async def mostra_anteprima(
             inviato = await update.message.reply_photo(
                 photo=foto_file_id,
                 caption=testo,
+                parse_mode="HTML",
                 reply_markup=tastiera,
             )
             if inviato.photo:
@@ -6560,6 +6998,7 @@ async def mostra_anteprima(
         else:
             await update.message.reply_text(
                 testo,
+                parse_mode="HTML",
                 reply_markup=tastiera,
             )
 
@@ -6569,6 +7008,7 @@ async def mostra_anteprima(
             inviato = await update.callback_query.message.reply_photo(
                 photo=foto_file_id,
                 caption=testo,
+                parse_mode="HTML",
                 reply_markup=tastiera,
             )
             if inviato.photo:
@@ -6576,6 +7016,7 @@ async def mostra_anteprima(
         else:
             await update.callback_query.message.reply_text(
                 testo,
+                parse_mode="HTML",
                 reply_markup=tastiera,
             )
 
@@ -6773,19 +7214,19 @@ async def conferma(
             [
                 [
                     InlineKeyboardButton(
-                        "✨ Pulito",
+                        "✨ PULITO",
                         callback_data="tpl_pulito",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "🚨 Aggressivo",
+                        "🚨 AGGRESSIVO",
                         callback_data="tpl_aggressivo",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "⚡ Tech",
+                        "⚡ TECH",
                         callback_data="tpl_tech",
                     )
                 ],
@@ -6843,11 +7284,7 @@ async def conferma(
 
             return ConversationHandler.END
 
-        messaggio_con_link = (
-            f"{messaggio}\n\n"
-            f"👉 {link}\n\n"
-            "⚡ Prezzo e disponibilità possono variare."
-        )
+        messaggio_con_link = crea_caption_con_link(messaggio, link)
 
         bottone_offerta = InlineKeyboardMarkup(
             [
@@ -6869,18 +7306,37 @@ async def conferma(
         )
 
         if foto_file_id:
-            await context.bot.send_photo(
+            messaggio_telegram = await context.bot.send_photo(
                 chat_id=CHANNEL_ID,
                 photo=foto_file_id,
                 caption=messaggio_con_link,
+                parse_mode="HTML",
                 reply_markup=bottone_offerta,
             )
         else:
-            await context.bot.send_message(
+            messaggio_telegram = await context.bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=messaggio_con_link,
+                parse_mode="HTML",
                 reply_markup=bottone_offerta,
             )
+
+        foto_monitoraggio = foto_file_id
+        if getattr(messaggio_telegram, "photo", None):
+            foto_monitoraggio = messaggio_telegram.photo[-1].file_id
+        sconto_manuale = calcola_sconto(
+            context.user_data.get("prezzo"),
+            context.user_data.get("vecchio_prezzo", "NO"),
+        ) or 0
+        registra_pubblicazione_monitorata(
+            nome=nome,
+            link=link,
+            message_id=messaggio_telegram.message_id,
+            foto_file_id=foto_monitoraggio,
+            sconto=sconto_manuale,
+            soglia_sconto=sconto_manuale,
+            asin=context.user_data.get("asin"),
+        )
 
         ultime_offerte.appendleft(
             {
@@ -7161,7 +7617,7 @@ def _messaggio_reinvio(draft):
     if not draft:
         return ""
     if not draft.get("modificato") and draft.get("messaggio_salvato"):
-        return draft["messaggio_salvato"]
+        return rimuovi_link_finale_da_messaggio(draft["messaggio_salvato"])
     return crea_messaggio_programmato(
         draft.get("nome", ""),
         draft.get("prezzo", ""),
@@ -7180,9 +7636,11 @@ async def mostra_anteprima_reinvio(messaggio, context):
     testo_post = _messaggio_reinvio(draft)
     anteprima = (
         f"🔁 ANTEPRIMA ARTICOLO #{numero}\n\n"
-        f"{testo_post}\n\n"
-        f"👉 {draft['link']}\n\n"
-        "⚡ Prezzo e disponibilità possono variare."
+        + crea_caption_con_link(
+            testo_post,
+            draft["link"],
+            messaggio_gia_html=draft.get("template") == "automatico",
+        )
     )
 
     tastiera = InlineKeyboardMarkup([
@@ -7202,11 +7660,13 @@ async def mostra_anteprima_reinvio(messaggio, context):
         await messaggio.reply_photo(
             photo=draft["foto_file_id"],
             caption=anteprima,
+            parse_mode="HTML",
             reply_markup=tastiera,
         )
     else:
         await messaggio.reply_text(
             anteprima,
+            parse_mode="HTML",
             reply_markup=tastiera,
         )
 
@@ -7409,9 +7869,10 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
         return
 
     messaggio = _messaggio_reinvio(draft)
-    messaggio_con_link = (
-        f"{messaggio}\n\n👉 {draft['link']}\n\n"
-        "⚡ Prezzo e disponibilità possono variare."
+    messaggio_con_link = crea_caption_con_link(
+        messaggio,
+        draft["link"],
+        messaggio_gia_html=draft.get("template") == "automatico",
     )
     bottoni = InlineKeyboardMarkup([[
         InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
@@ -7419,18 +7880,36 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
     ]])
 
     if draft.get("foto_file_id"):
-        await context.bot.send_photo(
+        messaggio_telegram = await context.bot.send_photo(
             chat_id=CHANNEL_ID,
             photo=draft["foto_file_id"],
             caption=messaggio_con_link,
+            parse_mode="HTML",
             reply_markup=bottoni,
         )
     else:
-        await context.bot.send_message(
+        messaggio_telegram = await context.bot.send_message(
             chat_id=CHANNEL_ID,
             text=messaggio_con_link,
+            parse_mode="HTML",
             reply_markup=bottoni,
         )
+
+    foto_monitoraggio = draft.get("foto_file_id")
+    if getattr(messaggio_telegram, "photo", None):
+        foto_monitoraggio = messaggio_telegram.photo[-1].file_id
+    sconto_reinvio = calcola_sconto(
+        draft.get("prezzo"),
+        draft.get("vecchio_prezzo", "NO"),
+    ) or 0
+    registra_pubblicazione_monitorata(
+        nome=draft["nome"],
+        link=draft["link"],
+        message_id=messaggio_telegram.message_id,
+        foto_file_id=foto_monitoraggio,
+        sconto=sconto_reinvio,
+        soglia_sconto=sconto_reinvio,
+    )
 
     salva_offerta_recap(
         draft["nome"], draft["link"], draft["prezzo"], draft.get("vecchio_prezzo", "NO"),
@@ -7591,20 +8070,26 @@ async def template_menu(
         [
             [
                 InlineKeyboardButton(
-                    "✨ Pulito",
+                    "✨ PULITO",
                     callback_data="menu_tpl_pulito",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🚨 Aggressivo",
+                    "🚨 AGGRESSIVO",
                     callback_data="menu_tpl_aggressivo",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "⚡ Tech",
+                    "⚡ TECH",
                     callback_data="menu_tpl_tech",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ TORNA ALLE IMPOSTAZIONI",
+                    callback_data="settings_menu",
                 )
             ],
         ]
@@ -7636,7 +8121,10 @@ async def scegli_template_menu(
     context.user_data["template"] = template
 
     await query.edit_message_text(
-        f"✅ Template impostato: {template}"
+        f"✅ Template impostato: {template.upper()}",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ TORNA ALLE IMPOSTAZIONI", callback_data="settings_menu")
+        ]]),
     )
 
 
@@ -7955,6 +8443,41 @@ def main():
         allow_reentry=True,
     )
     app.add_handler(configurazione_priorita)
+
+    # Nuovi menu principali raggruppati.
+    app.add_handler(
+        CallbackQueryHandler(mostra_menu_pubblicazione, pattern="^publish_menu$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(mostra_menu_storico, pattern="^history_menu$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(mostra_menu_impostazioni, pattern="^settings_menu$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(mostra_gestione_canali, pattern="^channels_manage$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(
+            mostra_info_canale,
+            pattern=r"^channel_info_(tech|casa)$",
+        )
+    )
+    app.add_handler(
+        CallbackQueryHandler(mostra_stato_bot, pattern="^bot_status$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(mostra_canali_automazione, pattern="^auto_channels$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(
+            mostra_canale_casa_non_collegato,
+            pattern="^auto_channel_casa$",
+        )
+    )
+    app.add_handler(
+        CallbackQueryHandler(mostra_stato_automazioni, pattern="^auto_status$")
+    )
 
     app.add_handler(
         CallbackQueryHandler(
