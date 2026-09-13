@@ -4165,13 +4165,13 @@ def menu_utente_principale():
         [
             [
                 InlineKeyboardButton(
-                    "📱 BESTPRICE24H TECH",
+                    "📱 TECH & GAMING",
                     url="https://t.me/bestprice_2026",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🏠 BESTPRICE24H CASA",
+                    "🏠 CASA & FAI DA TE",
                     url=CASA_CHANNEL_URL,
                 )
             ],
