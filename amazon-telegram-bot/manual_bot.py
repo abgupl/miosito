@@ -258,7 +258,8 @@ PAROLE_CATEGORIA = {
 PRODOTTI_PRIORITARI_DEFAULT = {
     "elettronica": [
         ("airpods", "apple", 5), ("gopro", "gopro", 4),
-        ("kindle", "amazon", 4), ("echo", "amazon", 3),
+        ("fire tv", "amazon", 5), ("kindle", "amazon", 4),
+        ("echo", "amazon", 4), ("ring", "ring", 4),
     ],
     "informatica": [
         ("macbook", "apple", 5), ("ipad", "apple", 5),
@@ -1427,6 +1428,30 @@ def inizializza_automazione():
         cur.execute(
             "INSERT INTO configurazione_automatica (chiave, valore) "
             "VALUES ('priorita_seed_v1', '1')"
+        )
+    dispositivi_amazon_v1 = cur.execute(
+        "SELECT valore FROM configurazione_automatica "
+        "WHERE chiave = 'priorita_dispositivi_amazon_v1'"
+    ).fetchone()
+    if not dispositivi_amazon_v1:
+        # Aggiorna anche i database esistenti senza cancellare le priorità
+        # aggiunte manualmente dall'amministratore.
+        cur.executemany(
+            """
+            INSERT OR IGNORE INTO prodotti_prioritari
+                (categoria, parola, marchio, bonus)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                ("elettronica", "fire tv", "amazon", 5),
+                ("elettronica", "kindle", "amazon", 4),
+                ("elettronica", "echo", "amazon", 4),
+                ("elettronica", "ring", "ring", 4),
+            ],
+        )
+        cur.execute(
+            "INSERT INTO configurazione_automatica (chiave, valore) "
+            "VALUES ('priorita_dispositivi_amazon_v1', '1')"
         )
     versione = cur.execute(
         "SELECT valore FROM configurazione_automatica WHERE chiave = 'versione_config'"
@@ -3749,9 +3774,10 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
     statistiche = {
         "ricerche": 0, "prodotti": 0, "incompleti": 0,
         "sconto": 0, "duplicati": 0, "qualita": 0, "errori": 0,
-        "varianti": 0, "riserva": False,
+        "varianti": 0, "riserva": False, "fallback_standard": False,
     }
     candidati = []
+    candidati_standard = []
     for numero, (categoria, termine) in enumerate(tentativi, start=1):
         print(f"Ricerca automatica {numero}/{len(tentativi)}: {categoria} - {termine}")
         statistiche["ricerche"] += 1
@@ -3775,6 +3801,18 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
                 bonus_priorita, nome_priorita = valuta_priorita_prodotto(
                     prodotto, categoria, snapshot_filtri
                 )
+                # Conserviamo subito ogni offerta tecnicamente valida. Se la
+                # modalità selettiva non approva nulla, questa lista permette
+                # il passaggio automatico alla modalità Standard senza
+                # ripetere le stesse chiamate alle API.
+                candidato_standard = dict(prodotto)
+                candidato_standard["punteggio_qualita"] = 0
+                candidato_standard["motivi_qualita"] = [
+                    "Fallback automatico: modalità Standard"
+                ]
+                candidato_standard["bonus_priorita"] = bonus_priorita
+                candidato_standard["nome_priorita"] = nome_priorita
+                candidati_standard.append(candidato_standard)
                 approvato, punteggio, motivi = valuta_qualita_prodotto(
                     prodotto,
                     categoria,
@@ -3803,20 +3841,28 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
         if numero < len(tentativi):
             await asyncio.sleep(1.2)
 
+    if not candidati and candidati_standard:
+        statistiche["fallback_standard"] = True
+        candidati = candidati_standard
+        print(
+            "Nessun prodotto approvato dal filtro qualità: "
+            "attivato fallback automatico Standard."
+        )
     if not candidati:
         return None, statistiche
     if configurazione.get("raggruppa_varianti", True):
         prima = len(candidati)
         candidati = _raggruppa_varianti_prodotti(candidati)
         statistiche["varianti"] = prima - len(candidati)
-    preferiti = [
-        prodotto for prodotto in candidati
-        if prodotto.get("punteggio_qualita", 0) >= configurazione["punteggio_minimo"]
-    ]
-    if preferiti:
-        candidati = preferiti
-    else:
-        statistiche["riserva"] = True
+    if not statistiche["fallback_standard"]:
+        preferiti = [
+            prodotto for prodotto in candidati
+            if prodotto.get("punteggio_qualita", 0) >= configurazione["punteggio_minimo"]
+        ]
+        if preferiti:
+            candidati = preferiti
+        else:
+            statistiche["riserva"] = True
     candidati.sort(
         key=lambda x: (
             x.get("bonus_priorita", 0),
@@ -3924,7 +3970,8 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canal
                 f"🔎 Ricerche: {statistiche['ricerche']} · prodotti analizzati: {statistiche['prodotti']}\n"
                 f"📉 Sotto sconto: {statistiche['sconto']} · duplicati: {statistiche['duplicati']}\n"
                 f"🎯 Scartati qualità: {statistiche['qualita']} · dati incompleti: {statistiche['incompleti']}\n"
-                f"⚠️ Errori API: {statistiche['errori']}",
+                f"⚠️ Errori API: {statistiche['errori']}\n"
+                "↪️ Anche il fallback Standard non aveva prodotti validi.",
             )
             return
 
@@ -3947,7 +3994,13 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canal
             f"✅ Offerta automatica pubblicata alle {ora_slot}:\n"
             f"{prodotto['nome']}\nSconto: -{prodotto['sconto']}%\n"
             f"Ricerche eseguite: {statistiche['ricerche']}"
-            + (" · usata riserva selettiva" if statistiche["riserva"] else ""),
+            + (
+                " · usato fallback Standard"
+                if statistiche["fallback_standard"]
+                else " · usata riserva selettiva"
+                if statistiche["riserva"]
+                else ""
+            ),
         )
     except Exception as errore:
         _aggiorna_slot_automatico(data_slot, slot_ora_db, "errore")
