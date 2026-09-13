@@ -2,9 +2,12 @@ import os
 import asyncio
 import sqlite3
 import html
+import json
 import re
 import random
+import threading
 import unicodedata
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -508,6 +511,104 @@ def salva_offerta_recap(
 
     db.commit()
     db.close()
+
+
+def offerte_pubblicate_per_web(limit=60):
+    """Restituisce le stesse offerte già pubblicate su Telegram."""
+    limite = max(1, min(int(limit or 60), 100))
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    try:
+        righe = db.execute(
+            """
+            SELECT id, nome, link, prezzo, vecchio_prezzo, pubblicata_il,
+                   asin, categoria, telegram_chat_id, origine, sconto,
+                   telegram_message_id
+            FROM recap_offerte
+            WHERE stato='pubblicata' AND link IS NOT NULL AND link<>''
+            ORDER BY pubblicata_il DESC, id DESC
+            LIMIT ?
+            """,
+            (limite,),
+        ).fetchall()
+    finally:
+        db.close()
+
+    offerte = []
+    for riga in righe:
+        chat_id = str(riga["telegram_chat_id"] or CHANNEL_ID)
+        canale = "casa" if chat_id.lower() == str(CASA_CHANNEL_ID).lower() else "tech"
+        username = chat_id[1:] if chat_id.startswith("@") else ""
+        message_id = riga["telegram_message_id"]
+        telegram_url = (
+            f"https://t.me/{username}/{message_id}"
+            if username and message_id
+            else None
+        )
+        asin = str(riga["asin"] or "").strip().upper()
+        offerte.append({
+            "id": riga["id"],
+            "nome": riga["nome"],
+            "link": riga["link"],
+            "prezzo": riga["prezzo"] or "",
+            "vecchio_prezzo": riga["vecchio_prezzo"] or "",
+            "pubblicata_il": riga["pubblicata_il"],
+            "asin": asin,
+            "categoria": riga["categoria"] or "altro",
+            "canale": canale,
+            "origine": riga["origine"] or "manuale",
+            "sconto": int(riga["sconto"] or 0),
+            "telegram_url": telegram_url,
+            "immagine": (
+                "https://ws-eu.amazon-adsystem.com/widgets/q"
+                f"?_encoding=UTF8&ASIN={asin}&Format=_SL500_&ID=AsinImage"
+                "&MarketPlace=IT&ServiceVersion=20070822"
+                if asin else None
+            ),
+        })
+    return offerte
+
+
+class OfferteWebHandler(BaseHTTPRequestHandler):
+    def _json(self, payload, status=200):
+        corpo = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(corpo)))
+        self.send_header("Cache-Control", "public, max-age=30")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(corpo)
+
+    def do_GET(self):
+        percorso = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if percorso == "/health":
+            self._json({"ok": True})
+            return
+        if percorso == "/api/offerte":
+            try:
+                self._json({
+                    "offerte": offerte_pubblicate_per_web(),
+                    "aggiornato_il": datetime.now(ROMA_TZ).isoformat(timespec="seconds"),
+                })
+            except Exception as exc:
+                print(f"Errore API offerte web: {exc}")
+                self._json({"offerte": [], "errore": "temporaneo"}, status=500)
+            return
+        self._json({"errore": "non trovato"}, status=404)
+
+    def log_message(self, formato, *argomenti):
+        return
+
+
+def avvia_api_offerte_web():
+    porta = os.environ.get("PORT")
+    if not porta:
+        print("🌐 API offerte web non avviata: variabile PORT assente")
+        return
+    server = ThreadingHTTPServer(("0.0.0.0", int(porta)), OfferteWebHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"🌐 API offerte web attiva sulla porta {porta}")
 
 
 def crea_caption_con_link(messaggio, link, messaggio_gia_html=False):
@@ -8899,6 +9000,7 @@ def main():
     inizializza_programmazioni()
     inizializza_recap()
     inizializza_automazione()
+    avvia_api_offerte_web()
 
     app = (
         Application
