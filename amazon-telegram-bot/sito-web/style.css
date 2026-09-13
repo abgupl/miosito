@@ -70,3 +70,14 @@ footer { padding: 28px max(24px, calc((100vw - 1180px) / 2)); display: grid; gri
   .telegram-banner { margin: 15px 16px 50px; align-items: stretch; flex-direction: column; gap: 18px; }.telegram-banner a { text-align: center; }
   footer { grid-template-columns: 1fr; text-align: center; }
 }
+
+/* Spazio sotto le fotografie e pulsanti allineati */
+.offer-grid { align-items: stretch; }
+.offer-card { display: flex; flex-direction: column; height: 100%; }
+.offer-image { margin-bottom: 0; border-bottom: 24px solid #f0ece5; }
+.offer-body { display: flex; flex: 1; flex-direction: column; }
+.card-actions { margin-top: auto; padding-top: 18px; }
+
+@media (max-width: 620px) {
+  .offer-image { margin-bottom: 0; border-bottom-width: 28px; }
+}
