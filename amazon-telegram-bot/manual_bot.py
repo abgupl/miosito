@@ -67,11 +67,19 @@ from club import (
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHANNEL_ID = os.environ["TELEGRAM_CHAT_ID"]
+CASA_CHANNEL_ID = os.environ.get("TELEGRAM_CHAT_ID_CASA", "@BestPrice24hCasa")
+CASA_CHANNEL_URL = "https://t.me/BestPrice24hCasa"
+CASA_CATEGORIE = {"casa", "elettrodomestici", "faidate"}
 ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
 DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
 ROMA_TZ = ZoneInfo("Europe/Rome")
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "bestprice24h_logo.png"
 AMAZON_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "amazon_logo.png"
+
+
+def canale_pubblicazione_per_categoria(categoria):
+    """Instrada le categorie Casa sul relativo canale; le altre restano su TECH."""
+    return CASA_CHANNEL_ID if categoria in CASA_CATEGORIE else CHANNEL_ID
 
 (
     AUTO_INTERVALLO,
@@ -458,6 +466,7 @@ def registra_pubblicazione_monitorata(
     soglia_sconto=0,
     asin=None,
     deal_end_time=None,
+    telegram_chat_id=None,
 ):
     """Registra qualsiasi post Amazon per duplicati e controllo disponibilità."""
     asin = asin or risolvi_asin_da_link(link)
@@ -471,8 +480,8 @@ def registra_pubblicazione_monitorata(
         INSERT OR IGNORE INTO invii_automatici (
             asin, nome, link, categoria, sconto, slot_data, slot_ora, stato,
             creato_il, telegram_message_id, telegram_photo_file_id,
-            soglia_sconto, deal_end_time, ultima_verifica
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pubblicata', ?, ?, ?, ?, ?, ?)
+            soglia_sconto, deal_end_time, ultima_verifica, telegram_chat_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pubblicata', ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             asin,
@@ -488,6 +497,7 @@ def registra_pubblicazione_monitorata(
             int(soglia_sconto or 0),
             deal_end_time,
             adesso.isoformat(timespec="seconds"),
+            telegram_chat_id or CHANNEL_ID,
         ),
     )
     db.commit()
@@ -1131,6 +1141,7 @@ def inizializza_automazione():
         "ultima_verifica": "TEXT",
         "telegram_photo_file_id": "TEXT",
         "sconto_modificato_notificato": "INTEGER DEFAULT 0",
+        "telegram_chat_id": "TEXT",
     }
     for colonna, definizione in nuove_colonne.items():
         if colonna not in colonne_invii:
@@ -1898,7 +1909,7 @@ async def menu_automazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def mostra_canali_automazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Primo livello dell'invio automatico: selezione del canale."""
+    """Primo livello dell'invio automatico: stato dei canali collegati."""
     if not await controlla_autorizzazione(update):
         return
     query = update.callback_query
@@ -1907,29 +1918,31 @@ async def mostra_canali_automazione(update: Update, context: ContextTypes.DEFAUL
     stato_tech = "🟢 ATTIVO" if configurazione["attiva"] else "🔴 DISATTIVATO"
     await query.edit_message_text(
         "🤖 INVIO AUTOMATICO\n\n"
-        "Seleziona il canale da configurare:\n\n"
+        "Seleziona il canale da gestire:\n\n"
         f"📱 TECH — {stato_tech}\n"
-        "🏠 CASA — ⚪ DA COLLEGARE",
+        "🏠 CASA — ✅ COLLEGATO",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton(f"📱 TECH — {stato_tech}", callback_data="auto_menu")],
-            [InlineKeyboardButton("🏠 CASA — DA COLLEGARE", callback_data="auto_channel_casa")],
+            [InlineKeyboardButton("🏠 CASA — ✅ COLLEGATO", callback_data="auto_channel_casa")],
             [InlineKeyboardButton("📊 STATO GENERALE", callback_data="auto_status")],
             [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
         ]),
     )
 
 
-async def mostra_canale_casa_non_collegato(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def mostra_canale_casa_collegato(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
         "🏠 CANALE CASA\n\n"
-        "Stato: ⚪ DA COLLEGARE\n\n"
-        "Il menu è già predisposto. Finché il canale non sarà creato, "
-        "l’automazione Casa resterà disattivata e non potrà inviare post.",
+        "Stato: ✅ COLLEGATO\n"
+        "Destinazione: @BestPrice24hCasa\n\n"
+        "I prodotti delle categorie Casa e cucina, Elettrodomestici e "
+        "Fai da te vengono pubblicati automaticamente in questo canale.",
         reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔗 APRI IL CANALE", url=CASA_CHANNEL_URL)],
             [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="auto_channels")]
         ]),
     )
@@ -1952,7 +1965,8 @@ async def mostra_stato_automazioni(update: Update, context: ContextTypes.DEFAULT
         f"Intervallo: {configurazione['intervallo_minuti']} minuti\n"
         f"Fascia: {configurazione['ora_inizio']}–{configurazione['ora_fine']}\n"
         f"Categorie: {', '.join(categorie) if categorie else 'nessuna'}\n\n"
-        "🏠 CASA: DA COLLEGARE",
+        "🏠 CASA: COLLEGATO\n"
+        "Categorie instradate: Casa e cucina, Elettrodomestici, Fai da te",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="auto_channels")]
         ]),
@@ -1970,9 +1984,10 @@ async def mostra_stato_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Bot Telegram: ✅ AVVIATO\n"
         "Database: ✅ COLLEGATO\n"
         "Canale TECH: ✅ COLLEGATO\n"
-        "Canale CASA: ⚪ DA COLLEGARE\n"
+        "Canale CASA: ✅ COLLEGATO\n"
         f"Automazione TECH: {'🟢 ATTIVA' if configurazione['attiva'] else '🔴 DISATTIVATA'}\n\n"
-        "Per verificare anche le Creator API usa TESTA RICERCA nel canale TECH.",
+        "Le categorie Casa, Elettrodomestici e Fai da te vengono instradate "
+        "automaticamente su @BestPrice24hCasa.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ TORNA ALLE IMPOSTAZIONI", callback_data="settings_menu")]
         ]),
@@ -2968,7 +2983,9 @@ async def mostra_prodotto_ricerca_offerte(query, context, indice):
         prodotto["foto_file_id"] = inviato.photo[-1].file_id
 
 
-def _registra_offerta_cercata(prodotto, message_id, foto_file_id, soglia):
+def _registra_offerta_cercata(
+    prodotto, message_id, foto_file_id, soglia, telegram_chat_id
+):
     adesso = datetime.now(ROMA_TZ)
     db = sqlite3.connect(DB_PATH)
     db.execute(
@@ -2976,14 +2993,15 @@ def _registra_offerta_cercata(prodotto, message_id, foto_file_id, soglia):
         INSERT OR IGNORE INTO invii_automatici (
             asin, nome, link, categoria, sconto, slot_data, slot_ora, stato,
             creato_il, telegram_message_id, telegram_photo_file_id,
-            soglia_sconto, deal_end_time
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pubblicata', ?, ?, ?, ?, ?)
+            soglia_sconto, deal_end_time, telegram_chat_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pubblicata', ?, ?, ?, ?, ?, ?)
         """,
         (
             prodotto.get("asin"), prodotto.get("nome"), prodotto.get("link"),
             prodotto.get("categoria"), prodotto.get("sconto"), adesso.date().isoformat(),
             "M" + adesso.strftime("%H%M%S"), adesso.isoformat(timespec="seconds"),
             message_id, foto_file_id, soglia, prodotto.get("deal_end_time"),
+            telegram_chat_id,
         ),
     )
     db.commit()
@@ -3002,10 +3020,13 @@ async def pubblica_prodotto_ricerca_offerte(query, context, indice):
         )
         return
     try:
-        message_id, foto_file_id = await pubblica_offerta_automatica(context.bot, prodotto)
+        message_id, foto_file_id, telegram_chat_id = await pubblica_offerta_automatica(
+            context.bot, prodotto
+        )
         _registra_offerta_cercata(
             prodotto, message_id, foto_file_id,
             context.user_data.get("ricerca_offerte_sconto", prodotto["sconto"]),
+            telegram_chat_id,
         )
         await query.message.reply_text(
             "✅ OFFERTA PUBBLICATA!",
@@ -3135,6 +3156,7 @@ def _aggiorna_slot_automatico(
     telegram_photo_file_id=None,
     soglia_sconto=None,
     deal_end_time=None,
+    telegram_chat_id=None,
 ):
     prodotto = prodotto or {}
     db = sqlite3.connect(DB_PATH)
@@ -3146,6 +3168,7 @@ def _aggiorna_slot_automatico(
             telegram_photo_file_id = COALESCE(?, telegram_photo_file_id),
             soglia_sconto = COALESCE(?, soglia_sconto),
             deal_end_time = COALESCE(?, deal_end_time),
+            telegram_chat_id = COALESCE(?, telegram_chat_id),
             ultima_verifica = CASE
                 WHEN ? = 'pubblicata' THEN COALESCE(ultima_verifica, ?)
                 ELSE ultima_verifica
@@ -3162,6 +3185,7 @@ def _aggiorna_slot_automatico(
             telegram_photo_file_id,
             soglia_sconto,
             deal_end_time,
+            telegram_chat_id,
             stato,
             datetime.now(ROMA_TZ).isoformat(timespec="seconds"),
             data_slot,
@@ -3311,8 +3335,11 @@ async def pubblica_offerta_automatica(bot, prodotto):
         InlineKeyboardButton("🛒 APRI", url=prodotto["link"]),
     ]])
     foto = await prepara_foto_automatica(prodotto["immagine"])
+    telegram_chat_id = canale_pubblicazione_per_categoria(
+        prodotto.get("categoria")
+    )
     messaggio_telegram = await bot.send_photo(
-        chat_id=CHANNEL_ID,
+        chat_id=telegram_chat_id,
         photo=foto,
         caption=messaggio,
         parse_mode="HTML",
@@ -3335,7 +3362,7 @@ async def pubblica_offerta_automatica(bot, prodotto):
         foto_file_id=foto_telegram,
         template="automatico",
     )
-    return messaggio_telegram.message_id, foto_telegram
+    return messaggio_telegram.message_id, foto_telegram, telegram_chat_id
 
 
 async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
@@ -3369,7 +3396,9 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
             )
             return
 
-        message_id, foto_file_id = await pubblica_offerta_automatica(app.bot, prodotto)
+        message_id, foto_file_id, telegram_chat_id = await pubblica_offerta_automatica(
+            app.bot, prodotto
+        )
         _aggiorna_slot_automatico(
             data_slot,
             ora_slot,
@@ -3379,6 +3408,7 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot):
             telegram_photo_file_id=foto_file_id,
             soglia_sconto=configurazione["sconto_minimo"],
             deal_end_time=prodotto.get("deal_end_time"),
+            telegram_chat_id=telegram_chat_id,
         )
         await _notifica_admin_automazione(
             app.bot,
@@ -3484,7 +3514,8 @@ def _offerte_da_verificare():
                COALESCE(soglia_sconto, 0), COALESCE(verifiche_fallite, 0),
                creato_il, deal_end_time, ultima_verifica,
                telegram_photo_file_id, COALESCE(sconto, 0),
-               COALESCE(sconto_modificato_notificato, 0)
+               COALESCE(sconto_modificato_notificato, 0),
+               telegram_chat_id
         FROM invii_automatici
         WHERE stato = 'pubblicata'
           AND telegram_message_id IS NOT NULL
@@ -3518,7 +3549,9 @@ def _offerte_da_verificare():
             intervallo = timedelta(hours=24)
 
         if not ultima_verifica or adesso - ultima_verifica >= intervallo:
-            da_verificare.append(riga[:7] + (riga[10], riga[11], riga[12]))
+            da_verificare.append(
+                riga[:7] + (riga[10], riga[11], riga[12], riga[13])
+            )
     return da_verificare
 
 
@@ -3600,7 +3633,9 @@ async def _modifica_post_terminato(
     categoria,
     message_id,
     foto_file_id=None,
+    telegram_chat_id=None,
 ):
+    destinazione = telegram_chat_id or CHANNEL_ID
     hashtag = AUTO_HASHTAG.get(categoria, "#OfferteAmazon")
     didascalia = (
         "⛔ <b>OFFERTA TERMINATA</b>\n\n"
@@ -3616,7 +3651,7 @@ async def _modifica_post_terminato(
             dati = await file_telegram.download_as_bytearray()
             foto_terminata = await asyncio.to_thread(crea_immagine_terminata, dati)
             await bot.edit_message_media(
-                chat_id=CHANNEL_ID,
+                chat_id=destinazione,
                 message_id=message_id,
                 media=InputMediaPhoto(
                     media=foto_terminata,
@@ -3632,13 +3667,13 @@ async def _modifica_post_terminato(
     # Fallback per vecchi post o errori nel download della foto Telegram.
     if not immagine_aggiornata:
         await bot.edit_message_caption(
-            chat_id=CHANNEL_ID,
+            chat_id=destinazione,
             message_id=message_id,
             caption=didascalia,
             parse_mode="HTML",
         )
         await bot.edit_message_reply_markup(
-            chat_id=CHANNEL_ID,
+            chat_id=destinazione,
             message_id=message_id,
             reply_markup=None,
         )
@@ -3677,6 +3712,7 @@ async def controlla_offerte_terminate(app):
                     foto_file_id,
                     sconto_iniziale,
                     sconto_notificato,
+                    telegram_chat_id,
                 ) in gruppo:
                     prodotto = prodotti.get(asin)
                     non_disponibile = not prodotto
@@ -3710,6 +3746,7 @@ async def controlla_offerte_terminate(app):
                                 categoria,
                                 message_id,
                                 foto_file_id,
+                                telegram_chat_id,
                             )
                             await _notifica_admin_automazione(
                                 app.bot,
@@ -3795,8 +3832,8 @@ async def mostra_menu_pubblicazione(update: Update, context: ContextTypes.DEFAUL
     await query.edit_message_text(
         "📤 PUBBLICA OFFERTA\n\n"
         "Scegli come vuoi inserire il prodotto.\n\n"
-        "Per ora la destinazione resta il canale TECH. Quando collegheremo CASA, "
-        "il bot proporrà automaticamente il canale corretto.",
+        "Le offerte automatiche vengono inviate al canale corretto in base "
+        "alla categoria del prodotto.",
         reply_markup=menu_pubblicazione(),
     )
 
@@ -3851,9 +3888,9 @@ async def mostra_gestione_canali(update: Update, context: ContextTypes.DEFAULT_T
     await query.edit_message_text(
         "📢 GESTIONE CANALI\n\n"
         "📱 TECH — ✅ COLLEGATO\n"
-        "🏠 CASA — ⚪ DA COLLEGARE\n\n"
-        "Il canale Casa è già previsto nel menu, ma non riceverà post finché "
-        "non verrà configurato.",
+        "🏠 CASA — ✅ COLLEGATO\n\n"
+        "Casa e cucina, Elettrodomestici e Fai da te vengono indirizzati "
+        "automaticamente a @BestPrice24hCasa.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📱 CANALE TECH", callback_data="channel_info_tech")],
             [InlineKeyboardButton("🏠 CANALE CASA", callback_data="channel_info_casa")],
@@ -3877,13 +3914,16 @@ async def mostra_info_canale(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         testo = (
             "🏠 CANALE CASA\n\n"
-            "Stato collegamento: ⚪ DA COLLEGARE\n\n"
-            "Quando il canale sarà creato servirà il suo collegamento Telegram. "
-            "Il bot dovrà inoltre essere aggiunto come amministratore."
+            "Stato collegamento: ✅ COLLEGATO\n"
+            "Destinazione: @BestPrice24hCasa\n"
+            "Pubblicazioni automatiche: ATTIVE PER CATEGORIA\n\n"
+            "Categorie: Casa e cucina, Elettrodomestici, Fai da te."
         )
     await query.edit_message_text(
         testo,
         reply_markup=InlineKeyboardMarkup([
+            *([[InlineKeyboardButton("🔗 APRI IL CANALE", url=CASA_CHANNEL_URL)]]
+              if query.data == "channel_info_casa" else []),
             [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="channels_manage")]
         ]),
     )
@@ -8471,7 +8511,7 @@ def main():
     )
     app.add_handler(
         CallbackQueryHandler(
-            mostra_canale_casa_non_collegato,
+            mostra_canale_casa_collegato,
             pattern="^auto_channel_casa$",
         )
     )
