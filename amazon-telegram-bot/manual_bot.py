@@ -82,6 +82,7 @@ DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
 ROMA_TZ = ZoneInfo("Europe/Rome")
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "bestprice24h_logo.png"
 AMAZON_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "amazon_logo.png"
+FONT_BOLD_PATH = Path(__file__).resolve().parent / "assets" / "DejaVuSans-Bold.ttf"
 
 
 def canale_pubblicazione_per_categoria(categoria):
@@ -3579,11 +3580,8 @@ def crea_collage_raccolta_casa(prodotti, tema):
     disegno = ImageDraw.Draw(canvas)
     disegno.rounded_rectangle((8, 8, 1072, 1072), radius=40, outline="#F20D18", width=18)
     disegno.rounded_rectangle((26, 26, 1054, 1054), radius=22, outline="#171717", width=3)
-    font_titolo = _font_terminata(46)
     # Numerazione grande e semplice, senza bollino o cerchio.
-    font_numero = _font_terminata(72)
-    titolo = RACCOLTE_CASA_TEMI[tema]["titolo"]
-    disegno.text((48, 62), titolo, font=font_titolo, fill="#171717")
+    font_numero = _font_terminata(92)
 
     if LOGO_PATH.exists():
         logo = Image.open(LOGO_PATH).convert("RGBA")
@@ -3633,8 +3631,8 @@ def crea_collage_raccolta_casa(prodotti, tema):
             (x0 + 20, y0 + 16),
             numero,
             font=font_numero,
-            fill="#E30613",
-            stroke_width=3,
+            fill="#171717",
+            stroke_width=4,
             stroke_fill="white",
         )
 
@@ -3837,7 +3835,9 @@ async def tenta_pubblicazione_raccolta_casa(app):
 
 
 def _font_terminata(dimensione):
+    # Il font è incluso nel repository, quindi Railway mantiene la dimensione richiesta.
     percorsi = (
+        str(FONT_BOLD_PATH),
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
         "DejaVuSans-Bold.ttf",
@@ -3847,8 +3847,10 @@ def _font_terminata(dimensione):
             return ImageFont.truetype(percorso, dimensione)
         except OSError:
             continue
-    return ImageFont.load_default()
-
+    try:
+        return ImageFont.load_default(size=dimensione)
+    except TypeError:
+        return ImageFont.load_default()
 
 def crea_immagine_terminata(dati_immagine):
     """Crea la versione grigia della foto già pubblicata."""
