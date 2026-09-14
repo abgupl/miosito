@@ -310,35 +310,56 @@ PRODOTTI_PRIORITARI_DEFAULT = {
         ("airpods", "apple", 5), ("gopro", "gopro", 4),
         ("fire tv", "amazon", 5), ("kindle", "amazon", 4),
         ("echo", "amazon", 4), ("ring", "ring", 4),
+        ("dji", "dji", 5), ("garmin", "garmin", 4),
+        ("quietcomfort", "bose", 5), ("wh-1000xm", "sony", 5),
+        ("jbl charge", "jbl", 4),
     ],
     "informatica": [
         ("macbook", "apple", 5), ("ipad", "apple", 5),
         ("surface", "microsoft", 4), ("galaxy book", "samsung", 4),
-        ("ssd", "samsung", 3),
+        ("ssd", "samsung", 3), ("thinkpad", "lenovo", 4),
+        ("zenbook", "asus", 4), ("xps", "dell", 4),
+        ("logitech mx", "logitech", 4), ("ssd", "sandisk", 3),
+        ("deco", "tp-link", 4),
     ],
     "smartphone": [
         ("iphone", "apple", 5), ("galaxy s", "samsung", 4),
         ("galaxy z", "samsung", 4), ("pixel", "google", 4),
         ("xiaomi", "xiaomi", 3), ("razr", "motorola", 3),
+        ("galaxy a", "samsung", 3), ("redmi note", "xiaomi", 4),
+        ("oneplus", "oneplus", 4), ("honor magic", "honor", 4),
+        ("oppo find", "oppo", 4), ("oppo reno", "oppo", 3),
     ],
     "tvaudio": [
         ("oled", "lg", 5), ("oled", "sony", 5),
         ("oled", "samsung", 5), ("soundbar", "bose", 4),
         ("soundbar", "sonos", 4), ("bravia", "sony", 4),
+        ("qled", "samsung", 4), ("uled", "hisense", 4),
+        ("soundbar", "jbl", 3), ("marshall", "marshall", 4),
+        ("wh-1000xm", "sony", 5), ("galaxy buds", "samsung", 4),
     ],
     "gaming": [
         ("playstation 5", "sony", 5), ("ps5", "sony", 5),
         ("xbox series", "microsoft", 5), ("nintendo switch", "nintendo", 5),
         ("rog ally", "asus", 4),
+        ("playstation portal", "sony", 5), ("meta quest", "meta", 5),
+        ("logitech g", "logitech", 4), ("razer", "razer", 4),
+        ("steelseries", "steelseries", 4), ("corsair gaming", "corsair", 4),
     ],
     "casa": [
         ("le creuset", "le creuset", 4), ("bialetti", "bialetti", 3),
-        ("lagostina", "lagostina", 3),
+        ("lagostina", "lagostina", 3), ("tefal", "tefal", 3),
+        ("pyrex", "pyrex", 3), ("brita", "brita", 4),
+        ("brabantia", "brabantia", 3), ("joseph joseph", "joseph joseph", 4),
+        ("tescoma", "tescoma", 3), ("wmf", "wmf", 4),
     ],
     "elettrodomestici": [
         ("dyson", "dyson", 5), ("roomba", "irobot", 5),
         ("roborock", "roborock", 4), ("friggitrice", "ninja", 4),
         ("nespresso", "nespresso", 4), ("dreame", "dreame", 4),
+        ("airfryer", "philips", 4), ("de'longhi", "delonghi", 4),
+        ("kitchenaid", "kitchenaid", 4), ("moulinex", "moulinex", 3),
+        ("rowenta", "rowenta", 3),
     ],
     "persona": [
         ("series 9", "braun", 4), ("sonicare", "philips", 4),
@@ -356,18 +377,30 @@ PRODOTTI_PRIORITARI_DEFAULT = {
     "faidate": [
         ("professional", "bosch", 4), ("dewalt", "dewalt", 4),
         ("makita", "makita", 4), ("milwaukee", "milwaukee", 4),
+        ("black+decker", "black+decker", 3), ("einhell", "einhell", 3),
+        ("dremel", "dremel", 4), ("stanley", "stanley", 3),
+        ("karcher", "karcher", 4), ("fischer", "fischer", 3),
     ],
     "giardino": [
         ("gardena", "gardena", 4), ("fiskars", "fiskars", 3),
         ("tagliaerba", "bosch", 4), ("barbecue", "weber", 4),
+        ("karcher", "karcher", 4), ("makita", "makita", 4),
+        ("ryobi", "ryobi", 3), ("einhell", "einhell", 3),
+        ("worx", "worx", 3),
     ],
     "arredamento": [
         ("songmics", "songmics", 3), ("vasagle", "vasagle", 3),
         ("keter", "keter", 3), ("zinus", "zinus", 3),
+        ("brabantia", "brabantia", 3), ("curver", "curver", 3),
+        ("wenko", "wenko", 3), ("yamazaki", "yamazaki", 4),
+        ("simplehuman", "simplehuman", 4),
     ],
     "illuminazione": [
         ("hue", "philips hue", 5), ("govee", "govee", 4),
         ("ledvance", "ledvance", 3), ("tapo", "tapo", 3),
+        ("nanoleaf", "nanoleaf", 4), ("osram", "osram", 3),
+        ("artemide", "artemide", 4), ("eglo", "eglo", 3),
+        ("smart light", "xiaomi", 3),
     ],
     "giocattoli": [
         ("lego", "lego", 5), ("barbie", "mattel", 4),
@@ -1516,6 +1549,8 @@ def inizializza_automazione():
     colonne_invii = {riga[1] for riga in cur.fetchall()}
     nuove_colonne = {
         "telegram_message_id": "INTEGER",
+        "prezzo": "TEXT",
+        "vecchio_prezzo": "TEXT",
         "soglia_sconto": "INTEGER",
         "verifiche_fallite": "INTEGER DEFAULT 0",
         "terminata_il": "TEXT",
@@ -1752,6 +1787,25 @@ def inizializza_automazione():
         cur.execute(
             "INSERT INTO configurazione_automatica (chiave, valore) "
             "VALUES ('priorita_dispositivi_amazon_v1', '1')"
+        )
+    priorita_v2 = cur.execute(
+        "SELECT valore FROM configurazione_automatica WHERE chiave = 'priorita_catalogo_v2'"
+    ).fetchone()
+    if not priorita_v2:
+        # Aggiornamento non distruttivo: aggiunge il catalogo ampliato anche
+        # ai database Railway esistenti e conserva tutte le regole personali.
+        for categoria, regole in PRODOTTI_PRIORITARI_DEFAULT.items():
+            cur.executemany(
+                """
+                INSERT OR IGNORE INTO prodotti_prioritari
+                    (categoria, parola, marchio, bonus)
+                VALUES (?, ?, ?, ?)
+                """,
+                [(categoria, parola, marchio, bonus) for parola, marchio, bonus in regole],
+            )
+        cur.execute(
+            "INSERT INTO configurazione_automatica (chiave, valore) "
+            "VALUES ('priorita_catalogo_v2', '1')"
         )
     versione = cur.execute(
         "SELECT valore FROM configurazione_automatica WHERE chiave = 'versione_config'"
@@ -3787,30 +3841,30 @@ def crea_immagine_terminata(dati_immagine):
         logo.putalpha(alpha_logo)
         immagine.alpha_composite(logo, (1044 - logo.width, 36))
 
-    # Fascia chiara più alta e testo su due righe, grande e leggibile.
+    # Fascia centrale molto alta: il testo resta leggibile anche nella miniatura Telegram.
     fascia = Image.new("RGBA", immagine.size, (0, 0, 0, 0))
     ImageDraw.Draw(fascia).rounded_rectangle(
-        (35, 345, 1045, 735),
+        (30, 270, 1050, 810),
         radius=34,
         fill=(255, 255, 255, 232),
         outline=(227, 6, 19, 255),
-        width=6,
+        width=8,
     )
     immagine = Image.alpha_composite(immagine, fascia)
     disegno = ImageDraw.Draw(immagine)
     testo = "OFFERTA\nTERMINATA"
-    dimensione = 150
+    dimensione = 190
     font = _font_terminata(dimensione)
     while (
         disegno.multiline_textbbox(
-            (0, 0), testo, font=font, spacing=4, stroke_width=4, align="center"
-        )[2] > 900
-        and dimensione > 96
+            (0, 0), testo, font=font, spacing=0, stroke_width=6, align="center"
+        )[2] > 930
+        and dimensione > 130
     ):
         dimensione -= 6
         font = _font_terminata(dimensione)
     riquadro = disegno.multiline_textbbox(
-        (0, 0), testo, font=font, spacing=4, stroke_width=4, align="center"
+        (0, 0), testo, font=font, spacing=0, stroke_width=6, align="center"
     )
     larghezza = riquadro[2] - riquadro[0]
     altezza = riquadro[3] - riquadro[1]
@@ -3820,9 +3874,9 @@ def crea_immagine_terminata(dati_immagine):
         testo,
         font=font,
         fill="#E30613",
-        spacing=4,
+        spacing=0,
         align="center",
-        stroke_width=4,
+        stroke_width=6,
         stroke_fill="white",
     )
 
@@ -4449,6 +4503,7 @@ def _aggiorna_slot_automatico(
         """
         UPDATE invii_automatici
         SET stato = ?, asin = ?, nome = ?, link = ?, sconto = ?,
+            prezzo = ?, vecchio_prezzo = ?,
             telegram_message_id = COALESCE(?, telegram_message_id),
             telegram_photo_file_id = COALESCE(?, telegram_photo_file_id),
             soglia_sconto = COALESCE(?, soglia_sconto),
@@ -4466,6 +4521,8 @@ def _aggiorna_slot_automatico(
             prodotto.get("nome"),
             prodotto.get("link"),
             prodotto.get("sconto"),
+            prodotto.get("prezzo"),
+            prodotto.get("vecchio_prezzo"),
             telegram_message_id,
             telegram_photo_file_id,
             soglia_sconto,
@@ -4704,6 +4761,32 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
     return candidati[0], statistiche
 
 
+def crea_corpo_offerta_automatica(prodotto, categoria=None):
+    """Crea il testo riutilizzato sia alla pubblicazione sia negli aggiornamenti."""
+    prima = (
+        f"\n❌ Prima: <s>{html.escape(prodotto['vecchio_prezzo'])}</s>"
+        if prodotto["vecchio_prezzo"] else ""
+    )
+    tipo_offerta = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
+    categoria = categoria or prodotto.get("categoria")
+    riga_venditore = riga_venditore_categoria(prodotto, categoria)
+    return (
+        f"<b>{tipo_offerta}</b>\n\n"
+        f"🛒 {html.escape(prodotto['nome'])}\n\n"
+        f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
+        f"{prima}\n"
+        f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
+        f"{riga_venditore}"
+    )
+
+
+def tastiera_offerta_automatica(link):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
+        InlineKeyboardButton("🛒 APRI", url=link),
+    ]])
+
+
 async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="automatico"):
     nome = prodotto["nome"]
     prezzo_numero = _prezzo_italiano(prodotto["prezzo_valore"])
@@ -4713,29 +4796,13 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
         if base is not None:
             vecchio_numero = _prezzo_italiano(base)
 
-    prima = (
-        f"\n❌ Prima: <s>{html.escape(prodotto['vecchio_prezzo'])}</s>"
-        if prodotto["vecchio_prezzo"] else ""
-    )
-    tipo_offerta = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
-    riga_venditore = riga_venditore_categoria(prodotto, prodotto.get("categoria"))
-    corpo_messaggio = (
-        f"<b>{tipo_offerta}</b>\n\n"
-        f"🛒 {html.escape(nome)}\n\n"
-        f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
-        f"{prima}\n"
-        f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
-        f"{riga_venditore}"
-    )
+    corpo_messaggio = crea_corpo_offerta_automatica(prodotto)
     messaggio = crea_caption_con_link(
         corpo_messaggio,
         prodotto["link"],
         messaggio_gia_html=True,
     )
-    tastiera = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
-        InlineKeyboardButton("🛒 APRI", url=prodotto["link"]),
-    ]])
+    tastiera = tastiera_offerta_automatica(prodotto["link"])
     foto = await prepara_foto_automatica(prodotto["immagine"])
     telegram_chat_id = (
         CASA_CHANNEL_ID if canale == "casa"
@@ -4938,7 +5005,7 @@ def _offerte_da_verificare():
                creato_il, deal_end_time, ultima_verifica,
                telegram_photo_file_id, COALESCE(sconto, 0),
                COALESCE(sconto_modificato_notificato, 0),
-               telegram_chat_id
+               telegram_chat_id, prezzo, vecchio_prezzo
         FROM invii_automatici
         WHERE stato = 'pubblicata'
           AND telegram_message_id IS NOT NULL
@@ -4951,7 +5018,6 @@ def _offerte_da_verificare():
     da_verificare = []
     for riga in righe:
         creato_il = _data_api(riga[7])
-        fine_offerta = _data_api(riga[8])
         ultima_verifica = _data_api(riga[9]) or creato_il
         if not creato_il:
             continue
@@ -4960,10 +5026,6 @@ def _offerte_da_verificare():
         fallimenti = riga[6]
         if fallimenti > 0:
             intervallo = timedelta(minutes=30)
-        elif fine_offerta and adesso < fine_offerta:
-            continue
-        elif fine_offerta:
-            intervallo = timedelta(hours=2)
         elif eta <= timedelta(hours=24):
             intervallo = timedelta(hours=2)
         elif eta <= timedelta(hours=72):
@@ -4973,7 +5035,7 @@ def _offerte_da_verificare():
 
         if not ultima_verifica or adesso - ultima_verifica >= intervallo:
             da_verificare.append(
-                riga[:7] + (riga[10], riga[11], riga[12], riga[13])
+                riga[:7] + (riga[10], riga[11], riga[12], riga[13], riga[14], riga[15])
             )
     return da_verificare
 
@@ -5049,6 +5111,71 @@ def _imposta_notifica_sconto_modificato(invio_id, notificato):
     db.close()
 
 
+def _normalizza_valore_monitorato(valore):
+    return re.sub(r"\s+", " ", str(valore or "").replace("\xa0", " ")).strip()
+
+
+def _salva_aggiornamento_offerta(invio_id, prodotto, corpo_messaggio):
+    """Allinea archivio e monitoraggio dopo la modifica del post Telegram."""
+    prezzo_recap = _prezzo_italiano(prodotto["prezzo_valore"])
+    vecchio_recap = "NO"
+    if prodotto.get("vecchio_valore") is not None:
+        vecchio_recap = _prezzo_italiano(prodotto["vecchio_valore"])
+    db = sqlite3.connect(DB_PATH)
+    dati_invio = db.execute(
+        "SELECT asin, telegram_message_id, telegram_chat_id FROM invii_automatici WHERE id=?",
+        (invio_id,),
+    ).fetchone()
+    db.execute(
+        """
+        UPDATE invii_automatici
+        SET nome=?, link=?, prezzo=?, vecchio_prezzo=?, sconto=?,
+            sconto_modificato_notificato=0
+        WHERE id=?
+        """,
+        (
+            prodotto["nome"], prodotto["link"], prodotto["prezzo"],
+            prodotto.get("vecchio_prezzo"), int(prodotto.get("sconto") or 0), invio_id,
+        ),
+    )
+    if dati_invio:
+        asin, message_id, chat_id = dati_invio
+        db.execute(
+            """
+            UPDATE recap_offerte
+            SET nome=?, link=?, prezzo=?, vecchio_prezzo=?, messaggio=?, sconto=?
+            WHERE asin=? AND telegram_message_id=? AND telegram_chat_id=?
+            """,
+            (
+                prodotto["nome"], prodotto["link"], prezzo_recap, vecchio_recap,
+                corpo_messaggio, int(prodotto.get("sconto") or 0), asin,
+                message_id, chat_id,
+            ),
+        )
+    db.commit()
+    db.close()
+
+
+async def _aggiorna_post_offerta_attiva(
+    bot, invio_id, prodotto, categoria, message_id, telegram_chat_id=None
+):
+    prodotto["categoria"] = categoria
+    corpo_messaggio = crea_corpo_offerta_automatica(prodotto, categoria)
+    didascalia = crea_caption_con_link(
+        corpo_messaggio,
+        prodotto["link"],
+        messaggio_gia_html=True,
+    )
+    await bot.edit_message_caption(
+        chat_id=telegram_chat_id or CHANNEL_ID,
+        message_id=message_id,
+        caption=didascalia,
+        parse_mode="HTML",
+        reply_markup=tastiera_offerta_automatica(prodotto["link"]),
+    )
+    _salva_aggiornamento_offerta(invio_id, prodotto, corpo_messaggio)
+
+
 async def _modifica_post_terminato(
     bot,
     invio_id,
@@ -5063,7 +5190,7 @@ async def _modifica_post_terminato(
     didascalia = (
         "🔴 ⛔ <b>OFFERTA TERMINATA</b>\n\n"
         f"🛒 {html.escape(nome)}\n\n"
-        "Questa promozione non risulta più disponibile.\n\n"
+        "Lo sconto non risulta più disponibile.\n\n"
         f"Categoria: {hashtag}\n\n"
         "Continua a seguirci per le prossime offerte."
     )
@@ -5122,7 +5249,7 @@ def _prodotti_raccolta_da_verificare():
         """
         SELECT p.id, p.raccolta_id, p.asin, p.nome,
                COALESCE(p.verifiche_fallite, 0), p.ultima_verifica,
-               r.pubblicata_il
+               r.pubblicata_il, p.prezzo, p.vecchio_prezzo, COALESCE(p.sconto, 0)
         FROM raccolte_casa_prodotti p
         JOIN raccolte_casa r ON r.id = p.raccolta_id
         WHERE p.stato = 'pubblicata' AND r.pubblicata_il >= ?
@@ -5147,7 +5274,7 @@ def _prodotti_raccolta_da_verificare():
         else:
             intervallo = timedelta(hours=24)
         if not ultima or adesso - ultima >= intervallo:
-            risultato.append(riga[:5])
+            risultato.append(riga[:5] + riga[7:10])
     return risultato
 
 
@@ -5215,6 +5342,50 @@ def _segna_prodotto_raccolta_terminato(prodotto_id):
     return raccolta_id
 
 
+def _aggiorna_prodotto_raccolta(prodotto_id, prodotto):
+    db = sqlite3.connect(DB_PATH)
+    riga = db.execute(
+        "SELECT raccolta_id, asin FROM raccolte_casa_prodotti WHERE id=?",
+        (prodotto_id,),
+    ).fetchone()
+    if not riga:
+        db.close()
+        return None
+    raccolta_id, asin = riga
+    db.execute(
+        """
+        UPDATE raccolte_casa_prodotti
+        SET nome=?, link=?, prezzo=?, vecchio_prezzo=?, immagine_url=?, sconto=?
+        WHERE id=?
+        """,
+        (
+            prodotto["nome"], prodotto["link"], prodotto["prezzo"],
+            prodotto.get("vecchio_prezzo"), prodotto.get("immagine"),
+            int(prodotto.get("sconto") or 0), prodotto_id,
+        ),
+    )
+    db.execute(
+        """
+        UPDATE recap_offerte
+        SET nome=?, link=?, prezzo=?, vecchio_prezzo=?, sconto=?
+        WHERE asin=? AND template='raccolta'
+          AND telegram_message_id=(
+              SELECT telegram_message_id FROM raccolte_casa WHERE id=?
+          )
+        """,
+        (
+            prodotto["nome"], prodotto["link"],
+            _prezzo_italiano(prodotto["prezzo_valore"]),
+            _prezzo_italiano(prodotto["vecchio_valore"])
+            if prodotto.get("vecchio_valore") is not None else "NO",
+            int(prodotto.get("sconto") or 0), asin, raccolta_id,
+        ),
+    )
+    db.commit()
+    db.close()
+    return raccolta_id
+
+
 def _dati_raccolta_casa(raccolta_id):
     db = sqlite3.connect(DB_PATH)
     raccolta = db.execute(
@@ -5247,13 +5418,21 @@ async def _aggiorna_caption_raccolta_casa(bot, raccolta_id):
     if not raccolta or not prodotti:
         return
     tema, chat_id, message_id = raccolta
+    caption = crea_caption_raccolta_casa(prodotti, tema)
     await bot.edit_message_caption(
         chat_id=chat_id or CASA_CHANNEL_ID,
         message_id=message_id,
-        caption=crea_caption_raccolta_casa(prodotti, tema),
+        caption=caption,
         parse_mode="HTML",
         reply_markup=tastiera_raccolta_casa(),
     )
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        "UPDATE recap_offerte SET messaggio=? WHERE telegram_message_id=? AND telegram_chat_id=?",
+        (caption, message_id, chat_id or str(CASA_CHANNEL_ID)),
+    )
+    db.commit()
+    db.close()
 
 
 async def controlla_raccolte_casa_terminate(app):
@@ -5275,16 +5454,34 @@ async def controlla_raccolte_casa_terminate(app):
             getattr(item, "asin", None): estrai_prodotto_creators(item)
             for item in items if getattr(item, "asin", None)
         }
-        for prodotto_id, raccolta_id, asin, nome, _ in gruppo:
+        for (
+            prodotto_id, raccolta_id, asin, nome, _,
+            prezzo_memorizzato, vecchio_memorizzato, sconto_memorizzato,
+        ) in gruppo:
             prodotto = prodotti_api.get(asin)
             non_disponibile = not prodotto
-            fallimenti = _aggiorna_verifica_prodotto_raccolta(prodotto_id, non_disponibile)
+            _aggiorna_verifica_prodotto_raccolta(prodotto_id, non_disponibile)
+            if not prodotto:
+                # Un risultato API mancante non dimostra che lo sconto sia finito.
+                continue
             sconto_azzerato = bool(prodotto and int(prodotto.get("sconto") or 0) == 0)
-            if sconto_azzerato or (non_disponibile and fallimenti >= 2):
+            if sconto_azzerato:
                 raccolta_modificata = _segna_prodotto_raccolta_terminato(prodotto_id)
                 if raccolta_modificata:
                     raccolte_modificate.add(raccolta_modificata)
                     nomi_terminati.append(nome)
+                continue
+            valori_cambiati = (
+                int(prodotto.get("sconto") or 0) != int(sconto_memorizzato or 0)
+                or _normalizza_valore_monitorato(prodotto.get("prezzo"))
+                != _normalizza_valore_monitorato(prezzo_memorizzato)
+                or _normalizza_valore_monitorato(prodotto.get("vecchio_prezzo"))
+                != _normalizza_valore_monitorato(vecchio_memorizzato)
+            )
+            if valori_cambiati:
+                raccolta_modificata = _aggiorna_prodotto_raccolta(prodotto_id, prodotto)
+                if raccolta_modificata:
+                    raccolte_modificate.add(raccolta_modificata)
         await asyncio.sleep(1.2)
 
     for raccolta_id in raccolte_modificate:
@@ -5333,38 +5530,19 @@ async def controlla_offerte_terminate(app):
                     sconto_iniziale,
                     sconto_notificato,
                     telegram_chat_id,
+                    prezzo_memorizzato,
+                    vecchio_memorizzato,
                 ) in gruppo:
                     prodotto = prodotti.get(asin)
                     non_disponibile = not prodotto
-                    fallimenti = _aggiorna_verifica_offerta(invio_id, non_disponibile)
-                    sconto_attuale = (
-                        int(prodotto.get("sconto") or 0) if prodotto else None
-                    )
-                    sconto_azzerato = bool(
-                        prodotto
-                        and int(sconto_iniziale or soglia or 0) > 0
-                        and sconto_attuale == 0
-                    )
+                    _aggiorna_verifica_offerta(invio_id, non_disponibile)
+                    if not prodotto:
+                        # Le API possono omettere temporaneamente un ASIN:
+                        # senza uno sconto certo allo 0% il post resta invariato.
+                        continue
 
-                    # Un calo ancora superiore allo 0% genera soltanto un avviso.
-                    # Quando lo sconto arriva allo 0%, l'offerta viene terminata.
-                    if prodotto and not sconto_azzerato:
-                        soglia_confronto = int(soglia or sconto_iniziale or 0)
-                        if soglia_confronto and sconto_attuale < soglia_confronto:
-                            if not sconto_notificato:
-                                await _notifica_admin_automazione(
-                                    app.bot,
-                                    "⚠️ OFFERTA MODIFICATA\n\n"
-                                    f"{nome}\n"
-                                    f"Sconto iniziale: -{sconto_iniziale}%\n"
-                                    f"Sconto attuale: -{sconto_attuale}%\n\n"
-                                    "Il prodotto risulta ancora disponibile, quindi il post non è stato oscurato.",
-                                )
-                                _imposta_notifica_sconto_modificato(invio_id, True)
-                        elif sconto_notificato:
-                            _imposta_notifica_sconto_modificato(invio_id, False)
-
-                    if sconto_azzerato or (non_disponibile and fallimenti >= 2):
+                    sconto_attuale = int(prodotto.get("sconto") or 0)
+                    if sconto_attuale == 0:
                         try:
                             await _modifica_post_terminato(
                                 app.bot,
@@ -5379,14 +5557,40 @@ async def controlla_offerte_terminate(app):
                                 app.bot,
                                 "🔴 ⛔ OFFERTA TERMINATA\n\n"
                                 f"{nome}\n"
-                                + (
-                                    "Motivo: lo sconto è sceso allo 0%."
-                                    if sconto_azzerato
-                                    else "Motivo: prodotto non più disponibile."
-                                ),
+                                "Motivo: lo sconto è sceso allo 0%.",
                             )
                         except Exception as errore:
                             print(f"Errore modifica post terminato: {errore}")
+                        continue
+
+                    valori_cambiati = (
+                        sconto_attuale != int(sconto_iniziale or 0)
+                        or _normalizza_valore_monitorato(prodotto.get("prezzo"))
+                        != _normalizza_valore_monitorato(prezzo_memorizzato)
+                        or _normalizza_valore_monitorato(prodotto.get("vecchio_prezzo"))
+                        != _normalizza_valore_monitorato(vecchio_memorizzato)
+                    )
+                    if valori_cambiati:
+                        try:
+                            await _aggiorna_post_offerta_attiva(
+                                app.bot,
+                                invio_id,
+                                prodotto,
+                                categoria,
+                                message_id,
+                                telegram_chat_id,
+                            )
+                            await _notifica_admin_automazione(
+                                app.bot,
+                                "✏️ OFFERTA AGGIORNATA\n\n"
+                                f"{prodotto['nome']}\n"
+                                f"Prezzo precedente nel post: {prezzo_memorizzato or 'non registrato'}\n"
+                                f"Nuovo prezzo: {prodotto['prezzo']}\n"
+                                f"Sconto precedente: -{int(sconto_iniziale or 0)}%\n"
+                                f"Nuovo sconto: -{sconto_attuale}%",
+                            )
+                        except Exception as errore:
+                            print(f"Errore aggiornamento prezzo del post: {errore}")
 
                 await asyncio.sleep(1.2)
             await controlla_raccolte_casa_terminate(app)
