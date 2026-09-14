@@ -3580,7 +3580,8 @@ def crea_collage_raccolta_casa(prodotti, tema):
     disegno.rounded_rectangle((8, 8, 1072, 1072), radius=40, outline="#F20D18", width=18)
     disegno.rounded_rectangle((26, 26, 1054, 1054), radius=22, outline="#171717", width=3)
     font_titolo = _font_terminata(46)
-    font_numero = _font_terminata(42)
+    # Numerazione grande e semplice, senza bollino o cerchio.
+    font_numero = _font_terminata(54)
     titolo = RACCOLTE_CASA_TEMI[tema]["titolo"]
     disegno.text((48, 62), titolo, font=font_titolo, fill="#171717")
 
@@ -3591,14 +3592,15 @@ def crea_collage_raccolta_casa(prodotti, tema):
 
     colonne = 3 if len(prodotti) > 4 else 2
     righe = 2 if len(prodotti) > 2 else 1
-    alto_griglia = 880
+    # La griglia termina prima del logo Amazon, lasciando una fascia bianca.
+    alto_griglia = 780
     larghezza_cella = 1000 // colonne
     altezza_cella = alto_griglia // righe
     for indice, prodotto in enumerate(prodotti):
         colonna = indice % colonne
         riga = indice // colonne
         x0 = 40 + colonna * larghezza_cella
-        y0 = 160 + riga * altezza_cella
+        y0 = 155 + riga * altezza_cella
         x1 = x0 + larghezza_cella - 12
         y1 = y0 + altezza_cella - 12
         disegno.rounded_rectangle(
@@ -3610,7 +3612,7 @@ def crea_collage_raccolta_casa(prodotti, tema):
             foto = Image.open(BytesIO(risposta.content)).convert("RGB")
             foto = ImageOps.contain(
                 foto,
-                (larghezza_cella - 80, altezza_cella - 80),
+                (larghezza_cella - 90, altezza_cella - 90),
                 Image.Resampling.LANCZOS,
             )
             posizione = (
@@ -3620,19 +3622,43 @@ def crea_collage_raccolta_casa(prodotti, tema):
             canvas.paste(foto, posizione)
         except Exception as errore:
             print(f"Immagine raccolta non disponibile: {errore}")
-        disegno.ellipse((x0 + 14, y0 + 14, x0 + 76, y0 + 76), fill="#E30613")
-        numero = str(indice + 1)
-        bbox = disegno.textbbox((0, 0), numero, font=font_numero)
+
+        numero = f"#{indice + 1}"
         disegno.text(
-            (x0 + 45 - (bbox[2] - bbox[0]) // 2, y0 + 43 - (bbox[3] - bbox[1]) // 2 - bbox[1]),
-            numero, font=font_numero, fill="white",
+            (x0 + 20, y0 + 16),
+            numero,
+            font=font_numero,
+            fill="#E30613",
+            stroke_width=3,
+            stroke_fill="white",
         )
+
+    # Stesso logo Amazon dei post singoli, centrato nella fascia inferiore.
+    if AMAZON_LOGO_PATH.exists():
+        logo_amazon = Image.open(AMAZON_LOGO_PATH).convert("RGBA")
+        pixel = []
+        for rosso, verde, blu, alpha in logo_amazon.getdata():
+            if rosso >= 245 and verde >= 245 and blu >= 245:
+                pixel.append((rosso, verde, blu, 0))
+            else:
+                pixel.append((rosso, verde, blu, alpha))
+        logo_amazon.putdata(pixel)
+        logo_amazon = ImageOps.contain(
+            logo_amazon,
+            (220, 92),
+            Image.Resampling.LANCZOS,
+        )
+        posizione_amazon = (
+            (1080 - logo_amazon.width) // 2,
+            1040 - logo_amazon.height,
+        )
+        canvas.paste(logo_amazon, posizione_amazon, logo_amazon)
+
     output = BytesIO()
     output.name = "raccolta_casa_bestprice24h.jpg"
     canvas.save(output, "JPEG", quality=92, optimize=True)
     output.seek(0)
     return output
-
 
 def _prezzo_caption_raccolta(valore):
     testo = str(valore or "—").strip()
