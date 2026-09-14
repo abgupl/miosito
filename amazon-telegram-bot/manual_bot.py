@@ -3581,7 +3581,7 @@ def crea_collage_raccolta_casa(prodotti, tema):
     disegno.rounded_rectangle((8, 8, 1072, 1072), radius=40, outline="#F20D18", width=18)
     disegno.rounded_rectangle((26, 26, 1054, 1054), radius=22, outline="#171717", width=3)
     # Numerazione grande e semplice, senza bollino o cerchio.
-    font_numero = _font_terminata(50)
+    font_numero = _font_terminata(35)
 
     if LOGO_PATH.exists():
         logo = Image.open(LOGO_PATH).convert("RGBA")
