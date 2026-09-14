@@ -3581,13 +3581,18 @@ def crea_collage_raccolta_casa(prodotti, tema):
     disegno.rounded_rectangle((26, 26, 1054, 1054), radius=22, outline="#171717", width=3)
     font_titolo = _font_terminata(46)
     # Numerazione grande e semplice, senza bollino o cerchio.
-    font_numero = _font_terminata(54)
+    font_numero = _font_terminata(72)
     titolo = RACCOLTE_CASA_TEMI[tema]["titolo"]
     disegno.text((48, 62), titolo, font=font_titolo, fill="#171717")
 
     if LOGO_PATH.exists():
         logo = Image.open(LOGO_PATH).convert("RGBA")
         logo = ImageOps.contain(logo, (155, 125), Image.Resampling.LANCZOS)
+        # Stessa trasparenza dei post singoli: alpha 150 su 255.
+        alpha_logo = logo.getchannel("A").point(
+            lambda valore: valore * 150 // 255
+        )
+        logo.putalpha(alpha_logo)
         canvas.paste(logo, (1028 - logo.width, 30), logo)
 
     colonne = 3 if len(prodotti) > 4 else 2
