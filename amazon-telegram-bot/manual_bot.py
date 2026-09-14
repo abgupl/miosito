@@ -1546,6 +1546,20 @@ def inizializza_automazione():
             UNIQUE(slot_data, slot_ora)
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS blocco_duplicati_canali (
+            canale TEXT NOT NULL,
+            asin TEXT NOT NULL,
+            stato TEXT NOT NULL DEFAULT 'prenotata',
+            prenotato_il TEXT NOT NULL,
+            pubblicato_il TEXT,
+            PRIMARY KEY (canale, asin)
+        )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_blocco_duplicati_pubblicato "
+        "ON blocco_duplicati_canali(canale, pubblicato_il)"
+    )
     cur.execute("PRAGMA table_info(invii_automatici)")
     colonne_invii = {riga[1] for riga in cur.fetchall()}
     nuove_colonne = {
@@ -2546,6 +2560,10 @@ def tastiera_automazione(configurazione, canale):
             f"🎯 QUALITÀ: {etichetta_qualita}",
             callback_data="auto_qualita",
         )],
+        [InlineKeyboardButton(
+            f"🔁 BLOCCO DUPLICATI: {configurazione['giorni_blocco_duplicati']} GIORNI",
+            callback_data="auto_duplicates",
+        )],
     ]
     if configurazione["qualita_prodotti"] == "selettiva":
         righe.append([
@@ -2723,10 +2741,6 @@ async def mostra_menu_selettiva(query, context):
                 callback_data="selective_searches",
             )],
             [InlineKeyboardButton(
-                f"🔁 BLOCCO DUPLICATI: {configurazione['giorni_blocco_duplicati']} GIORNI",
-                callback_data="selective_duplicates",
-            )],
-            [InlineKeyboardButton(
                 f"🧩 RAGGRUPPA VARIANTI: {varianti}", callback_data="selective_variants"
             )],
             [InlineKeyboardButton("♻️ RIPRISTINA CONSIGLIATI", callback_data="selective_reset")],
@@ -2750,11 +2764,10 @@ async def gestisci_selettiva(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "selective_score": ("Punteggio preferito", (3, 4, 5, 6, 7, 8), "selective_score"),
         "selective_bonus": ("Bonus +2 a partire dallo sconto", (20, 25, 30, 35, 40), "selective_bonus"),
         "selective_searches": ("Numero massimo di ricerche per invio", (3, 6, 9), "selective_searches"),
-        "selective_duplicates": ("Dopo quanti giorni un prodotto può tornare", (3, 7, 10, 14, 30), "selective_duplicates"),
     }
     if azione in menu_valori:
         titolo, valori, prefisso = menu_valori[azione]
-        suffisso = "%" if azione == "selective_bonus" else " GIORNI" if azione == "selective_duplicates" else ""
+        suffisso = "%" if azione == "selective_bonus" else ""
         righe = []
         for indice in range(0, len(valori), 3):
             righe.append([
@@ -2769,7 +2782,6 @@ async def gestisci_selettiva(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "selective_score_": "punteggio_minimo",
         "selective_bonus_": "bonus_sconto_da",
         "selective_searches_": "tentativi_ricerca",
-        "selective_duplicates_": "giorni_blocco_duplicati",
     }
     for prefisso, chiave in associazioni.items():
         if azione.startswith(prefisso):
@@ -2796,7 +2808,6 @@ async def gestisci_selettiva(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "bonus_sconto_da": 30,
             "priorita_amazon": 1,
             "tentativi_ricerca": 6,
-            "giorni_blocco_duplicati": 10,
             "raggruppa_varianti": 1,
         }.items():
             salva_config_automatica(chiave, valore, canale)
@@ -2822,6 +2833,7 @@ def testo_automazione(configurazione, canale):
         f"Orario: {configurazione['ora_inizio']}–{configurazione['ora_fine']}\n"
         f"Sconto minimo: {configurazione['sconto_minimo']}%\n"
         f"Qualità prodotti: {etichetta_qualita}\n"
+        f"Blocco duplicati: {configurazione['giorni_blocco_duplicati']} giorni\n"
         f"Categorie: {', '.join(categorie) if categorie else 'nessuna'}"
     )
 
@@ -2989,6 +3001,33 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
             f"✅ Automazione attivata. Il primo tentativo partirà alle {prossimo.strftime('%H:%M')}."
         )
         return
+
+    if azione == "auto_duplicates":
+        valori = (1, 3, 7, 10, 14, 30)
+        tastiera = [
+            [InlineKeyboardButton(f"{v} GIORNI", callback_data=f"auto_duplicates_{v}") for v in valori[:3]],
+            [InlineKeyboardButton(f"{v} GIORNI", callback_data=f"auto_duplicates_{v}") for v in valori[3:]],
+            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
+        ]
+        await query.edit_message_text(
+            "🔁 BLOCCO DUPLICATI\n\n"
+            "Scegli dopo quanti giorni lo stesso prodotto potrà essere pubblicato "
+            "nuovamente in questo canale.",
+            reply_markup=InlineKeyboardMarkup(tastiera),
+        )
+        return
+
+    if azione.startswith("auto_duplicates_"):
+        giorni = int(azione.rsplit("_", 1)[1])
+        salva_config_automatica("giorni_blocco_duplicati", giorni, canale)
+        salva_config_automatica("attiva", 0, canale)
+        salva_config_automatica("prossimo_invio", "", canale)
+        await query.message.reply_text(
+            f"✅ Blocco duplicati impostato a {giorni} giorni per "
+            f"{'TECH' if canale == 'tech' else 'CASA'}.\n\n"
+            "L’automazione è stata disattivata: riattivala dopo la modifica."
+        )
+        return await aggiorna_menu_automazione(query, context)
 
     if azione == "auto_sconto":
         valori = (10, 15, 20, 25, 30, 40, 50)
@@ -3516,6 +3555,7 @@ def _prodotto_valido_per_raccolta(
 
 async def cerca_prodotti_raccolta_casa(configurazione, tema):
     trovati = {}
+    giorni_blocco = leggi_config_automatica("casa")["giorni_blocco_duplicati"]
     statistiche = {"ricerche": 0, "analizzati": 0, "prezzo_sconto": 0, "qualita": 0, "duplicati": 0}
     parole_indesiderate = leggi_parole_indesiderate()
     marchi_casa = {_normalizza_qualita(x) for x in leggi_marchi_qualita("casa")}
@@ -3537,7 +3577,7 @@ async def cerca_prodotti_raccolta_casa(configurazione, tema):
             ):
                 statistiche["prezzo_sconto"] += 1
                 continue
-            if _asin_gia_pubblicato(prodotto.get("asin"), 10):
+            if _asin_gia_pubblicato(prodotto.get("asin"), giorni_blocco, "casa"):
                 statistiche["duplicati"] += 1
                 continue
             if not _prodotto_valido_per_raccolta(
@@ -4197,8 +4237,13 @@ async def esegui_ricerca_offerte(query, context, quantita):
                 prodotto = estrai_prodotto_creators(item)
                 if not prodotto or prodotto["sconto"] < sconto:
                     continue
+                canale_duplicati = canale or (
+                    "casa" if categoria in CASA_CATEGORIE else "tech"
+                )
                 if prodotto["asin"] in trovati or _asin_gia_pubblicato(
-                    prodotto["asin"], configurazione["giorni_blocco_duplicati"]
+                    prodotto["asin"],
+                    configurazione["giorni_blocco_duplicati"],
+                    canale_duplicati,
                 ):
                     continue
                 prodotto["categoria"] = categoria
@@ -4393,6 +4438,10 @@ async def pubblica_prodotto_ricerca_offerte(query, context, indice):
             "✅ OFFERTA PUBBLICATA!",
             reply_markup=menu_dopo_pubblicazione(),
         )
+    except OffertaDuplicataError:
+        await query.message.reply_text(
+            "⛔ Questo prodotto è già stato pubblicato recentemente in questo canale."
+        )
     except Exception as errore:
         print(f"Errore pubblicazione risultato ricerca: {errore}")
         await query.message.reply_text(f"❌ Pubblicazione non riuscita: {str(errore)[:500]}")
@@ -4571,44 +4620,154 @@ def _aggiorna_slot_automatico(
     db.close()
 
 
-def _asin_gia_pubblicato(asin, giorni=10):
+def _chat_id_per_canale(canale):
+    return str(CASA_CHANNEL_ID if canale == "casa" else CHANNEL_ID)
+
+
+def _data_sqlite(valore):
+    if not valore:
+        return None
+    try:
+        data = datetime.fromisoformat(valore)
+        return data.replace(tzinfo=ROMA_TZ) if data.tzinfo is None else data
+    except (TypeError, ValueError):
+        return None
+
+
+def _asin_gia_pubblicato(asin, giorni=10, canale="tech"):
+    """Controlla i duplicati separatamente per TECH e CASA, in ogni modalità."""
     if not asin:
         return True
+    canale = "casa" if canale == "casa" else "tech"
+    adesso = datetime.now(ROMA_TZ)
+    limite = adesso - timedelta(days=max(1, int(giorni)))
+    chat_id = _chat_id_per_canale(canale)
     db = sqlite3.connect(DB_PATH)
-    riga_automatica = db.execute(
-        """
-        SELECT creato_il FROM invii_automatici
-        WHERE asin = ? AND stato IN ('pubblicata', 'terminata')
-        ORDER BY creato_il DESC LIMIT 1
-        """,
-        (asin,),
-    ).fetchone()
-    riga_recap = db.execute(
-        """
-        SELECT pubblicata_il FROM recap_offerte
-        WHERE asin = ? AND COALESCE(stato, 'pubblicata') IN ('pubblicata', 'terminata')
-        ORDER BY pubblicata_il DESC LIMIT 1
-        """,
-        (asin,),
-    ).fetchone()
-    db.close()
-    date_pubblicazione = [
-        riga[0] for riga in (riga_automatica, riga_recap) if riga and riga[0]
-    ]
-    if not date_pubblicazione:
-        return False
     try:
-        limite = datetime.now(ROMA_TZ) - timedelta(days=max(1, int(giorni)))
-        for valore in date_pubblicazione:
-            pubblicata = datetime.fromisoformat(valore)
-            if pubblicata.tzinfo is None:
-                pubblicata = pubblicata.replace(tzinfo=ROMA_TZ)
-            if pubblicata >= limite:
+        prenotazione = db.execute(
+            """
+            SELECT stato, prenotato_il, pubblicato_il
+            FROM blocco_duplicati_canali
+            WHERE canale = ? AND asin = ?
+            """,
+            (canale, asin),
+        ).fetchone()
+        if prenotazione:
+            stato, prenotato_il, pubblicato_il = prenotazione
+            data_pubblicazione = _data_sqlite(pubblicato_il)
+            if data_pubblicazione and data_pubblicazione >= limite:
+                return True
+            data_prenotazione = _data_sqlite(prenotato_il)
+            if (
+                stato == "prenotata"
+                and data_prenotazione
+                and data_prenotazione >= adesso - timedelta(minutes=30)
+            ):
+                return True
+
+        riga_automatica = db.execute(
+            """
+            SELECT creato_il FROM invii_automatici
+            WHERE asin = ? AND stato IN ('pubblicata', 'terminata')
+              AND CAST(telegram_chat_id AS TEXT) = ?
+            ORDER BY creato_il DESC LIMIT 1
+            """,
+            (asin, chat_id),
+        ).fetchone()
+        riga_recap = db.execute(
+            """
+            SELECT pubblicata_il FROM recap_offerte
+            WHERE asin = ?
+              AND COALESCE(stato, 'pubblicata') IN ('pubblicata', 'terminata')
+              AND CAST(telegram_chat_id AS TEXT) = ?
+            ORDER BY pubblicata_il DESC LIMIT 1
+            """,
+            (asin, chat_id),
+        ).fetchone()
+        for riga in (riga_automatica, riga_recap):
+            data_pubblicazione = _data_sqlite(riga[0] if riga else None)
+            if data_pubblicazione and data_pubblicazione >= limite:
                 return True
         return False
-    except (TypeError, ValueError):
-        return True
+    finally:
+        db.close()
 
+
+def _prenota_asin_pubblicazione(asin, canale, giorni):
+    """Prenota atomicamente un ASIN prima dell'invio a Telegram."""
+    if not asin or _asin_gia_pubblicato(asin, giorni, canale):
+        return False
+    canale = "casa" if canale == "casa" else "tech"
+    adesso = datetime.now(ROMA_TZ)
+    limite = adesso - timedelta(days=max(1, int(giorni)))
+    db = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        riga = db.execute(
+            """
+            SELECT stato, prenotato_il, pubblicato_il
+            FROM blocco_duplicati_canali
+            WHERE canale = ? AND asin = ?
+            """,
+            (canale, asin),
+        ).fetchone()
+        if riga:
+            stato, prenotato_il, pubblicato_il = riga
+            data_pubblicazione = _data_sqlite(pubblicato_il)
+            data_prenotazione = _data_sqlite(prenotato_il)
+            occupato = (
+                data_pubblicazione is not None and data_pubblicazione >= limite
+            ) or (
+                stato == "prenotata"
+                and data_prenotazione is not None
+                and data_prenotazione >= adesso - timedelta(minutes=30)
+            )
+            if occupato:
+                db.execute("ROLLBACK")
+                return False
+        db.execute(
+            """
+            INSERT INTO blocco_duplicati_canali (
+                canale, asin, stato, prenotato_il, pubblicato_il
+            ) VALUES (?, ?, 'prenotata', ?, NULL)
+            ON CONFLICT(canale, asin) DO UPDATE SET
+                stato = 'prenotata',
+                prenotato_il = excluded.prenotato_il,
+                pubblicato_il = NULL
+            """,
+            (canale, asin, adesso.isoformat(timespec="seconds")),
+        )
+        db.execute("COMMIT")
+        return True
+    except Exception:
+        try:
+            db.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        db.close()
+
+
+def _conferma_asin_pubblicato(asin, canale):
+    if not asin:
+        return
+    canale = "casa" if canale == "casa" else "tech"
+    db = sqlite3.connect(DB_PATH, timeout=30)
+    db.execute(
+        """
+        UPDATE blocco_duplicati_canali
+        SET stato = 'pubblicata', pubblicato_il = ?
+        WHERE canale = ? AND asin = ?
+        """,
+        (datetime.now(ROMA_TZ).isoformat(timespec="seconds"), canale, asin),
+    )
+    db.commit()
+    db.close()
+
+
+class OffertaDuplicataError(RuntimeError):
+    pass
 
 def _chiave_famiglia_prodotto(prodotto):
     """Raggruppa colori, capacità e confezioni dello stesso modello."""
@@ -4663,7 +4822,7 @@ async def _notifica_admin_automazione(bot, testo):
         print(f"Errore notifica automazione: {errore}")
 
 
-async def cerca_offerta_automatica(configurazione, categoria_iniziale):
+async def cerca_offerta_automatica(configurazione, categoria_iniziale, canale="tech"):
     categorie = list(configurazione["categorie"])
     if categoria_iniziale in categorie:
         indice = categorie.index(categoria_iniziale)
@@ -4713,7 +4872,9 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale):
                     statistiche["sconto"] += 1
                     continue
                 if _asin_gia_pubblicato(
-                    prodotto["asin"], configurazione["giorni_blocco_duplicati"]
+                    prodotto["asin"],
+                    configurazione["giorni_blocco_duplicati"],
+                    canale,
                 ):
                     statistiche["duplicati"] += 1
                     continue
@@ -4837,11 +4998,22 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
     )
     tastiera = tastiera_offerta_automatica(prodotto["link"])
     foto = await prepara_foto_automatica(prodotto["immagine"])
-    telegram_chat_id = (
-        CASA_CHANNEL_ID if canale == "casa"
-        else CHANNEL_ID if canale == "tech"
-        else canale_pubblicazione_per_categoria(prodotto.get("categoria"))
+    canale_effettivo = (
+        canale if canale in {"tech", "casa"}
+        else "casa" if prodotto.get("categoria") in CASA_CATEGORIE
+        else "tech"
     )
+    telegram_chat_id = CASA_CHANNEL_ID if canale_effettivo == "casa" else CHANNEL_ID
+    giorni_blocco = leggi_config_automatica(canale_effettivo)[
+        "giorni_blocco_duplicati"
+    ]
+    if not _prenota_asin_pubblicazione(
+        prodotto.get("asin"), canale_effettivo, giorni_blocco
+    ):
+        raise OffertaDuplicataError(
+            f"ASIN {prodotto.get('asin')} già pubblicato o in pubblicazione "
+            f"nel canale {canale_effettivo.upper()}."
+        )
     messaggio_telegram = await bot.send_photo(
         chat_id=telegram_chat_id,
         photo=foto,
@@ -4857,6 +5029,7 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
     foto_telegram = prodotto["immagine"]
     if messaggio_telegram.photo:
         foto_telegram = messaggio_telegram.photo[-1].file_id
+    _conferma_asin_pubblicato(prodotto.get("asin"), canale_effettivo)
     salva_offerta_recap(
         nome,
         prodotto["link"],
@@ -4890,7 +5063,9 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canal
         return
 
     try:
-        prodotto, statistiche = await cerca_offerta_automatica(configurazione, categoria)
+        prodotto, statistiche = await cerca_offerta_automatica(
+            configurazione, categoria, canale
+        )
         if not prodotto:
             _aggiorna_slot_automatico(data_slot, slot_ora_db, "nessuna_offerta")
             await _notifica_admin_automazione(
@@ -4934,6 +5109,14 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canal
         )
         if canale == "casa":
             await tenta_pubblicazione_raccolta_casa(app)
+    except OffertaDuplicataError as errore:
+        _aggiorna_slot_automatico(data_slot, slot_ora_db, "duplicato")
+        print(f"Invio automatico bloccato come duplicato: {errore}")
+        await _notifica_admin_automazione(
+            app.bot,
+            f"🔁 Pubblicazione evitata nel canale {canale.upper()}: "
+            "il prodotto era già presente o in pubblicazione.",
+        )
     except Exception as errore:
         _aggiorna_slot_automatico(data_slot, slot_ora_db, "errore")
         print(f"Errore invio automatico: {errore}")
@@ -10510,8 +10693,7 @@ def main():
             pattern=(
                 r"^(selective_menu|selective_score|selective_score_[3-8]|"
                 r"selective_bonus|selective_bonus_(20|25|30|35|40)|selective_amazon|"
-                r"selective_searches|selective_searches_(3|6|9)|selective_duplicates|"
-                r"selective_duplicates_(3|7|10|14|30)|selective_variants|"
+                r"selective_searches|selective_searches_(3|6|9)|selective_variants|"
                 r"selective_reset|selective_reset_yes)$"
             ),
         )
@@ -10543,6 +10725,7 @@ def main():
             gestisci_automazione,
             pattern=(
                 r"^(auto_toggle|auto_sconto|auto_disc_[0-9]+|"
+                r"auto_duplicates|auto_duplicates_(1|3|7|10|14|30)|"
                 r"auto_categorie|auto_cat_[a-z]+|auto_qualita|"
                 r"auto_quality_(standard|selettiva|marche))$"
             ),
