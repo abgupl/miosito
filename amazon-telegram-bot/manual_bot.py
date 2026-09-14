@@ -138,6 +138,53 @@ AUTO_HASHTAG = {
     "giocattoli": "#GiochiEGiocattoli",
 }
 
+# Raccolte economiche pubblicate esclusivamente nel canale CASA. Ogni tema
+# mantiene ricerche e parole di pertinenza proprie, evitando raccolte casuali.
+RACCOLTE_CASA_TEMI = {
+    "bagno": {
+        "etichetta": "🛁 BAGNO",
+        "titolo": "PICCOLI AFFARI PER IL BAGNO",
+        "termini": ("accessori bagno offerta", "organizer bagno", "prodotti bagno casa"),
+        "parole": {"bagno", "doccia", "sapone", "spazzolino", "wc", "asciugamano", "portaoggetti"},
+    },
+    "cucina": {
+        "etichetta": "🍳 CUCINA",
+        "titolo": "PICCOLI AFFARI PER LA CUCINA",
+        "termini": ("accessori cucina offerta", "utensili cucina", "contenitori cucina"),
+        "parole": {"cucina", "utensile", "contenitore", "spatola", "mestolo", "tagliere", "barattolo"},
+    },
+    "pulizia": {
+        "etichetta": "🧽 PULIZIA",
+        "titolo": "PICCOLI AFFARI PER LA PULIZIA",
+        "termini": ("prodotti pulizia casa offerta", "panni spugne pulizia", "detergenti casa offerta"),
+        "parole": {"pulizia", "detergente", "spugna", "panno", "sacchetti", "mocio", "scopa"},
+    },
+    "organizzazione": {
+        "etichetta": "🧺 ORGANIZZAZIONE",
+        "titolo": "PICCOLI AFFARI SALVASPAZIO",
+        "termini": ("organizer casa offerta", "accessori salvaspazio", "scatole organizzazione casa"),
+        "parole": {"organizer", "organizzazione", "salvaspazio", "scatola", "cassetto", "armadio", "contenitore"},
+    },
+    "dispensa": {
+        "etichetta": "🍝 DISPENSA",
+        "titolo": "OFFERTE PER LA DISPENSA",
+        "termini": ("pasta confezione multipla offerta", "riso pacco convenienza", "caffè offerta confezione"),
+        "parole": {"pasta", "riso", "caffè", "tonno", "conserve", "dispensa", "confezione"},
+    },
+    "faidate": {
+        "etichetta": "🔧 PICCOLO FAI DA TE",
+        "titolo": "PICCOLI AFFARI FAI DA TE",
+        "termini": ("piccoli accessori fai da te", "minuteria bricolage offerta", "nastri punte utensili offerta"),
+        "parole": {"fai da te", "bricolage", "nastro", "punta", "vite", "gancio", "utensile"},
+    },
+}
+
+MARCHI_RACCOLTE_CASA = {
+    "amazon basics", "ariel", "barilla", "bialetti", "brabantia", "caffè borbone",
+    "cif", "dash", "finish", "folletto", "lavazza", "mastro lindo", "nivea",
+    "rio mare", "scotti", "scottex", "tescoma", "vileda", "wpro",
+}
+
 MARCHI_AUTORIZZATI = {
     "elettronica": {
         "amazon", "amazon basics", "anker", "apple", "baseus", "belkin", "bose",
@@ -1414,6 +1461,43 @@ def inizializza_automazione():
         )
     """)
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS raccolte_casa_temi (
+            tema TEXT PRIMARY KEY
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS raccolte_casa (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tema TEXT NOT NULL,
+            telegram_chat_id TEXT NOT NULL,
+            telegram_message_id INTEGER,
+            telegram_photo_file_id TEXT,
+            pubblicata_il TEXT NOT NULL,
+            stato TEXT NOT NULL DEFAULT 'pubblicata'
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS raccolte_casa_prodotti (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            raccolta_id INTEGER NOT NULL,
+            posizione INTEGER NOT NULL,
+            asin TEXT NOT NULL,
+            nome TEXT NOT NULL,
+            link TEXT NOT NULL,
+            prezzo TEXT,
+            vecchio_prezzo TEXT,
+            immagine_url TEXT,
+            sconto INTEGER DEFAULT 0,
+            stato TEXT NOT NULL DEFAULT 'pubblicata',
+            verifiche_fallite INTEGER DEFAULT 0,
+            ultima_verifica TEXT,
+            UNIQUE(raccolta_id, asin),
+            FOREIGN KEY (raccolta_id) REFERENCES raccolte_casa(id)
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_raccolte_casa_data ON raccolte_casa(pubblicata_il DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_raccolte_prodotti_asin ON raccolte_casa_prodotti(asin)")
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS invii_automatici (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             asin TEXT,
@@ -1475,6 +1559,28 @@ def inizializza_automazione():
         cur.execute(
             "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
             (f"casa:{chiave}", defaults_casa[chiave]),
+        )
+
+    defaults_raccolte = {
+        "raccolte_attive": "0",
+        "raccolte_frequenza_post": "4",
+        "raccolte_massimo_giorno": "1",
+        "raccolte_quantita": "4",
+        "raccolte_prezzo_massimo": "25",
+        "raccolte_sconto_minimo": "10",
+        "raccolte_qualita": "selettiva",
+        "raccolte_indice_tema": "0",
+        "raccolte_ultimo_tentativo": "",
+    }
+    for chiave, valore in defaults_raccolte.items():
+        cur.execute(
+            "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
+            (f"casa:{chiave}", valore),
+        )
+    if not cur.execute("SELECT 1 FROM raccolte_casa_temi LIMIT 1").fetchone():
+        cur.executemany(
+            "INSERT INTO raccolte_casa_temi (tema) VALUES (?)",
+            [(tema,) for tema in RACCOLTE_CASA_TEMI],
         )
 
     # Nuova configurazione selettiva: applicata una sola volta e senza
@@ -1719,6 +1825,52 @@ def salva_config_automatica(chiave, valore, canale="tech"):
         "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
         (_chiave_config_canale(canale, chiave), str(valore)),
     )
+    db.commit()
+    db.close()
+
+
+def leggi_config_raccolte_casa():
+    db = sqlite3.connect(DB_PATH)
+    valori = dict(db.execute(
+        "SELECT chiave, valore FROM configurazione_automatica WHERE chiave LIKE 'casa:raccolte_%'"
+    ).fetchall())
+    temi = [
+        riga[0] for riga in db.execute(
+            "SELECT tema FROM raccolte_casa_temi ORDER BY tema"
+        ).fetchall()
+        if riga[0] in RACCOLTE_CASA_TEMI
+    ]
+    db.close()
+    valore = lambda chiave, default: valori.get(f"casa:{chiave}", default)
+    return {
+        "attive": valore("raccolte_attive", "0") == "1",
+        "frequenza_post": int(valore("raccolte_frequenza_post", "4")),
+        "massimo_giorno": int(valore("raccolte_massimo_giorno", "1")),
+        "quantita": int(valore("raccolte_quantita", "4")),
+        "prezzo_massimo": int(valore("raccolte_prezzo_massimo", "25")),
+        "sconto_minimo": int(valore("raccolte_sconto_minimo", "10")),
+        "qualita": valore("raccolte_qualita", "selettiva"),
+        "indice_tema": int(valore("raccolte_indice_tema", "0")),
+        "ultimo_tentativo": valore("raccolte_ultimo_tentativo", ""),
+        "temi": temi,
+    }
+
+
+def salva_config_raccolta(chiave, valore):
+    salva_config_automatica(f"raccolte_{chiave}", valore, "casa")
+
+
+def imposta_tema_raccolta(tema):
+    if tema not in RACCOLTE_CASA_TEMI:
+        return
+    db = sqlite3.connect(DB_PATH)
+    presente = db.execute(
+        "SELECT 1 FROM raccolte_casa_temi WHERE tema=?", (tema,)
+    ).fetchone()
+    if presente:
+        db.execute("DELETE FROM raccolte_casa_temi WHERE tema=?", (tema,))
+    else:
+        db.execute("INSERT INTO raccolte_casa_temi (tema) VALUES (?)", (tema,))
     db.commit()
     db.close()
 
@@ -2344,6 +2496,10 @@ def tastiera_automazione(configurazione, canale):
         righe.append([
             InlineKeyboardButton("⚙️ PERSONALIZZA SELETTIVA", callback_data="selective_menu")
         ])
+    if canale == "casa":
+        righe.append([
+            InlineKeyboardButton("🧺 RACCOLTE CASA", callback_data="casa_collections")
+        ])
     righe.extend([
         [InlineKeyboardButton("🔎 CERCA OFFERTE", callback_data=f"offer_search_{canale}")],
         [InlineKeyboardButton("🧪 TESTA RICERCA", callback_data="auto_test")],
@@ -2355,6 +2511,128 @@ def tastiera_automazione(configurazione, canale):
 def _auto_canale_corrente(context):
     canale = context.user_data.get("auto_canale", "tech")
     return canale if canale in {"tech", "casa"} else "tech"
+
+
+async def mostra_menu_raccolte_casa(query):
+    configurazione = leggi_config_raccolte_casa()
+    stato = "🟢 ATTIVE" if configurazione["attive"] else "🔴 DISATTIVATE"
+    qualita = configurazione["qualita"].upper()
+    temi = [RACCOLTE_CASA_TEMI[x]["etichetta"] for x in configurazione["temi"]]
+    await query.edit_message_text(
+        "🧺 RACCOLTE CASA\n\n"
+        f"Stato: {stato}\n"
+        f"Frequenza: ogni {configurazione['frequenza_post']} post CASA\n"
+        f"Limite: {configurazione['massimo_giorno']} raccolta al giorno\n"
+        f"Prodotti: {configurazione['quantita']}\n"
+        f"Prezzo massimo: {configurazione['prezzo_massimo']} €\n"
+        f"Sconto minimo: {configurazione['sconto_minimo']}%\n"
+        f"Qualità: {qualita}\n"
+        f"Temi: {', '.join(temi) if temi else 'nessuno'}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"STATO: {stato}", callback_data="casa_bundle_toggle")],
+            [InlineKeyboardButton(
+                f"🔁 OGNI {configurazione['frequenza_post']} POST CASA",
+                callback_data="casa_bundle_frequency",
+            )],
+            [InlineKeyboardButton(
+                f"📦 PRODOTTI: {configurazione['quantita']}",
+                callback_data="casa_bundle_quantity",
+            )],
+            [InlineKeyboardButton(
+                f"💶 PREZZO MASSIMO: {configurazione['prezzo_massimo']} €",
+                callback_data="casa_bundle_price",
+            )],
+            [InlineKeyboardButton(
+                f"📉 SCONTO MINIMO: {configurazione['sconto_minimo']}%",
+                callback_data="casa_bundle_discount",
+            )],
+            [InlineKeyboardButton(
+                f"🎯 QUALITÀ: {qualita}", callback_data="casa_bundle_quality"
+            )],
+            [InlineKeyboardButton("🗂 SCEGLI TEMI", callback_data="casa_bundle_themes")],
+            [InlineKeyboardButton("🧪 TESTA RACCOLTA", callback_data="casa_bundle_test")],
+            [InlineKeyboardButton("⬅️ TORNA ALL'AUTOMAZIONE CASA", callback_data="auto_menu")],
+        ]),
+    )
+
+
+async def mostra_temi_raccolte_casa(query):
+    selezionati = set(leggi_config_raccolte_casa()["temi"])
+    tastiera = []
+    for tema, dati in RACCOLTE_CASA_TEMI.items():
+        segno = "✅" if tema in selezionati else "▫️"
+        tastiera.append([InlineKeyboardButton(
+            f"{segno} {dati['etichetta']}", callback_data=f"casa_bundle_theme_{tema}"
+        )])
+    tastiera.append([InlineKeyboardButton("✅ FATTO", callback_data="casa_collections")])
+    await query.edit_message_text(
+        "🗂 Scegli i temi delle raccolte. Ogni post conterrà prodotti dello stesso tema:",
+        reply_markup=InlineKeyboardMarkup(tastiera),
+    )
+
+
+async def gestisci_raccolte_casa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    azione = query.data
+    configurazione = leggi_config_raccolte_casa()
+
+    if azione == "casa_collections":
+        return await mostra_menu_raccolte_casa(query)
+    if azione == "casa_bundle_toggle":
+        if not configurazione["attive"] and not configurazione["temi"]:
+            await query.message.reply_text("❌ Seleziona prima almeno un tema.")
+            return
+        salva_config_raccolta("attive", 0 if configurazione["attive"] else 1)
+        return await mostra_menu_raccolte_casa(query)
+    menu_valori = {
+        "casa_bundle_frequency": ("Ogni quanti post CASA?", (2, 4, 6, 8), "frequency", " POST"),
+        "casa_bundle_quantity": ("Quanti prodotti nella raccolta?", (2, 4, 6), "quantity", ""),
+        "casa_bundle_price": ("Prezzo massimo per prodotto", (15, 25, 40, 60), "price", " €"),
+        "casa_bundle_discount": ("Sconto minimo", (5, 10, 15, 20), "discount", "%"),
+    }
+    if azione in menu_valori:
+        titolo, valori, prefisso, suffisso = menu_valori[azione]
+        return await query.edit_message_text(
+            titolo,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    f"{valore}{suffisso}", callback_data=f"casa_bundle_{prefisso}_{valore}"
+                ) for valore in valori],
+                [InlineKeyboardButton("⬅️ INDIETRO", callback_data="casa_collections")],
+            ]),
+        )
+    impostazioni = {
+        "casa_bundle_frequency_": "frequenza_post",
+        "casa_bundle_quantity_": "quantita",
+        "casa_bundle_price_": "prezzo_massimo",
+        "casa_bundle_discount_": "sconto_minimo",
+    }
+    for prefisso, chiave in impostazioni.items():
+        if azione.startswith(prefisso):
+            salva_config_raccolta(chiave, int(azione[len(prefisso):]))
+            return await mostra_menu_raccolte_casa(query)
+    if azione == "casa_bundle_quality":
+        return await query.edit_message_text(
+            "🎯 Qualità delle raccolte",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("SELETTIVA", callback_data="casa_bundle_quality_selettiva")],
+                [InlineKeyboardButton("STANDARD", callback_data="casa_bundle_quality_standard")],
+                [InlineKeyboardButton("⬅️ INDIETRO", callback_data="casa_collections")],
+            ]),
+        )
+    if azione.startswith("casa_bundle_quality_"):
+        salva_config_raccolta("qualita", azione.rsplit("_", 1)[1])
+        return await mostra_menu_raccolte_casa(query)
+    if azione == "casa_bundle_themes":
+        return await mostra_temi_raccolte_casa(query)
+    if azione.startswith("casa_bundle_theme_"):
+        imposta_tema_raccolta(azione.replace("casa_bundle_theme_", "", 1))
+        return await mostra_temi_raccolte_casa(query)
+    if azione == "casa_bundle_test":
+        return await testa_raccolta_casa(query, context)
 
 
 async def mostra_menu_selettiva(query, context):
@@ -3130,6 +3408,349 @@ async def prepara_foto_automatica(image_url):
         return image_url
 
 
+def _tema_raccolta_successivo(configurazione):
+    temi = [tema for tema in configurazione["temi"] if tema in RACCOLTE_CASA_TEMI]
+    if not temi:
+        return None
+    indice = configurazione["indice_tema"] % len(temi)
+    salva_config_raccolta("indice_tema", (indice + 1) % len(temi))
+    return temi[indice]
+
+
+def _prodotto_valido_per_raccolta(
+    prodotto,
+    tema,
+    configurazione,
+    parole_indesiderate=None,
+    marchi_casa=None,
+):
+    if not prodotto or prodotto.get("prezzo_valore") is None:
+        return False
+    if float(prodotto["prezzo_valore"]) > configurazione["prezzo_massimo"]:
+        return False
+    if int(prodotto.get("sconto") or 0) < configurazione["sconto_minimo"]:
+        return False
+    titolo = _normalizza_qualita(prodotto.get("nome"))
+    marchio = _normalizza_qualita(prodotto.get("marchio"))
+    venditore = _normalizza_qualita(prodotto.get("venditore"))
+    parole_indesiderate = (
+        leggi_parole_indesiderate()
+        if parole_indesiderate is None else parole_indesiderate
+    )
+    if any(_testo_contiene_termine(titolo, parola) for parola in parole_indesiderate):
+        return False
+    pertinente = any(
+        _testo_contiene_termine(titolo, parola)
+        for parola in RACCOLTE_CASA_TEMI[tema]["parole"]
+    )
+    if not pertinente:
+        return False
+    if configurazione["qualita"] == "standard":
+        return True
+    marchi_casa = (
+        {_normalizza_qualita(x) for x in leggi_marchi_qualita("casa")}
+        if marchi_casa is None else marchi_casa
+    )
+    marchi_raccolte = {_normalizza_qualita(x) for x in MARCHI_RACCOLTE_CASA}
+    marchio_noto = bool(marchio) and any(
+        marchio == candidato or (len(candidato) >= 4 and candidato in marchio)
+        for candidato in marchi_casa | marchi_raccolte
+    )
+    return marchio_noto or "amazon" in venditore
+
+
+async def cerca_prodotti_raccolta_casa(configurazione, tema):
+    trovati = {}
+    statistiche = {"ricerche": 0, "analizzati": 0, "prezzo_sconto": 0, "qualita": 0, "duplicati": 0}
+    parole_indesiderate = leggi_parole_indesiderate()
+    marchi_casa = {_normalizza_qualita(x) for x in leggi_marchi_qualita("casa")}
+    for termine in RACCOLTE_CASA_TEMI[tema]["termini"]:
+        statistiche["ricerche"] += 1
+        try:
+            items = await asyncio.to_thread(search_items, termine, "All", 10)
+        except Exception as errore:
+            print(f"Errore ricerca raccolta CASA ({tema} - {termine}): {errore}")
+            continue
+        for item in items:
+            statistiche["analizzati"] += 1
+            prodotto = estrai_prodotto_creators(item)
+            if not prodotto:
+                continue
+            if (
+                float(prodotto.get("prezzo_valore") or 0) > configurazione["prezzo_massimo"]
+                or int(prodotto.get("sconto") or 0) < configurazione["sconto_minimo"]
+            ):
+                statistiche["prezzo_sconto"] += 1
+                continue
+            if _asin_gia_pubblicato(prodotto.get("asin"), 10):
+                statistiche["duplicati"] += 1
+                continue
+            if not _prodotto_valido_per_raccolta(
+                prodotto,
+                tema,
+                configurazione,
+                parole_indesiderate=parole_indesiderate,
+                marchi_casa=marchi_casa,
+            ):
+                statistiche["qualita"] += 1
+                continue
+            prodotto["categoria"] = "casa"
+            prodotto["tema_raccolta"] = tema
+            trovati[prodotto["asin"]] = prodotto
+        if len(trovati) >= configurazione["quantita"] * 2:
+            break
+        await asyncio.sleep(1.0)
+
+    candidati = _raggruppa_varianti_prodotti(list(trovati.values()))
+    candidati.sort(
+        key=lambda p: (int(p.get("sconto") or 0), -float(p.get("prezzo_valore") or 0)),
+        reverse=True,
+    )
+    selezionati = []
+    marchi_usati = set()
+    for prodotto in candidati:
+        marchio = _normalizza_qualita(prodotto.get("marchio"))
+        chiave_marchio = marchio or _normalizza_qualita(prodotto.get("nome")).split(" ")[0]
+        if chiave_marchio in marchi_usati:
+            continue
+        marchi_usati.add(chiave_marchio)
+        selezionati.append(prodotto)
+        if len(selezionati) >= configurazione["quantita"]:
+            break
+    return selezionati, statistiche
+
+
+def crea_collage_raccolta_casa(prodotti, tema):
+    canvas = Image.new("RGB", (1080, 1080), "white")
+    disegno = ImageDraw.Draw(canvas)
+    disegno.rounded_rectangle((8, 8, 1072, 1072), radius=40, outline="#F20D18", width=18)
+    disegno.rounded_rectangle((26, 26, 1054, 1054), radius=22, outline="#171717", width=3)
+    font_titolo = _font_terminata(46)
+    font_numero = _font_terminata(42)
+    titolo = RACCOLTE_CASA_TEMI[tema]["titolo"]
+    disegno.text((48, 62), titolo, font=font_titolo, fill="#171717")
+
+    if LOGO_PATH.exists():
+        logo = Image.open(LOGO_PATH).convert("RGBA")
+        logo = ImageOps.contain(logo, (155, 125), Image.Resampling.LANCZOS)
+        canvas.paste(logo, (1028 - logo.width, 30), logo)
+
+    colonne = 3 if len(prodotti) > 4 else 2
+    righe = 2 if len(prodotti) > 2 else 1
+    alto_griglia = 880
+    larghezza_cella = 1000 // colonne
+    altezza_cella = alto_griglia // righe
+    for indice, prodotto in enumerate(prodotti):
+        colonna = indice % colonne
+        riga = indice // colonne
+        x0 = 40 + colonna * larghezza_cella
+        y0 = 160 + riga * altezza_cella
+        x1 = x0 + larghezza_cella - 12
+        y1 = y0 + altezza_cella - 12
+        disegno.rounded_rectangle(
+            (x0, y0, x1, y1), radius=25, fill="#FFFFFF", outline="#E5E5E5", width=3
+        )
+        try:
+            risposta = requests.get(prodotto["immagine"], timeout=15)
+            risposta.raise_for_status()
+            foto = Image.open(BytesIO(risposta.content)).convert("RGB")
+            foto = ImageOps.contain(
+                foto,
+                (larghezza_cella - 80, altezza_cella - 80),
+                Image.Resampling.LANCZOS,
+            )
+            posizione = (
+                x0 + (larghezza_cella - 12 - foto.width) // 2,
+                y0 + (altezza_cella - 12 - foto.height) // 2,
+            )
+            canvas.paste(foto, posizione)
+        except Exception as errore:
+            print(f"Immagine raccolta non disponibile: {errore}")
+        disegno.ellipse((x0 + 14, y0 + 14, x0 + 76, y0 + 76), fill="#E30613")
+        numero = str(indice + 1)
+        bbox = disegno.textbbox((0, 0), numero, font=font_numero)
+        disegno.text(
+            (x0 + 45 - (bbox[2] - bbox[0]) // 2, y0 + 43 - (bbox[3] - bbox[1]) // 2 - bbox[1]),
+            numero, font=font_numero, fill="white",
+        )
+    output = BytesIO()
+    output.name = "raccolta_casa_bestprice24h.jpg"
+    canvas.save(output, "JPEG", quality=92, optimize=True)
+    output.seek(0)
+    return output
+
+
+def _prezzo_caption_raccolta(valore):
+    testo = str(valore or "—").strip()
+    return testo if testo == "—" or "€" in testo else f"{testo} €"
+
+
+def crea_caption_raccolta_casa(prodotti, tema, anteprima=False):
+    intestazione = "🧪 <b>ANTEPRIMA — " if anteprima else "🧺 <b>"
+    righe = [intestazione + RACCOLTE_CASA_TEMI[tema]["titolo"] + "</b>"]
+    for indice, prodotto in enumerate(prodotti, start=1):
+        nome = accorcia_nome_articolo(prodotto["nome"])
+        if len(nome) > 52:
+            nome = nome[:49].rsplit(" ", 1)[0] + "…"
+        link = html.escape(prodotto["link"], quote=True)
+        if prodotto.get("stato") == "terminata":
+            righe.append(
+                f'#{indice} 🔴 <s><a href="{link}">{html.escape(nome)}</a></s>\n'
+                "<b>OFFERTA TERMINATA</b>"
+            )
+            continue
+        prima = _prezzo_caption_raccolta(prodotto.get("vecchio_prezzo"))
+        ora = _prezzo_caption_raccolta(prodotto.get("prezzo"))
+        righe.append(
+            f'#{indice} <a href="{link}">{html.escape(nome)}</a>\n'
+            f'❌ Prima: <s>{html.escape(prima)}</s>\n'
+            f'✅ Ora: <b>{html.escape(ora)}</b>'
+        )
+    righe.append("⚡ Prezzi e disponibilità possono variare.")
+    if anteprima:
+        righe.append("Anteprima non pubblicata")
+    return "\n\n".join(righe)
+
+
+def tastiera_raccolta_casa():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
+        InlineKeyboardButton("🏠 CANALE CASA", url=CASA_CHANNEL_URL),
+    ]])
+
+
+def salva_raccolta_casa(prodotti, tema, messaggio_telegram, foto_file_id):
+    adesso = datetime.now(ROMA_TZ).isoformat(timespec="seconds")
+    db = sqlite3.connect(DB_PATH)
+    cursore = db.execute(
+        """
+        INSERT INTO raccolte_casa (
+            tema, telegram_chat_id, telegram_message_id, telegram_photo_file_id,
+            pubblicata_il, stato
+        ) VALUES (?, ?, ?, ?, ?, 'pubblicata')
+        """,
+        (tema, str(CASA_CHANNEL_ID), messaggio_telegram.message_id, foto_file_id, adesso),
+    )
+    raccolta_id = cursore.lastrowid
+    for posizione, prodotto in enumerate(prodotti, start=1):
+        db.execute(
+            """
+            INSERT INTO raccolte_casa_prodotti (
+                raccolta_id, posizione, asin, nome, link, prezzo, vecchio_prezzo,
+                immagine_url, sconto, stato, ultima_verifica
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pubblicata', ?)
+            """,
+            (
+                raccolta_id, posizione, prodotto["asin"], prodotto["nome"],
+                prodotto["link"], prodotto.get("prezzo"), prodotto.get("vecchio_prezzo"),
+                prodotto.get("immagine"), int(prodotto.get("sconto") or 0), adesso,
+            ),
+        )
+    db.commit()
+    db.close()
+    for prodotto in prodotti:
+        salva_offerta_recap(
+            prodotto["nome"], prodotto["link"], prodotto.get("prezzo"),
+            prodotto.get("vecchio_prezzo") or "NO", messaggio=crea_caption_raccolta_casa(prodotti, tema),
+            foto_file_id=foto_file_id, template="raccolta", asin=prodotto.get("asin"),
+            categoria=tema, telegram_chat_id=CASA_CHANNEL_ID, origine="raccolta",
+            sconto=prodotto.get("sconto", 0), telegram_message_id=messaggio_telegram.message_id,
+        )
+    return raccolta_id
+
+
+async def pubblica_raccolta_casa(bot, prodotti, tema):
+    collage = await asyncio.to_thread(crea_collage_raccolta_casa, prodotti, tema)
+    caption = crea_caption_raccolta_casa(prodotti, tema)
+    messaggio = await bot.send_photo(
+        chat_id=CASA_CHANNEL_ID,
+        photo=collage,
+        caption=caption,
+        parse_mode="HTML",
+        reply_markup=tastiera_raccolta_casa(),
+    )
+    foto_file_id = messaggio.photo[-1].file_id if messaggio.photo else None
+    salva_raccolta_casa(prodotti, tema, messaggio, foto_file_id)
+    return messaggio
+
+
+async def testa_raccolta_casa(query, context):
+    configurazione = leggi_config_raccolte_casa()
+    tema = _tema_raccolta_successivo(configurazione)
+    if not tema:
+        await query.message.reply_text("❌ Seleziona almeno un tema.")
+        return
+    attesa = await query.message.reply_text(
+        f"🔎 Cerco una raccolta {RACCOLTE_CASA_TEMI[tema]['etichetta']}…"
+    )
+    prodotti, statistiche = await cerca_prodotti_raccolta_casa(configurazione, tema)
+    if len(prodotti) < 2:
+        await attesa.edit_text(
+            "ℹ️ Non ho trovato almeno 2 prodotti validi.\n\n"
+            f"Ricerche: {statistiche['ricerche']} · analizzati: {statistiche['analizzati']}\n"
+            f"Prezzo/sconto: {statistiche['prezzo_sconto']} · qualità: {statistiche['qualita']} "
+            f"· duplicati: {statistiche['duplicati']}"
+        )
+        return
+    await attesa.delete()
+    collage = await asyncio.to_thread(crea_collage_raccolta_casa, prodotti, tema)
+    await query.message.reply_photo(
+        photo=collage,
+        caption=crea_caption_raccolta_casa(prodotti, tema, anteprima=True),
+        parse_mode="HTML",
+    )
+
+
+def raccolta_casa_pronta(configurazione):
+    oggi = datetime.now(ROMA_TZ).date().isoformat()
+    db = sqlite3.connect(DB_PATH)
+    pubblicate_oggi = db.execute(
+        "SELECT COUNT(*) FROM raccolte_casa WHERE substr(pubblicata_il,1,10)=?",
+        (oggi,),
+    ).fetchone()[0]
+    ultima = db.execute(
+        "SELECT pubblicata_il FROM raccolte_casa ORDER BY pubblicata_il DESC LIMIT 1"
+    ).fetchone()
+    condizioni = ["telegram_chat_id=?", "COALESCE(origine,'manuale')<>'raccolta'"]
+    parametri = [str(CASA_CHANNEL_ID)]
+    if ultima:
+        condizioni.append("pubblicata_il>?")
+        parametri.append(ultima[0])
+    post_da_ultima = db.execute(
+        f"SELECT COUNT(*) FROM recap_offerte WHERE {' AND '.join(condizioni)}", parametri
+    ).fetchone()[0]
+    db.close()
+    return (
+        pubblicate_oggi < configurazione["massimo_giorno"]
+        and post_da_ultima >= configurazione["frequenza_post"]
+    )
+
+
+async def tenta_pubblicazione_raccolta_casa(app):
+    configurazione = leggi_config_raccolte_casa()
+    if not configurazione["attive"] or not raccolta_casa_pronta(configurazione):
+        return False
+    tema = _tema_raccolta_successivo(configurazione)
+    if not tema:
+        return False
+    salva_config_raccolta("ultimo_tentativo", datetime.now(ROMA_TZ).isoformat(timespec="seconds"))
+    prodotti, statistiche = await cerca_prodotti_raccolta_casa(configurazione, tema)
+    if len(prodotti) < 2:
+        await _notifica_admin_automazione(
+            app.bot,
+            f"ℹ️ Raccolta CASA {RACCOLTE_CASA_TEMI[tema]['etichetta']} rimandata: "
+            f"trovati {len(prodotti)} prodotti validi dopo {statistiche['ricerche']} ricerche.",
+        )
+        return False
+    await pubblica_raccolta_casa(app.bot, prodotti, tema)
+    await _notifica_admin_automazione(
+        app.bot,
+        f"✅ Raccolta CASA pubblicata: {RACCOLTE_CASA_TEMI[tema]['titolo']} "
+        f"({len(prodotti)} prodotti).",
+    )
+    return True
+
+
 def _font_terminata(dimensione):
     percorsi = (
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -3864,7 +4485,7 @@ def _asin_gia_pubblicato(asin, giorni=10):
     if not asin:
         return True
     db = sqlite3.connect(DB_PATH)
-    riga = db.execute(
+    riga_automatica = db.execute(
         """
         SELECT creato_il FROM invii_automatici
         WHERE asin = ? AND stato IN ('pubblicata', 'terminata')
@@ -3872,14 +4493,29 @@ def _asin_gia_pubblicato(asin, giorni=10):
         """,
         (asin,),
     ).fetchone()
+    riga_recap = db.execute(
+        """
+        SELECT pubblicata_il FROM recap_offerte
+        WHERE asin = ? AND COALESCE(stato, 'pubblicata') IN ('pubblicata', 'terminata')
+        ORDER BY pubblicata_il DESC LIMIT 1
+        """,
+        (asin,),
+    ).fetchone()
     db.close()
-    if not riga:
+    date_pubblicazione = [
+        riga[0] for riga in (riga_automatica, riga_recap) if riga and riga[0]
+    ]
+    if not date_pubblicazione:
         return False
     try:
-        pubblicata = datetime.fromisoformat(riga[0])
-        if pubblicata.tzinfo is None:
-            pubblicata = pubblicata.replace(tzinfo=ROMA_TZ)
-        return pubblicata >= datetime.now(ROMA_TZ) - timedelta(days=max(1, int(giorni)))
+        limite = datetime.now(ROMA_TZ) - timedelta(days=max(1, int(giorni)))
+        for valore in date_pubblicazione:
+            pubblicata = datetime.fromisoformat(valore)
+            if pubblicata.tzinfo is None:
+                pubblicata = pubblicata.replace(tzinfo=ROMA_TZ)
+            if pubblicata >= limite:
+                return True
+        return False
     except (TypeError, ValueError):
         return True
 
@@ -4196,6 +4832,8 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canal
                 else ""
             ),
         )
+        if canale == "casa":
+            await tenta_pubblicazione_raccolta_casa(app)
     except Exception as errore:
         _aggiorna_slot_automatico(data_slot, slot_ora_db, "errore")
         print(f"Errore invio automatico: {errore}")
@@ -4475,6 +5113,193 @@ async def _modifica_post_terminato(
     db.close()
 
 
+def _prodotti_raccolta_da_verificare():
+    """Restituisce i prodotti attivi delle raccolte con la stessa cadenza degli altri post."""
+    adesso = datetime.now(ROMA_TZ)
+    limite = adesso - timedelta(days=7)
+    db = sqlite3.connect(DB_PATH)
+    righe = db.execute(
+        """
+        SELECT p.id, p.raccolta_id, p.asin, p.nome,
+               COALESCE(p.verifiche_fallite, 0), p.ultima_verifica,
+               r.pubblicata_il
+        FROM raccolte_casa_prodotti p
+        JOIN raccolte_casa r ON r.id = p.raccolta_id
+        WHERE p.stato = 'pubblicata' AND r.pubblicata_il >= ?
+        ORDER BY r.pubblicata_il DESC, p.posizione
+        """,
+        (limite.isoformat(timespec="seconds"),),
+    ).fetchall()
+    db.close()
+    risultato = []
+    for riga in righe:
+        ultima = _data_api(riga[5])
+        pubblicata = _data_api(riga[6])
+        if not pubblicata:
+            continue
+        eta = adesso - pubblicata
+        if riga[4] > 0:
+            intervallo = timedelta(minutes=30)
+        elif eta <= timedelta(hours=24):
+            intervallo = timedelta(hours=2)
+        elif eta <= timedelta(hours=72):
+            intervallo = timedelta(hours=6)
+        else:
+            intervallo = timedelta(hours=24)
+        if not ultima or adesso - ultima >= intervallo:
+            risultato.append(riga[:5])
+    return risultato
+
+
+def _aggiorna_verifica_prodotto_raccolta(prodotto_id, fallita):
+    db = sqlite3.connect(DB_PATH)
+    adesso = datetime.now(ROMA_TZ).isoformat(timespec="seconds")
+    if fallita:
+        db.execute(
+            """
+            UPDATE raccolte_casa_prodotti
+            SET verifiche_fallite=COALESCE(verifiche_fallite, 0)+1,
+                ultima_verifica=? WHERE id=?
+            """,
+            (adesso, prodotto_id),
+        )
+    else:
+        db.execute(
+            """
+            UPDATE raccolte_casa_prodotti
+            SET verifiche_fallite=0, ultima_verifica=? WHERE id=?
+            """,
+            (adesso, prodotto_id),
+        )
+    db.commit()
+    riga = db.execute(
+        "SELECT COALESCE(verifiche_fallite, 0) FROM raccolte_casa_prodotti WHERE id=?",
+        (prodotto_id,),
+    ).fetchone()
+    db.close()
+    return riga[0] if riga else 0
+
+
+def _segna_prodotto_raccolta_terminato(prodotto_id):
+    db = sqlite3.connect(DB_PATH)
+    riga = db.execute(
+        "SELECT raccolta_id, asin FROM raccolte_casa_prodotti WHERE id=?",
+        (prodotto_id,),
+    ).fetchone()
+    if not riga:
+        db.close()
+        return None
+    raccolta_id, asin = riga
+    db.execute(
+        "UPDATE raccolte_casa_prodotti SET stato='terminata' WHERE id=?",
+        (prodotto_id,),
+    )
+    db.execute(
+        """
+        UPDATE recap_offerte SET stato='terminata'
+        WHERE asin=? AND template='raccolta'
+          AND telegram_message_id=(
+              SELECT telegram_message_id FROM raccolte_casa WHERE id=?
+          )
+        """,
+        (asin, raccolta_id),
+    )
+    attivi = db.execute(
+        "SELECT COUNT(*) FROM raccolte_casa_prodotti WHERE raccolta_id=? AND stato='pubblicata'",
+        (raccolta_id,),
+    ).fetchone()[0]
+    if not attivi:
+        db.execute("UPDATE raccolte_casa SET stato='terminata' WHERE id=?", (raccolta_id,))
+    db.commit()
+    db.close()
+    return raccolta_id
+
+
+def _dati_raccolta_casa(raccolta_id):
+    db = sqlite3.connect(DB_PATH)
+    raccolta = db.execute(
+        """
+        SELECT tema, telegram_chat_id, telegram_message_id
+        FROM raccolte_casa WHERE id=?
+        """,
+        (raccolta_id,),
+    ).fetchone()
+    righe = db.execute(
+        """
+        SELECT asin, nome, link, prezzo, vecchio_prezzo, immagine_url, sconto, stato
+        FROM raccolte_casa_prodotti WHERE raccolta_id=? ORDER BY posizione
+        """,
+        (raccolta_id,),
+    ).fetchall()
+    db.close()
+    prodotti = [
+        {
+            "asin": r[0], "nome": r[1], "link": r[2], "prezzo": r[3],
+            "vecchio_prezzo": r[4], "immagine": r[5], "sconto": r[6], "stato": r[7],
+        }
+        for r in righe
+    ]
+    return raccolta, prodotti
+
+
+async def _aggiorna_caption_raccolta_casa(bot, raccolta_id):
+    raccolta, prodotti = _dati_raccolta_casa(raccolta_id)
+    if not raccolta or not prodotti:
+        return
+    tema, chat_id, message_id = raccolta
+    await bot.edit_message_caption(
+        chat_id=chat_id or CASA_CHANNEL_ID,
+        message_id=message_id,
+        caption=crea_caption_raccolta_casa(prodotti, tema),
+        parse_mode="HTML",
+        reply_markup=tastiera_raccolta_casa(),
+    )
+
+
+async def controlla_raccolte_casa_terminate(app):
+    """Controlla ogni articolo del collage e aggiorna una sola volta la didascalia."""
+    righe = _prodotti_raccolta_da_verificare()
+    raccolte_modificate = set()
+    nomi_terminati = []
+    for posizione in range(0, len(righe), 10):
+        gruppo = righe[posizione:posizione + 10]
+        asins = [riga[2] for riga in gruppo if riga[2]]
+        if not asins:
+            continue
+        try:
+            items = await asyncio.to_thread(get_items, asins)
+        except Exception as errore:
+            print(f"Errore verifica raccolte CASA: {errore}")
+            continue
+        prodotti_api = {
+            getattr(item, "asin", None): estrai_prodotto_creators(item)
+            for item in items if getattr(item, "asin", None)
+        }
+        for prodotto_id, raccolta_id, asin, nome, _ in gruppo:
+            prodotto = prodotti_api.get(asin)
+            non_disponibile = not prodotto
+            fallimenti = _aggiorna_verifica_prodotto_raccolta(prodotto_id, non_disponibile)
+            sconto_azzerato = bool(prodotto and int(prodotto.get("sconto") or 0) == 0)
+            if sconto_azzerato or (non_disponibile and fallimenti >= 2):
+                raccolta_modificata = _segna_prodotto_raccolta_terminato(prodotto_id)
+                if raccolta_modificata:
+                    raccolte_modificate.add(raccolta_modificata)
+                    nomi_terminati.append(nome)
+        await asyncio.sleep(1.2)
+
+    for raccolta_id in raccolte_modificate:
+        try:
+            await _aggiorna_caption_raccolta_casa(app.bot, raccolta_id)
+        except Exception as errore:
+            print(f"Errore aggiornamento didascalia raccolta CASA: {errore}")
+    if nomi_terminati:
+        elenco = "\n".join(f"• {nome}" for nome in nomi_terminati[:8])
+        await _notifica_admin_automazione(
+            app.bot,
+            f"🔴 Prodotti terminati nelle raccolte CASA:\n{elenco}",
+        )
+
+
 async def controlla_offerte_terminate(app):
     while True:
         try:
@@ -4564,6 +5389,7 @@ async def controlla_offerte_terminate(app):
                             print(f"Errore modifica post terminato: {errore}")
 
                 await asyncio.sleep(1.2)
+            await controlla_raccolte_casa_terminate(app)
         except Exception as errore:
             print(f"Errore controllo offerte terminate: {errore}")
 
@@ -9482,6 +10308,21 @@ def main():
                 r"^(auto_toggle|auto_sconto|auto_disc_[0-9]+|"
                 r"auto_categorie|auto_cat_[a-z]+|auto_qualita|"
                 r"auto_quality_(standard|selettiva|marche))$"
+            ),
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            gestisci_raccolte_casa,
+            pattern=(
+                r"^(casa_collections|casa_bundle_toggle|casa_bundle_frequency|"
+                r"casa_bundle_frequency_(2|4|6|8)|casa_bundle_quantity|"
+                r"casa_bundle_quantity_(2|4|6)|casa_bundle_price|"
+                r"casa_bundle_price_(15|25|40|60)|casa_bundle_discount|"
+                r"casa_bundle_discount_(5|10|15|20)|casa_bundle_quality|"
+                r"casa_bundle_quality_(standard|selettiva)|casa_bundle_themes|"
+                r"casa_bundle_theme_[a-z]+|casa_bundle_test)$"
             ),
         )
     )
