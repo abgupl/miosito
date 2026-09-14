@@ -83,6 +83,7 @@ ROMA_TZ = ZoneInfo("Europe/Rome")
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "bestprice24h_logo.png"
 AMAZON_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "amazon_logo.png"
 FONT_BOLD_PATH = Path(__file__).resolve().parent / "assets" / "DejaVuSans-Bold.ttf"
+RACCOLTA_CASA_LOCK = asyncio.Lock()
 
 
 def canale_pubblicazione_per_categoria(categoria):
@@ -1325,6 +1326,8 @@ async def invia_offerta_programmata(
         sconto=sconto_programmato,
         telegram_message_id=messaggio_telegram.message_id,
     )
+    if str(destinazione) == str(CASA_CHANNEL_ID):
+        await controlla_raccolta_dopo_post_casa(bot)
 
 
 async def controlla_programmazioni(app):
@@ -3849,30 +3852,54 @@ def raccolta_casa_pronta(configurazione):
     )
 
 
-async def tenta_pubblicazione_raccolta_casa(app):
-    configurazione = leggi_config_raccolte_casa()
-    if not configurazione["attive"] or not raccolta_casa_pronta(configurazione):
+async def tenta_pubblicazione_raccolta_casa(bot):
+    """Tenta la raccolta dopo qualsiasi post CASA, senza avvii sovrapposti."""
+    if RACCOLTA_CASA_LOCK.locked():
         return False
-    tema = _tema_raccolta_successivo(configurazione)
-    if not tema:
-        return False
-    salva_config_raccolta("ultimo_tentativo", datetime.now(ROMA_TZ).isoformat(timespec="seconds"))
-    prodotti, statistiche = await cerca_prodotti_raccolta_casa(configurazione, tema)
-    if len(prodotti) < 2:
+    async with RACCOLTA_CASA_LOCK:
+        configurazione = leggi_config_raccolte_casa()
+        if not configurazione["attive"] or not raccolta_casa_pronta(configurazione):
+            return False
+        tema = _tema_raccolta_successivo(configurazione)
+        if not tema:
+            return False
+        salva_config_raccolta(
+            "ultimo_tentativo",
+            datetime.now(ROMA_TZ).isoformat(timespec="seconds"),
+        )
+        prodotti, statistiche = await cerca_prodotti_raccolta_casa(
+            configurazione, tema
+        )
+        if len(prodotti) < 2:
+            await _notifica_admin_automazione(
+                bot,
+                f"ℹ️ Raccolta CASA {RACCOLTE_CASA_TEMI[tema]['etichetta']} rimandata: "
+                f"trovati {len(prodotti)} prodotti validi dopo "
+                f"{statistiche['ricerche']} ricerche. "
+                "Il conteggio resta valido e riproverò dopo il prossimo post CASA.",
+            )
+            return False
+        await pubblica_raccolta_casa(bot, prodotti, tema)
         await _notifica_admin_automazione(
-            app.bot,
-            f"ℹ️ Raccolta CASA {RACCOLTE_CASA_TEMI[tema]['etichetta']} rimandata: "
-            f"trovati {len(prodotti)} prodotti validi dopo {statistiche['ricerche']} ricerche.",
+            bot,
+            f"✅ Raccolta CASA pubblicata: {RACCOLTE_CASA_TEMI[tema]['titolo']} "
+            f"({len(prodotti)} prodotti).",
+        )
+        return True
+
+
+async def controlla_raccolta_dopo_post_casa(bot):
+    """Il fallimento della raccolta non deve annullare il post singolo già inviato."""
+    try:
+        return await tenta_pubblicazione_raccolta_casa(bot)
+    except Exception as errore:
+        print(f"Errore controllo raccolta dopo post CASA: {errore}")
+        await _notifica_admin_automazione(
+            bot,
+            f"⚠️ Il post CASA è stato pubblicato, ma il controllo della raccolta "
+            f"non è riuscito: {str(errore)[:500]}",
         )
         return False
-    await pubblica_raccolta_casa(app.bot, prodotti, tema)
-    await _notifica_admin_automazione(
-        app.bot,
-        f"✅ Raccolta CASA pubblicata: {RACCOLTE_CASA_TEMI[tema]['titolo']} "
-        f"({len(prodotti)} prodotti).",
-    )
-    return True
-
 
 def _font_terminata(dimensione):
     # Il font è incluso nel repository, quindi Railway mantiene la dimensione richiesta.
@@ -5045,6 +5072,8 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
         sconto=prodotto.get("sconto", 0),
         telegram_message_id=messaggio_telegram.message_id,
     )
+    if canale_effettivo == "casa":
+        await controlla_raccolta_dopo_post_casa(bot)
     return messaggio_telegram.message_id, foto_telegram, telegram_chat_id
 
 
@@ -5107,8 +5136,6 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canal
                 else ""
             ),
         )
-        if canale == "casa":
-            await tenta_pubblicazione_raccolta_casa(app)
     except OffertaDuplicataError as errore:
         _aggiorna_slot_automatico(data_slot, slot_ora_db, "duplicato")
         print(f"Invio automatico bloccato come duplicato: {errore}")
