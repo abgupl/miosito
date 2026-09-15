@@ -31,6 +31,24 @@ Vai su: repository → **Settings** → **Secrets and variables** → **Actions*
 | `TELEGRAM_BOT_TOKEN` | Il token che ti ha dato @BotFather |
 | `TELEGRAM_CHAT_ID` | `@nometuocanale` se il canale è pubblico, o l'ID numerico se privato |
 
+### Pubblicazione automatica su TikTok tramite Buffer
+
+Il bot può programmare due post fotografici TikTok al giorno, ciascuno con due
+offerte già pubblicate sul canale TECH e appartenenti alla stessa categoria.
+Configura queste variabili su Railway:
+
+| Variabile | Valore |
+|---|---|
+| `BUFFER_API_KEY` | Chiave API personale generata da Buffer |
+| `BUFFER_TIKTOK_CHANNEL_ID` | ID del canale TikTok restituito dalla Buffer API |
+| `TIKTOK_POST_TIMES` | Orari italiani separati da virgola, predefinito `12:30,20:30` |
+| `TIKTOK_AUTO_ENABLED` | `1` per attivare, `0` per sospendere; predefinito `1` |
+| `TIKTOK_MIN_DISCOUNT` | Sconto minimo corrente; predefinito `20` |
+
+`RAILWAY_PUBLIC_DOMAIN` viene fornita automaticamente da Railway e serve a
+Buffer per scaricare la locandina. Il comando amministratore `/tiktok_test`
+genera un'anteprima su Telegram senza pubblicarla e senza consumare lo slot.
+
 ### 3. Aggiungi il bot come amministratore del canale Telegram
 
 Impostazioni canale → Amministratori → Aggiungi admin → cerca il tuo bot,
