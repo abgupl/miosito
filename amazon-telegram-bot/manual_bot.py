@@ -918,6 +918,13 @@ def inizializza_tiktok():
         "CREATE INDEX IF NOT EXISTS idx_tiktok_prodotti_asin "
         "ON tiktok_pubblicazioni_prodotti(asin, usato_il)"
     )
+    db.execute("CREATE TABLE IF NOT EXISTS tiktok_config (chiave TEXT PRIMARY KEY, valore TEXT NOT NULL)")
+    for chiave, valore in {
+        "attiva": "1",
+        "orari": os.environ.get("TIKTOK_POST_TIMES", "12:30,20:30"),
+        "sconto": os.environ.get("TIKTOK_MIN_DISCOUNT", "20"),
+    }.items():
+        db.execute("INSERT OR IGNORE INTO tiktok_config VALUES (?, ?)", (chiave, valore))
     db.commit()
     db.close()
 
@@ -936,9 +943,88 @@ TIKTOK_STILI = (
 )
 
 
+def leggi_config_tiktok():
+    with sqlite3.connect(DB_PATH) as db:
+        return dict(db.execute("SELECT chiave, valore FROM tiktok_config"))
+
+
+def salva_config_tiktok(chiave, valore):
+    with sqlite3.connect(DB_PATH) as db:
+        db.execute("INSERT OR REPLACE INTO tiktok_config VALUES (?, ?)", (chiave, str(valore)))
+
+
+async def gestisci_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    if query.data == "tiktok_test":
+        return await testa_tiktok(update, context)
+    await query.answer()
+    azione = query.data
+    config = leggi_config_tiktok()
+    if azione == "tiktok_toggle":
+        salva_config_tiktok("attiva", "0" if config["attiva"] == "1" else "1")
+    elif azione.startswith("tiktok_times_"):
+        orari = azione.removeprefix("tiktok_times_").split("_")
+        salva_config_tiktok("orari", ",".join(x[:2] + ":" + x[2:] for x in orari))
+    elif azione.startswith("tiktok_discount_"):
+        salva_config_tiktok("sconto", azione.rsplit("_", 1)[1])
+    ritorno = [InlineKeyboardButton("⬅️ TORNA A TIKTOK", callback_data="tiktok_menu")]
+    if azione == "tiktok_times":
+        return await query.edit_message_text(
+            "🕒 DUE POST AL GIORNO — ORA ITALIANA\nScegli gli orari. I post già inviati a Buffer restano programmati.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(label, callback_data=data)] for label, data in [
+                    ("11:30 / 19:30", "tiktok_times_1130_1930"),
+                    ("12:30 / 20:30", "tiktok_times_1230_2030"),
+                    ("13:00 / 21:00", "tiktok_times_1300_2100"),
+                ]
+            ] + [ritorno]),
+        )
+    if azione == "tiktok_discount":
+        return await query.edit_message_text(
+            "🎯 FILTRI TIKTOK\nModalità SELETTIVA: due prodotti TECH della stessa categoria.\nScegli lo sconto minimo:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{n}%", callback_data=f"tiktok_discount_{n}") for n in (10, 20, 30, 40)],
+                ritorno,
+            ]),
+        )
+    if azione == "tiktok_history":
+        with sqlite3.connect(DB_PATH) as db:
+            righe = db.execute(
+                "SELECT slot_data, slot_ora, stato, titolo, errore FROM tiktok_pubblicazioni ORDER BY id DESC LIMIT 8"
+            ).fetchall()
+        testo = "📋 STORICO TIKTOK\nProgrammato = accettato da Buffer; controlla su Buffer l’esito finale.\n\n"
+        testo += "\n\n".join(
+            f"{data} {ora} · {stato}\n{titolo or ''}" + (f"\nErrore: {errore[:180]}" if errore else "")
+            for data, ora, stato, titolo, errore in righe
+        ) or "Nessun invio registrato."
+        return await query.edit_message_text(testo, reply_markup=InlineKeyboardMarkup([ritorno]))
+    config = leggi_config_tiktok()
+    attiva = config["attiva"] == "1"
+    operativo = _tiktok_configurato()
+    testo = (
+        "🎵 AUTOMAZIONE TIKTOK\n\n"
+        f"Stato: {'🟢 ATTIVA' if attiva else '🔴 IN PAUSA'}\n"
+        f"Invio: {'abilitato' if operativo else 'non abilitato (pausa o configurazione Railway)'}\n"
+        f"Orari italiani: {' / '.join(_orari_tiktok())}\n"
+        f"Sconto minimo: {config['sconto']}%\n"
+        "Modalità: SELETTIVA · 2 prodotti TECH della stessa categoria\n\n"
+        "La pausa ferma i prossimi invii. Un invio già in corso o già consegnato a Buffer va controllato su Buffer."
+    )
+    await query.edit_message_text(testo, reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔴 METTI IN PAUSA" if attiva else "🟢 ATTIVA", callback_data="tiktok_toggle")],
+        [InlineKeyboardButton("🧪 ANTEPRIMA COMPLETA", callback_data="tiktok_test")],
+        [InlineKeyboardButton("🕒 ORARI", callback_data="tiktok_times"), InlineKeyboardButton("🎯 FILTRI", callback_data="tiktok_discount")],
+        [InlineKeyboardButton("📋 STORICO E STATO", callback_data="tiktok_history")],
+        [InlineKeyboardButton("APRI BUFFER", url="https://publish.buffer.com")],
+        [InlineKeyboardButton("⬅️ MENU PRINCIPALE", callback_data="menu_admin")],
+    ]))
+
+
 def _orari_tiktok():
     valori = []
-    for valore in os.environ.get("TIKTOK_POST_TIMES", "12:30,20:30").split(","):
+    for valore in leggi_config_tiktok()["orari"].split(","):
         valore = valore.strip()
         try:
             datetime.strptime(valore, "%H:%M")
@@ -953,6 +1039,7 @@ def _tiktok_configurato():
     attivo = os.environ.get("TIKTOK_AUTO_ENABLED", "1").strip().lower()
     return (
         attivo not in {"0", "false", "no", "off"}
+        and leggi_config_tiktok()["attiva"] == "1"
         and bool(os.environ.get("BUFFER_API_KEY"))
         and bool(os.environ.get("BUFFER_TIKTOK_CHANNEL_ID"))
         and bool(os.environ.get("RAILWAY_PUBLIC_DOMAIN"))
@@ -1010,7 +1097,7 @@ def _candidati_tiktok_per_categoria():
 
 
 async def seleziona_coppia_tiktok():
-    minimo_sconto = max(0, int(os.environ.get("TIKTOK_MIN_DISCOUNT", "20")))
+    minimo_sconto = max(0, int(leggi_config_tiktok()["sconto"]))
     for categoria, righe in _candidati_tiktok_per_categoria():
         righe = righe[:10]
         per_asin = {str(riga["asin"]).upper(): riga for riga in righe}
@@ -1228,6 +1315,12 @@ async def _prepara_slot_tiktok(bot, data_slot, ora_slot):
             "SELECT id, stato, tentativi FROM tiktok_pubblicazioni WHERE slot_data=? AND slot_ora=?",
             (data_slot, ora_slot),
         ).fetchone()
+        inviati = db.execute(
+            "SELECT COUNT(*) FROM tiktok_pubblicazioni WHERE slot_data=? AND stato IN ('programmato','pubblicato')", (data_slot,)
+        ).fetchone()[0]
+        if inviati >= 2 or not _tiktok_configurato():
+            db.close()
+            return False
         if riga and riga[1] in {"programmato", "pubblicato"}:
             db.close()
             return False
@@ -1275,6 +1368,8 @@ async def _prepara_slot_tiktok(bot, data_slot, ora_slot):
                 datetime.now(ROMA_TZ) + timedelta(minutes=2),
                 datetime.strptime(f"{data_slot} {ora_slot}", "%Y-%m-%d %H:%M").replace(tzinfo=ROMA_TZ),
             )
+            if not _tiktok_configurato():
+                raise RuntimeError("automazione messa in pausa prima dell'invio")
             buffer_post_id = await asyncio.to_thread(
                 _pubblica_su_buffer, titolo, descrizione, media_url, pubblica_il
             )
@@ -1336,7 +1431,10 @@ async def controlla_pubblicazioni_tiktok(app):
 async def testa_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return
-    messaggio = await update.message.reply_text("🔎 Preparo un'anteprima TikTok con due offerte TECH…")
+    if update.callback_query:
+        await update.callback_query.answer()
+    destinazione = update.effective_message
+    messaggio = await destinazione.reply_text("🔎 Preparo un'anteprima TikTok con due offerte TECH…")
     prodotti, categoria = await seleziona_coppia_tiktok()
     if len(prodotti) < 2:
         await messaggio.edit_text("ℹ️ Non ci sono due offerte TECH valide della stessa categoria negli ultimi giorni.")
@@ -1344,10 +1442,10 @@ async def testa_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
     immagine = await asyncio.to_thread(crea_locandina_tiktok, prodotti, categoria, 0)
     titolo, descrizione = crea_testi_tiktok(prodotti, categoria)
     await messaggio.delete()
-    await update.message.reply_photo(
-        photo=immagine,
-        caption=(f"🧪 ANTEPRIMA TIKTOK\n\n{titolo}\n\n{descrizione}")[:1024],
-    )
+    await destinazione.reply_photo(photo=immagine, caption=f"🧪 ANTEPRIMA TIKTOK\n{titolo}")
+    await destinazione.reply_text(descrizione, reply_markup=InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎵 MENU TIKTOK", callback_data="tiktok_menu")
+    ]]))
 
 
 def crea_caption_con_link(messaggio, link, messaggio_gia_html=False):
@@ -7312,6 +7410,7 @@ def menu_principale():
 
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("🎵 AUTOMAZIONE TIKTOK", callback_data="tiktok_menu")],
             [
                 InlineKeyboardButton(
                     "📤 PUBBLICA OFFERTA",
@@ -12130,6 +12229,8 @@ def main():
         allow_reentry=True,
     )
     app.add_handler(ricerca_archivio)
+
+    app.add_handler(CallbackQueryHandler(gestisci_tiktok, pattern=r"^tiktok_(menu|toggle|test|history|times|times_(1130_1930|1230_2030|1300_2100)|discount|discount_(10|20|30|40))$"))
 
     # Nuovi menu principali raggruppati.
     app.add_handler(

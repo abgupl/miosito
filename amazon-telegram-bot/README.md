@@ -94,3 +94,19 @@ python bot.py
   funzionare, controlla la pagina Associates per eventuali migrazioni richieste.
 - Cambia la frequenza modificando la riga `cron` nel file del workflow (il
   formato è minuto-ora-giorno-mese-giorno_settimana, in UTC).
+
+### Pannello amministratore TikTok
+
+Nel menu principale del bot: **🎵 AUTOMAZIONE TIKTOK**. Permette di mettere
+in pausa gli invii, scegliere una coppia di orari italiani (11:30/19:30,
+12:30/20:30 oppure 13:00/21:00), impostare lo sconto minimo e consultare gli
+ultimi otto tentativi. Il filtro resta Selettiva. Le impostazioni sono persistenti
+nel database: le variabili di orario e sconto inizializzano solo il primo avvio.
+`TIKTOK_AUTO_ENABLED=0` resta un blocco generale Railway.
+
+L'anteprima, anche via `/tiktok_test` nella chat privata amministratore,
+invia immagine e descrizione completa separatamente, senza pubblicare.
+La pausa non cancella post già affidati a Buffer o una richiesta già in corso.
+Lo stato “programmato” indica l'accettazione da Buffer, non la pubblicazione
+confermata da TikTok. Il pulsante **APRI BUFFER** consente il controllo finale.
+Il limite giornaliero resta due anche dopo un cambio di orari.
