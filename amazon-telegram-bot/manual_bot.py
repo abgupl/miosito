@@ -72,6 +72,7 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHANNEL_ID = os.environ["TELEGRAM_CHAT_ID"]
 CASA_CHANNEL_ID = os.environ.get("TELEGRAM_CHAT_ID_CASA", "@BestPrice24hCasa")
 CASA_CHANNEL_URL = "https://t.me/BestPrice24hCasa"
+TECH_CHANNEL_URL = "https://t.me/bestprice_2026"
 TECH_CATEGORIE = {"elettronica", "informatica", "smartphone", "tvaudio", "gaming"}
 CASA_CATEGORIE = {
     "casa", "elettrodomestici", "faidate", "giardino", "arredamento",
@@ -84,6 +85,7 @@ LOGO_PATH = Path(__file__).resolve().parent / "assets" / "bestprice24h_logo.png"
 AMAZON_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "amazon_logo.png"
 FONT_BOLD_PATH = Path(__file__).resolve().parent / "assets" / "DejaVuSans-Bold.ttf"
 RACCOLTA_CASA_LOCK = asyncio.Lock()
+RACCOLTA_TECH_LOCK = asyncio.Lock()
 
 
 def canale_pubblicazione_per_categoria(categoria):
@@ -185,6 +187,87 @@ MARCHI_RACCOLTE_CASA = {
     "amazon basics", "ariel", "barilla", "bialetti", "brabantia", "caffè borbone",
     "cif", "dash", "finish", "folletto", "lavazza", "mastro lindo", "nivea",
     "rio mare", "scotti", "scottex", "tescoma", "vileda", "wpro",
+}
+
+
+# Raccolte multiple dedicate al canale TECH.
+RACCOLTE_TECH_TEMI = {
+    "smartphone": {
+        "etichetta": "📱 SMARTPHONE",
+        "titolo": "SCELTE TECH: SMARTPHONE E ACCESSORI",
+        "termini": (
+            "smartphone in offerta",
+            "accessori smartphone di marca",
+            "caricabatterie powerbank in offerta",
+        ),
+        "parole": {
+            "smartphone", "telefono", "iphone", "galaxy", "pixel",
+            "caricatore", "powerbank", "magsafe",
+        },
+    },
+    "informatica": {
+        "etichetta": "💻 INFORMATICA",
+        "titolo": "SCELTE TECH: INFORMATICA",
+        "termini": (
+            "accessori PC in offerta",
+            "SSD mouse tastiera in offerta",
+            "notebook tablet in offerta",
+        ),
+        "parole": {
+            "computer", "notebook", "tablet", "ssd", "mouse",
+            "tastiera", "monitor", "router", "stampante",
+        },
+    },
+    "audio": {
+        "etichetta": "🎧 AUDIO E TV",
+        "titolo": "SCELTE TECH: AUDIO E TV",
+        "termini": (
+            "cuffie bluetooth in offerta",
+            "speaker soundbar in offerta",
+            "TV audio in offerta",
+        ),
+        "parole": {
+            "cuffie", "auricolari", "speaker", "soundbar",
+            "televisore", "tv", "audio", "bluetooth",
+        },
+    },
+    "gaming": {
+        "etichetta": "🎮 GAMING",
+        "titolo": "SCELTE TECH: GAMING",
+        "termini": (
+            "accessori gaming in offerta",
+            "controller gaming in offerta",
+            "videogiochi console in offerta",
+        ),
+        "parole": {
+            "gaming", "controller", "console", "playstation",
+            "xbox", "nintendo", "videogioco", "cuffie",
+        },
+    },
+    "smarthome": {
+        "etichetta": "🏠 SMART HOME",
+        "titolo": "SCELTE TECH: SMART HOME",
+        "termini": (
+            "smart home in offerta",
+            "prese lampadine smart in offerta",
+            "telecamere sicurezza smart in offerta",
+        ),
+        "parole": {
+            "smart home", "presa smart", "lampadina", "telecamera",
+            "videocitofono", "sensore", "echo", "ring", "tapo",
+        },
+    },
+}
+
+MARCHI_RACCOLTE_TECH = {
+    "amazon", "amazon basics", "anker", "apple", "asus", "belkin", "bose",
+    "canon", "corsair", "crucial", "dell", "dji", "eufy", "garmin", "google",
+    "gopro", "honor", "hp", "huawei", "hyperx", "intel", "jabra", "jbl",
+    "kingston", "lenovo", "lg", "logitech", "meta", "microsoft", "motorola",
+    "msi", "netgear", "nintendo", "nothing", "oneplus", "oppo", "panasonic",
+    "philips", "playstation", "razer", "realme", "ring", "samsung", "sandisk",
+    "seagate", "sennheiser", "sony", "soundcore", "steelseries", "tapo",
+    "tcl", "tp-link", "ugreen", "western digital", "xiaomi", "xbox",
 }
 
 MARCHI_AUTORIZZATI = {
@@ -1328,6 +1411,8 @@ async def invia_offerta_programmata(
     )
     if str(destinazione) == str(CASA_CHANNEL_ID):
         await controlla_raccolta_dopo_post_casa(bot)
+    elif str(destinazione) == str(CHANNEL_ID):
+        await controlla_raccolta_dopo_post_tech(bot)
 
 
 async def controlla_programmazioni(app):
@@ -1535,6 +1620,43 @@ def inizializza_automazione():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_raccolte_casa_data ON raccolte_casa(pubblicata_il DESC)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_raccolte_prodotti_asin ON raccolte_casa_prodotti(asin)")
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS raccolte_tech_temi (
+            tema TEXT PRIMARY KEY
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS raccolte_tech (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tema TEXT NOT NULL,
+            telegram_chat_id TEXT NOT NULL,
+            telegram_message_id INTEGER,
+            telegram_photo_file_id TEXT,
+            pubblicata_il TEXT NOT NULL,
+            stato TEXT NOT NULL DEFAULT 'pubblicata'
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS raccolte_tech_prodotti (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            raccolta_id INTEGER NOT NULL,
+            posizione INTEGER NOT NULL,
+            asin TEXT NOT NULL,
+            nome TEXT NOT NULL,
+            link TEXT NOT NULL,
+            prezzo TEXT,
+            vecchio_prezzo TEXT,
+            immagine_url TEXT,
+            sconto INTEGER DEFAULT 0,
+            stato TEXT NOT NULL DEFAULT 'pubblicata',
+            verifiche_fallite INTEGER DEFAULT 0,
+            ultima_verifica TEXT,
+            UNIQUE(raccolta_id, asin),
+            FOREIGN KEY (raccolta_id) REFERENCES raccolte_tech(id)
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_raccolte_tech_data ON raccolte_tech(pubblicata_il DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_raccolte_tech_prodotti_asin ON raccolte_tech_prodotti(asin)")
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS invii_automatici (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             asin TEXT,
@@ -1629,10 +1751,25 @@ def inizializza_automazione():
             "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
             (f"casa:{chiave}", valore),
         )
+    defaults_raccolte_tech = {
+        **defaults_raccolte,
+        "raccolte_prezzo_massimo": "75",
+        "raccolte_qualita": "standard",
+    }
+    for chiave, valore in defaults_raccolte_tech.items():
+        cur.execute(
+            "INSERT OR IGNORE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
+            (f"tech:{chiave}", valore),
+        )
     if not cur.execute("SELECT 1 FROM raccolte_casa_temi LIMIT 1").fetchone():
         cur.executemany(
             "INSERT INTO raccolte_casa_temi (tema) VALUES (?)",
             [(tema,) for tema in RACCOLTE_CASA_TEMI],
+        )
+    if not cur.execute("SELECT 1 FROM raccolte_tech_temi LIMIT 1").fetchone():
+        cur.executemany(
+            "INSERT INTO raccolte_tech_temi (tema) VALUES (?)",
+            [(tema,) for tema in RACCOLTE_TECH_TEMI],
         )
 
     # Nuova configurazione selettiva: applicata una sola volta e senza
@@ -1941,6 +2078,50 @@ def imposta_tema_raccolta(tema):
         db.execute("DELETE FROM raccolte_casa_temi WHERE tema=?", (tema,))
     else:
         db.execute("INSERT INTO raccolte_casa_temi (tema) VALUES (?)", (tema,))
+    db.commit()
+    db.close()
+
+def leggi_config_raccolte_tech():
+    db = sqlite3.connect(DB_PATH)
+    valori = dict(db.execute(
+        "SELECT chiave, valore FROM configurazione_automatica WHERE chiave LIKE 'tech:raccolte_%'"
+    ).fetchall())
+    temi = [
+        riga[0] for riga in db.execute(
+            "SELECT tema FROM raccolte_tech_temi ORDER BY tema"
+        ).fetchall()
+        if riga[0] in RACCOLTE_TECH_TEMI
+    ]
+    db.close()
+    valore = lambda chiave, default: valori.get(f"tech:{chiave}", default)
+    return {
+        "attive": valore("raccolte_attive", "0") == "1",
+        "frequenza_post": int(valore("raccolte_frequenza_post", "4")),
+        "quantita": int(valore("raccolte_quantita", "4")),
+        "prezzo_massimo": int(valore("raccolte_prezzo_massimo", "75")),
+        "sconto_minimo": int(valore("raccolte_sconto_minimo", "10")),
+        "qualita": valore("raccolte_qualita", "standard"),
+        "indice_tema": int(valore("raccolte_indice_tema", "0")),
+        "ultimo_tentativo": valore("raccolte_ultimo_tentativo", ""),
+        "temi": temi,
+    }
+
+
+def salva_config_raccolta_tech(chiave, valore):
+    salva_config_automatica(f"raccolte_{chiave}", valore, "tech")
+
+
+def imposta_tema_raccolta_tech(tema):
+    if tema not in RACCOLTE_TECH_TEMI:
+        return
+    db = sqlite3.connect(DB_PATH)
+    presente = db.execute(
+        "SELECT 1 FROM raccolte_tech_temi WHERE tema=?", (tema,)
+    ).fetchone()
+    if presente:
+        db.execute("DELETE FROM raccolte_tech_temi WHERE tema=?", (tema,))
+    else:
+        db.execute("INSERT INTO raccolte_tech_temi (tema) VALUES (?)", (tema,))
     db.commit()
     db.close()
 
@@ -2574,6 +2755,10 @@ def tastiera_automazione(configurazione, canale):
         righe.append([
             InlineKeyboardButton("🧺 RACCOLTE CASA", callback_data="casa_collections")
         ])
+    else:
+        righe.append([
+            InlineKeyboardButton("📦 RACCOLTE TECH", callback_data="tech_collections")
+        ])
     righe.extend([
         [InlineKeyboardButton("🔎 CERCA OFFERTE", callback_data=f"offer_search_{canale}")],
         [InlineKeyboardButton("🧪 TESTA RICERCA", callback_data="auto_test")],
@@ -2706,6 +2891,127 @@ async def gestisci_raccolte_casa(update: Update, context: ContextTypes.DEFAULT_T
         return await mostra_temi_raccolte_casa(query)
     if azione == "casa_bundle_test":
         return await testa_raccolta_casa(query, context)
+
+
+async def mostra_menu_raccolte_tech(query):
+    configurazione = leggi_config_raccolte_tech()
+    stato = "🟢 ATTIVE" if configurazione["attive"] else "🔴 DISATTIVATE"
+    qualita = configurazione["qualita"].upper()
+    temi = [RACCOLTE_TECH_TEMI[x]["etichetta"] for x in configurazione["temi"]]
+    await query.edit_message_text(
+        "📦 RACCOLTE TECH\n\n"
+        f"Stato: {stato}\n"
+        f"Frequenza: ogni {configurazione['frequenza_post']} post TECH\n"
+        f"Prodotti: {configurazione['quantita']}\n"
+        f"Prezzo massimo: {configurazione['prezzo_massimo']} €\n"
+        f"Sconto minimo: {configurazione['sconto_minimo']}%\n"
+        f"Qualità: {qualita}\n"
+        f"Temi: {', '.join(temi) if temi else 'nessuno'}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"STATO: {stato}", callback_data="tech_bundle_toggle")],
+            [InlineKeyboardButton(
+                f"🔁 OGNI {configurazione['frequenza_post']} POST TECH",
+                callback_data="tech_bundle_frequency",
+            )],
+            [InlineKeyboardButton(
+                f"📦 PRODOTTI: {configurazione['quantita']}",
+                callback_data="tech_bundle_quantity",
+            )],
+            [InlineKeyboardButton(
+                f"💶 PREZZO MASSIMO: {configurazione['prezzo_massimo']} €",
+                callback_data="tech_bundle_price",
+            )],
+            [InlineKeyboardButton(
+                f"📉 SCONTO MINIMO: {configurazione['sconto_minimo']}%",
+                callback_data="tech_bundle_discount",
+            )],
+            [InlineKeyboardButton(
+                f"🎯 QUALITÀ: {qualita}", callback_data="tech_bundle_quality"
+            )],
+            [InlineKeyboardButton("🗂 SCEGLI TEMI", callback_data="tech_bundle_themes")],
+            [InlineKeyboardButton("🧪 TESTA RACCOLTA", callback_data="tech_bundle_test")],
+            [InlineKeyboardButton("⬅️ TORNA ALL'AUTOMAZIONE TECH", callback_data="auto_menu")],
+        ]),
+    )
+
+
+async def mostra_temi_raccolte_tech(query):
+    selezionati = set(leggi_config_raccolte_tech()["temi"])
+    tastiera = []
+    for tema, dati in RACCOLTE_TECH_TEMI.items():
+        segno = "✅" if tema in selezionati else "▫️"
+        tastiera.append([InlineKeyboardButton(
+            f"{segno} {dati['etichetta']}", callback_data=f"tech_bundle_theme_{tema}"
+        )])
+    tastiera.append([InlineKeyboardButton("✅ FATTO", callback_data="tech_collections")])
+    await query.edit_message_text(
+        "🗂 Scegli i temi delle raccolte. Ogni post conterrà prodotti dello stesso tema:",
+        reply_markup=InlineKeyboardMarkup(tastiera),
+    )
+
+
+async def gestisci_raccolte_tech(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    azione = query.data
+    configurazione = leggi_config_raccolte_tech()
+
+    if azione == "tech_collections":
+        return await mostra_menu_raccolte_tech(query)
+    if azione == "tech_bundle_toggle":
+        if not configurazione["attive"] and not configurazione["temi"]:
+            await query.message.reply_text("❌ Seleziona prima almeno un tema.")
+            return
+        salva_config_raccolta_tech("attive", 0 if configurazione["attive"] else 1)
+        return await mostra_menu_raccolte_tech(query)
+    menu_valori = {
+        "tech_bundle_frequency": ("Ogni quanti post TECH?", (2, 4, 6, 8), "frequency", " POST"),
+        "tech_bundle_quantity": ("Quanti prodotti nella raccolta?", (2, 4, 6), "quantity", ""),
+        "tech_bundle_price": ("Prezzo massimo per prodotto", (40, 75, 150, 300), "price", " €"),
+        "tech_bundle_discount": ("Sconto minimo", (5, 10, 15, 20), "discount", "%"),
+    }
+    if azione in menu_valori:
+        titolo, valori, prefisso, suffisso = menu_valori[azione]
+        return await query.edit_message_text(
+            titolo,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    f"{valore}{suffisso}", callback_data=f"tech_bundle_{prefisso}_{valore}"
+                ) for valore in valori],
+                [InlineKeyboardButton("⬅️ INDIETRO", callback_data="tech_collections")],
+            ]),
+        )
+    impostazioni = {
+        "tech_bundle_frequency_": "frequenza_post",
+        "tech_bundle_quantity_": "quantita",
+        "tech_bundle_price_": "prezzo_massimo",
+        "tech_bundle_discount_": "sconto_minimo",
+    }
+    for prefisso, chiave in impostazioni.items():
+        if azione.startswith(prefisso):
+            salva_config_raccolta_tech(chiave, int(azione[len(prefisso):]))
+            return await mostra_menu_raccolte_tech(query)
+    if azione == "tech_bundle_quality":
+        return await query.edit_message_text(
+            "🎯 Qualità delle raccolte",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("SELETTIVA", callback_data="tech_bundle_quality_selettiva")],
+                [InlineKeyboardButton("STANDARD", callback_data="tech_bundle_quality_standard")],
+                [InlineKeyboardButton("⬅️ INDIETRO", callback_data="tech_collections")],
+            ]),
+        )
+    if azione.startswith("tech_bundle_quality_"):
+        salva_config_raccolta_tech("qualita", azione.rsplit("_", 1)[1])
+        return await mostra_menu_raccolte_tech(query)
+    if azione == "tech_bundle_themes":
+        return await mostra_temi_raccolte_tech(query)
+    if azione.startswith("tech_bundle_theme_"):
+        imposta_tema_raccolta_tech(azione.replace("tech_bundle_theme_", "", 1))
+        return await mostra_temi_raccolte_tech(query)
+    if azione == "tech_bundle_test":
+        return await testa_raccolta_tech(query, context)
 
 
 async def mostra_menu_selettiva(query, context):
@@ -3891,6 +4197,403 @@ async def controlla_raccolta_dopo_post_casa(bot):
         )
         return False
 
+def _tema_raccolta_successivo_tech(configurazione):
+    temi = [tema for tema in configurazione["temi"] if tema in RACCOLTE_TECH_TEMI]
+    if not temi:
+        return None
+    indice = configurazione["indice_tema"] % len(temi)
+    salva_config_raccolta_tech("indice_tema", (indice + 1) % len(temi))
+    return temi[indice]
+
+
+def _prodotto_valido_per_raccolta_tech(
+    prodotto,
+    tema,
+    configurazione,
+    parole_indesiderate=None,
+    marchi_tech=None,
+):
+    if not prodotto or prodotto.get("prezzo_valore") is None:
+        return False
+    if float(prodotto["prezzo_valore"]) > configurazione["prezzo_massimo"]:
+        return False
+    if int(prodotto.get("sconto") or 0) < configurazione["sconto_minimo"]:
+        return False
+    titolo = _normalizza_qualita(prodotto.get("nome"))
+    marchio = _normalizza_qualita(prodotto.get("marchio"))
+    venditore = _normalizza_qualita(prodotto.get("venditore"))
+    parole_indesiderate = (
+        leggi_parole_indesiderate()
+        if parole_indesiderate is None else parole_indesiderate
+    )
+    if any(_testo_contiene_termine(titolo, parola) for parola in parole_indesiderate):
+        return False
+    pertinente = any(
+        _testo_contiene_termine(titolo, parola)
+        for parola in RACCOLTE_TECH_TEMI[tema]["parole"]
+    )
+    if not pertinente:
+        return False
+    if configurazione["qualita"] == "standard":
+        return True
+    marchi_tech = (
+        {
+            _normalizza_qualita(x)
+            for categoria in TECH_CATEGORIE
+            for x in leggi_marchi_qualita(categoria)
+        }
+        if marchi_tech is None else marchi_tech
+    )
+    marchi_raccolte = {_normalizza_qualita(x) for x in MARCHI_RACCOLTE_TECH}
+    marchio_noto = bool(marchio) and any(
+        marchio == candidato or (len(candidato) >= 4 and candidato in marchio)
+        for candidato in marchi_tech | marchi_raccolte
+    )
+    return marchio_noto or "amazon" in venditore
+
+
+async def cerca_prodotti_raccolta_tech(configurazione, tema):
+    trovati = {}
+    giorni_blocco = leggi_config_automatica("tech")["giorni_blocco_duplicati"]
+    statistiche = {"ricerche": 0, "analizzati": 0, "prezzo_sconto": 0, "qualita": 0, "duplicati": 0}
+    parole_indesiderate = leggi_parole_indesiderate()
+    marchi_tech = {
+        _normalizza_qualita(x)
+        for categoria in TECH_CATEGORIE
+        for x in leggi_marchi_qualita(categoria)
+    }
+    for termine in RACCOLTE_TECH_TEMI[tema]["termini"]:
+        statistiche["ricerche"] += 1
+        try:
+            items = await asyncio.to_thread(search_items, termine, "All", 10)
+        except Exception as errore:
+            print(f"Errore ricerca raccolta TECH ({tema} - {termine}): {errore}")
+            continue
+        for item in items:
+            statistiche["analizzati"] += 1
+            prodotto = estrai_prodotto_creators(item)
+            if not prodotto:
+                continue
+            if (
+                float(prodotto.get("prezzo_valore") or 0) > configurazione["prezzo_massimo"]
+                or int(prodotto.get("sconto") or 0) < configurazione["sconto_minimo"]
+            ):
+                statistiche["prezzo_sconto"] += 1
+                continue
+            if _asin_gia_pubblicato(prodotto.get("asin"), giorni_blocco, "tech"):
+                statistiche["duplicati"] += 1
+                continue
+            if not _prodotto_valido_per_raccolta_tech(
+                prodotto,
+                tema,
+                configurazione,
+                parole_indesiderate=parole_indesiderate,
+                marchi_tech=marchi_tech,
+            ):
+                statistiche["qualita"] += 1
+                continue
+            prodotto["categoria"] = "tech"
+            prodotto["tema_raccolta"] = tema
+            trovati[prodotto["asin"]] = prodotto
+        if len(trovati) >= configurazione["quantita"] * 2:
+            break
+        await asyncio.sleep(1.0)
+
+    candidati = _raggruppa_varianti_prodotti(list(trovati.values()))
+    candidati.sort(
+        key=lambda p: (int(p.get("sconto") or 0), -float(p.get("prezzo_valore") or 0)),
+        reverse=True,
+    )
+    selezionati = []
+    marchi_usati = set()
+    for prodotto in candidati:
+        marchio = _normalizza_qualita(prodotto.get("marchio"))
+        chiave_marchio = marchio or _normalizza_qualita(prodotto.get("nome")).split(" ")[0]
+        if chiave_marchio in marchi_usati:
+            continue
+        marchi_usati.add(chiave_marchio)
+        selezionati.append(prodotto)
+        if len(selezionati) >= configurazione["quantita"]:
+            break
+    return selezionati, statistiche
+
+
+def crea_collage_raccolta_tech(prodotti, tema):
+    canvas = Image.new("RGB", (1080, 1080), "white")
+    disegno = ImageDraw.Draw(canvas)
+    disegno.rounded_rectangle((8, 8, 1072, 1072), radius=40, outline="#F20D18", width=18)
+    disegno.rounded_rectangle((26, 26, 1054, 1054), radius=22, outline="#171717", width=3)
+    # Numerazione grande e semplice, senza bollino o cerchio.
+    font_numero = _font_terminata(35)
+
+    if LOGO_PATH.exists():
+        logo = Image.open(LOGO_PATH).convert("RGBA")
+        logo = ImageOps.contain(logo, (155, 125), Image.Resampling.LANCZOS)
+        # Stessa trasparenza dei post singoli: alpha 150 su 255.
+        alpha_logo = logo.getchannel("A").point(
+            lambda valore: valore * 150 // 255
+        )
+        logo.putalpha(alpha_logo)
+        canvas.paste(logo, (1028 - logo.width, 30), logo)
+
+    colonne = 3 if len(prodotti) > 4 else 2
+    righe = 2 if len(prodotti) > 2 else 1
+    # La griglia termina prima del logo Amazon, lasciando una fascia bianca.
+    alto_griglia = 780
+    larghezza_cella = 1000 // colonne
+    altezza_cella = alto_griglia // righe
+    for indice, prodotto in enumerate(prodotti):
+        colonna = indice % colonne
+        riga = indice // colonne
+        x0 = 40 + colonna * larghezza_cella
+        y0 = 155 + riga * altezza_cella
+        x1 = x0 + larghezza_cella - 12
+        y1 = y0 + altezza_cella - 12
+        disegno.rounded_rectangle(
+            (x0, y0, x1, y1), radius=25, fill="#FFFFFF", outline="#E5E5E5", width=3
+        )
+        try:
+            risposta = requests.get(prodotto["immagine"], timeout=15)
+            risposta.raise_for_status()
+            foto = Image.open(BytesIO(risposta.content)).convert("RGB")
+            foto = ImageOps.contain(
+                foto,
+                (larghezza_cella - 90, altezza_cella - 90),
+                Image.Resampling.LANCZOS,
+            )
+            posizione = (
+                x0 + (larghezza_cella - 12 - foto.width) // 2,
+                y0 + (altezza_cella - 12 - foto.height) // 2,
+            )
+            canvas.paste(foto, posizione)
+        except Exception as errore:
+            print(f"Immagine raccolta non disponibile: {errore}")
+
+        numero = f"#{indice + 1}"
+        disegno.text(
+            (x0 + 20, y0 + 16),
+            numero,
+            font=font_numero,
+            fill="#171717",
+            stroke_width=4,
+            stroke_fill="white",
+        )
+
+    # Stesso logo Amazon dei post singoli, centrato nella fascia inferiore.
+    if AMAZON_LOGO_PATH.exists():
+        logo_amazon = Image.open(AMAZON_LOGO_PATH).convert("RGBA")
+        pixel = []
+        for rosso, verde, blu, alpha in logo_amazon.getdata():
+            if rosso >= 245 and verde >= 245 and blu >= 245:
+                pixel.append((rosso, verde, blu, 0))
+            else:
+                pixel.append((rosso, verde, blu, alpha))
+        logo_amazon.putdata(pixel)
+        logo_amazon = ImageOps.contain(
+            logo_amazon,
+            (220, 92),
+            Image.Resampling.LANCZOS,
+        )
+        posizione_amazon = (
+            (1080 - logo_amazon.width) // 2,
+            1040 - logo_amazon.height,
+        )
+        canvas.paste(logo_amazon, posizione_amazon, logo_amazon)
+
+    output = BytesIO()
+    output.name = "raccolta_tech_bestprice24h.jpg"
+    canvas.save(output, "JPEG", quality=92, optimize=True)
+    output.seek(0)
+    return output
+
+def _prezzo_caption_raccolta_tech(valore):
+    testo = str(valore or "—").strip()
+    return testo if testo == "—" or "€" in testo else f"{testo} €"
+
+
+def crea_caption_raccolta_tech(prodotti, tema, anteprima=False):
+    intestazione = "🧪 <b>ANTEPRIMA — " if anteprima else "🧺 <b>"
+    righe = [intestazione + RACCOLTE_TECH_TEMI[tema]["titolo"] + "</b>"]
+    for indice, prodotto in enumerate(prodotti, start=1):
+        nome = accorcia_nome_articolo(prodotto["nome"])
+        if len(nome) > 52:
+            nome = nome[:49].rsplit(" ", 1)[0] + "…"
+        link = html.escape(prodotto["link"], quote=True)
+        if prodotto.get("stato") == "terminata":
+            righe.append(
+                f'#{indice} 🔴 <s><a href="{link}">{html.escape(nome)}</a></s>\n'
+                "<b>OFFERTA TERMINATA</b>"
+            )
+            continue
+        prima = _prezzo_caption_raccolta_tech(prodotto.get("vecchio_prezzo"))
+        ora = _prezzo_caption_raccolta_tech(prodotto.get("prezzo"))
+        righe.append(
+            f'#{indice} <a href="{link}">{html.escape(nome)}</a>\n'
+            f'❌ Prima: <s>{html.escape(prima)}</s>\n'
+            f'✅ Ora: <b>{html.escape(ora)}</b>'
+        )
+    righe.append("⚡ Prezzi e disponibilità possono variare.")
+    if anteprima:
+        righe.append("Anteprima non pubblicata")
+    return "\n\n".join(righe)
+
+
+def tastiera_raccolta_tech():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
+        InlineKeyboardButton("📱 CANALE TECH", url=TECH_CHANNEL_URL),
+    ]])
+
+
+def salva_raccolta_tech(prodotti, tema, messaggio_telegram, foto_file_id):
+    adesso = datetime.now(ROMA_TZ).isoformat(timespec="seconds")
+    db = sqlite3.connect(DB_PATH)
+    cursore = db.execute(
+        """
+        INSERT INTO raccolte_tech (
+            tema, telegram_chat_id, telegram_message_id, telegram_photo_file_id,
+            pubblicata_il, stato
+        ) VALUES (?, ?, ?, ?, ?, 'pubblicata')
+        """,
+        (tema, str(CHANNEL_ID), messaggio_telegram.message_id, foto_file_id, adesso),
+    )
+    raccolta_id = cursore.lastrowid
+    for posizione, prodotto in enumerate(prodotti, start=1):
+        db.execute(
+            """
+            INSERT INTO raccolte_tech_prodotti (
+                raccolta_id, posizione, asin, nome, link, prezzo, vecchio_prezzo,
+                immagine_url, sconto, stato, ultima_verifica
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pubblicata', ?)
+            """,
+            (
+                raccolta_id, posizione, prodotto["asin"], prodotto["nome"],
+                prodotto["link"], prodotto.get("prezzo"), prodotto.get("vecchio_prezzo"),
+                prodotto.get("immagine"), int(prodotto.get("sconto") or 0), adesso,
+            ),
+        )
+    db.commit()
+    db.close()
+    for prodotto in prodotti:
+        salva_offerta_recap(
+            prodotto["nome"], prodotto["link"], prodotto.get("prezzo"),
+            prodotto.get("vecchio_prezzo") or "NO", messaggio=crea_caption_raccolta_tech(prodotti, tema),
+            foto_file_id=foto_file_id, template="raccolta", asin=prodotto.get("asin"),
+            categoria=tema, telegram_chat_id=CHANNEL_ID, origine="raccolta",
+            sconto=prodotto.get("sconto", 0), telegram_message_id=messaggio_telegram.message_id,
+        )
+    return raccolta_id
+
+
+async def pubblica_raccolta_tech(bot, prodotti, tema):
+    collage = await asyncio.to_thread(crea_collage_raccolta_tech, prodotti, tema)
+    caption = crea_caption_raccolta_tech(prodotti, tema)
+    messaggio = await bot.send_photo(
+        chat_id=CHANNEL_ID,
+        photo=collage,
+        caption=caption,
+        parse_mode="HTML",
+        reply_markup=tastiera_raccolta_tech(),
+    )
+    foto_file_id = messaggio.photo[-1].file_id if messaggio.photo else None
+    salva_raccolta_tech(prodotti, tema, messaggio, foto_file_id)
+    return messaggio
+
+
+async def testa_raccolta_tech(query, context):
+    configurazione = leggi_config_raccolte_tech()
+    tema = _tema_raccolta_successivo_tech(configurazione)
+    if not tema:
+        await query.message.reply_text("❌ Seleziona almeno un tema.")
+        return
+    attesa = await query.message.reply_text(
+        f"🔎 Cerco una raccolta {RACCOLTE_TECH_TEMI[tema]['etichetta']}…"
+    )
+    prodotti, statistiche = await cerca_prodotti_raccolta_tech(configurazione, tema)
+    if len(prodotti) < 2:
+        await attesa.edit_text(
+            "ℹ️ Non ho trovato almeno 2 prodotti validi.\n\n"
+            f"Ricerche: {statistiche['ricerche']} · analizzati: {statistiche['analizzati']}\n"
+            f"Prezzo/sconto: {statistiche['prezzo_sconto']} · qualità: {statistiche['qualita']} "
+            f"· duplicati: {statistiche['duplicati']}"
+        )
+        return
+    await attesa.delete()
+    collage = await asyncio.to_thread(crea_collage_raccolta_tech, prodotti, tema)
+    await query.message.reply_photo(
+        photo=collage,
+        caption=crea_caption_raccolta_tech(prodotti, tema, anteprima=True),
+        parse_mode="HTML",
+    )
+
+
+def raccolta_tech_pronta(configurazione):
+    """La raccolta è pronta ogni N post TECH, senza alcun limite giornaliero."""
+    db = sqlite3.connect(DB_PATH)
+    ultima = db.execute(
+        "SELECT pubblicata_il FROM raccolte_tech ORDER BY pubblicata_il DESC LIMIT 1"
+    ).fetchone()
+    condizioni = ["telegram_chat_id=?", "COALESCE(origine,'manuale')<>'raccolta'"]
+    parametri = [str(CHANNEL_ID)]
+    if ultima:
+        condizioni.append("pubblicata_il>?")
+        parametri.append(ultima[0])
+    post_da_ultima = db.execute(
+        f"SELECT COUNT(*) FROM recap_offerte WHERE {' AND '.join(condizioni)}", parametri
+    ).fetchone()[0]
+    db.close()
+    return post_da_ultima >= configurazione["frequenza_post"]
+
+
+async def tenta_pubblicazione_raccolta_tech(bot):
+    """Tenta la raccolta dopo qualsiasi post TECH, senza avvii sovrapposti."""
+    if RACCOLTA_TECH_LOCK.locked():
+        return False
+    async with RACCOLTA_TECH_LOCK:
+        configurazione = leggi_config_raccolte_tech()
+        if not configurazione["attive"] or not raccolta_tech_pronta(configurazione):
+            return False
+        tema = _tema_raccolta_successivo_tech(configurazione)
+        if not tema:
+            return False
+        salva_config_raccolta_tech(
+            "ultimo_tentativo",
+            datetime.now(ROMA_TZ).isoformat(timespec="seconds"),
+        )
+        prodotti, statistiche = await cerca_prodotti_raccolta_tech(
+            configurazione, tema
+        )
+        if len(prodotti) < 2:
+            await _notifica_admin_automazione(
+                bot,
+                f"ℹ️ Raccolta TECH {RACCOLTE_TECH_TEMI[tema]['etichetta']} rimandata: "
+                f"trovati {len(prodotti)} prodotti validi dopo "
+                f"{statistiche['ricerche']} ricerche. "
+                "Il conteggio resta valido e riproverò dopo il prossimo post TECH.",
+            )
+            return False
+        await pubblica_raccolta_tech(bot, prodotti, tema)
+        await _notifica_admin_automazione(
+            bot,
+            f"✅ Raccolta TECH pubblicata: {RACCOLTE_TECH_TEMI[tema]['titolo']} "
+            f"({len(prodotti)} prodotti).",
+        )
+        return True
+
+
+async def controlla_raccolta_dopo_post_tech(bot):
+    """Il fallimento della raccolta non deve annullare il post singolo già inviato."""
+    try:
+        return await tenta_pubblicazione_raccolta_tech(bot)
+    except Exception as errore:
+        print(f"Errore controllo raccolta dopo post TECH: {errore}")
+        await _notifica_admin_automazione(
+            bot,
+            f"⚠️ Il post TECH è stato pubblicato, ma il controllo della raccolta "
+            f"non è riuscito: {str(errore)[:500]}",
+        )
+        return False
+
 def _font_terminata(dimensione):
     # Il font è incluso nel repository, quindi Railway mantiene la dimensione richiesta.
     percorsi = (
@@ -5064,6 +5767,8 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
     )
     if canale_effettivo == "casa":
         await controlla_raccolta_dopo_post_casa(bot)
+    elif canale_effettivo == "tech":
+        await controlla_raccolta_dopo_post_tech(bot)
     return messaggio_telegram.message_id, foto_telegram, telegram_chat_id
 
 
@@ -5730,6 +6435,263 @@ async def controlla_raccolte_casa_terminate(app):
         )
 
 
+def _prodotti_raccolta_tech_da_verificare():
+    """Restituisce i prodotti attivi delle raccolte con la stessa cadenza degli altri post."""
+    adesso = datetime.now(ROMA_TZ)
+    limite = adesso - timedelta(days=7)
+    db = sqlite3.connect(DB_PATH)
+    righe = db.execute(
+        """
+        SELECT p.id, p.raccolta_id, p.asin, p.nome,
+               COALESCE(p.verifiche_fallite, 0), p.ultima_verifica,
+               r.pubblicata_il, p.prezzo, p.vecchio_prezzo, COALESCE(p.sconto, 0)
+        FROM raccolte_tech_prodotti p
+        JOIN raccolte_tech r ON r.id = p.raccolta_id
+        WHERE p.stato = 'pubblicata' AND r.pubblicata_il >= ?
+        ORDER BY r.pubblicata_il DESC, p.posizione
+        """,
+        (limite.isoformat(timespec="seconds"),),
+    ).fetchall()
+    db.close()
+    risultato = []
+    for riga in righe:
+        ultima = _data_api(riga[5])
+        pubblicata = _data_api(riga[6])
+        if not pubblicata:
+            continue
+        eta = adesso - pubblicata
+        if riga[4] > 0:
+            intervallo = timedelta(minutes=30)
+        elif eta <= timedelta(hours=24):
+            intervallo = timedelta(hours=2)
+        elif eta <= timedelta(hours=72):
+            intervallo = timedelta(hours=6)
+        else:
+            intervallo = timedelta(hours=24)
+        if not ultima or adesso - ultima >= intervallo:
+            risultato.append(riga[:5] + riga[7:10])
+    return risultato
+
+
+def _aggiorna_verifica_prodotto_raccolta_tech(prodotto_id, fallita):
+    db = sqlite3.connect(DB_PATH)
+    adesso = datetime.now(ROMA_TZ).isoformat(timespec="seconds")
+    if fallita:
+        db.execute(
+            """
+            UPDATE raccolte_tech_prodotti
+            SET verifiche_fallite=COALESCE(verifiche_fallite, 0)+1,
+                ultima_verifica=? WHERE id=?
+            """,
+            (adesso, prodotto_id),
+        )
+    else:
+        db.execute(
+            """
+            UPDATE raccolte_tech_prodotti
+            SET verifiche_fallite=0, ultima_verifica=? WHERE id=?
+            """,
+            (adesso, prodotto_id),
+        )
+    db.commit()
+    riga = db.execute(
+        "SELECT COALESCE(verifiche_fallite, 0) FROM raccolte_tech_prodotti WHERE id=?",
+        (prodotto_id,),
+    ).fetchone()
+    db.close()
+    return riga[0] if riga else 0
+
+
+def _segna_prodotto_raccolta_tech_terminato(prodotto_id):
+    db = sqlite3.connect(DB_PATH)
+    riga = db.execute(
+        "SELECT raccolta_id, asin FROM raccolte_tech_prodotti WHERE id=?",
+        (prodotto_id,),
+    ).fetchone()
+    if not riga:
+        db.close()
+        return None
+    raccolta_id, asin = riga
+    db.execute(
+        "UPDATE raccolte_tech_prodotti SET stato='terminata' WHERE id=?",
+        (prodotto_id,),
+    )
+    db.execute(
+        """
+        UPDATE recap_offerte SET stato='terminata'
+        WHERE asin=? AND template='raccolta'
+          AND telegram_message_id=(
+              SELECT telegram_message_id FROM raccolte_tech WHERE id=?
+          )
+        """,
+        (asin, raccolta_id),
+    )
+    attivi = db.execute(
+        "SELECT COUNT(*) FROM raccolte_tech_prodotti WHERE raccolta_id=? AND stato='pubblicata'",
+        (raccolta_id,),
+    ).fetchone()[0]
+    if not attivi:
+        db.execute("UPDATE raccolte_tech SET stato='terminata' WHERE id=?", (raccolta_id,))
+    db.commit()
+    db.close()
+    return raccolta_id
+
+
+def _aggiorna_prodotto_raccolta_tech(prodotto_id, prodotto):
+    db = sqlite3.connect(DB_PATH)
+    riga = db.execute(
+        "SELECT raccolta_id, asin FROM raccolte_tech_prodotti WHERE id=?",
+        (prodotto_id,),
+    ).fetchone()
+    if not riga:
+        db.close()
+        return None
+    raccolta_id, asin = riga
+    db.execute(
+        """
+        UPDATE raccolte_tech_prodotti
+        SET nome=?, link=?, prezzo=?, vecchio_prezzo=?, immagine_url=?, sconto=?
+        WHERE id=?
+        """,
+        (
+            prodotto["nome"], prodotto["link"], prodotto["prezzo"],
+            prodotto.get("vecchio_prezzo"), prodotto.get("immagine"),
+            int(prodotto.get("sconto") or 0), prodotto_id,
+        ),
+    )
+    db.execute(
+        """
+        UPDATE recap_offerte
+        SET nome=?, link=?, prezzo=?, vecchio_prezzo=?, sconto=?
+        WHERE asin=? AND template='raccolta'
+          AND telegram_message_id=(
+              SELECT telegram_message_id FROM raccolte_tech WHERE id=?
+          )
+        """,
+        (
+            prodotto["nome"], prodotto["link"],
+            _prezzo_italiano(prodotto["prezzo_valore"]),
+            _prezzo_italiano(prodotto["vecchio_valore"])
+            if prodotto.get("vecchio_valore") is not None else "NO",
+            int(prodotto.get("sconto") or 0), asin, raccolta_id,
+        ),
+    )
+    db.commit()
+    db.close()
+    return raccolta_id
+
+
+def _dati_raccolta_tech(raccolta_id):
+    db = sqlite3.connect(DB_PATH)
+    raccolta = db.execute(
+        """
+        SELECT tema, telegram_chat_id, telegram_message_id
+        FROM raccolte_tech WHERE id=?
+        """,
+        (raccolta_id,),
+    ).fetchone()
+    righe = db.execute(
+        """
+        SELECT asin, nome, link, prezzo, vecchio_prezzo, immagine_url, sconto, stato
+        FROM raccolte_tech_prodotti WHERE raccolta_id=? ORDER BY posizione
+        """,
+        (raccolta_id,),
+    ).fetchall()
+    db.close()
+    prodotti = [
+        {
+            "asin": r[0], "nome": r[1], "link": r[2], "prezzo": r[3],
+            "vecchio_prezzo": r[4], "immagine": r[5], "sconto": r[6], "stato": r[7],
+        }
+        for r in righe
+    ]
+    return raccolta, prodotti
+
+
+async def _aggiorna_caption_raccolta_tech(bot, raccolta_id):
+    raccolta, prodotti = _dati_raccolta_tech(raccolta_id)
+    if not raccolta or not prodotti:
+        return
+    tema, chat_id, message_id = raccolta
+    caption = crea_caption_raccolta_tech(prodotti, tema)
+    await bot.edit_message_caption(
+        chat_id=chat_id or CHANNEL_ID,
+        message_id=message_id,
+        caption=caption,
+        parse_mode="HTML",
+        reply_markup=tastiera_raccolta_tech(),
+    )
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        "UPDATE recap_offerte SET messaggio=? WHERE telegram_message_id=? AND telegram_chat_id=?",
+        (caption, message_id, chat_id or str(CHANNEL_ID)),
+    )
+    db.commit()
+    db.close()
+
+
+async def controlla_raccolte_tech_terminate(app):
+    """Controlla ogni articolo del collage e aggiorna una sola volta la didascalia."""
+    righe = _prodotti_raccolta_tech_da_verificare()
+    raccolte_modificate = set()
+    nomi_terminati = []
+    for posizione in range(0, len(righe), 10):
+        gruppo = righe[posizione:posizione + 10]
+        asins = [riga[2] for riga in gruppo if riga[2]]
+        if not asins:
+            continue
+        try:
+            items = await asyncio.to_thread(get_items, asins)
+        except Exception as errore:
+            print(f"Errore verifica raccolte TECH: {errore}")
+            continue
+        prodotti_api = {
+            getattr(item, "asin", None): estrai_prodotto_creators(item)
+            for item in items if getattr(item, "asin", None)
+        }
+        for (
+            prodotto_id, raccolta_id, asin, nome, _,
+            prezzo_memorizzato, vecchio_memorizzato, sconto_memorizzato,
+        ) in gruppo:
+            prodotto = prodotti_api.get(asin)
+            non_disponibile = not prodotto
+            _aggiorna_verifica_prodotto_raccolta_tech(prodotto_id, non_disponibile)
+            if not prodotto:
+                # Un risultato API mancante non dimostra che lo sconto sia finito.
+                continue
+            sconto_azzerato = bool(prodotto and int(prodotto.get("sconto") or 0) == 0)
+            if sconto_azzerato:
+                raccolta_modificata = _segna_prodotto_raccolta_tech_terminato(prodotto_id)
+                if raccolta_modificata:
+                    raccolte_modificate.add(raccolta_modificata)
+                    nomi_terminati.append(nome)
+                continue
+            valori_cambiati = (
+                int(prodotto.get("sconto") or 0) != int(sconto_memorizzato or 0)
+                or _normalizza_valore_monitorato(prodotto.get("prezzo"))
+                != _normalizza_valore_monitorato(prezzo_memorizzato)
+                or _normalizza_valore_monitorato(prodotto.get("vecchio_prezzo"))
+                != _normalizza_valore_monitorato(vecchio_memorizzato)
+            )
+            if valori_cambiati:
+                raccolta_modificata = _aggiorna_prodotto_raccolta_tech(prodotto_id, prodotto)
+                if raccolta_modificata:
+                    raccolte_modificate.add(raccolta_modificata)
+        await asyncio.sleep(1.2)
+
+    for raccolta_id in raccolte_modificate:
+        try:
+            await _aggiorna_caption_raccolta_tech(app.bot, raccolta_id)
+        except Exception as errore:
+            print(f"Errore aggiornamento didascalia raccolta TECH: {errore}")
+    if nomi_terminati:
+        elenco = "\n".join(f"• {nome}" for nome in nomi_terminati[:8])
+        await _notifica_admin_automazione(
+            app.bot,
+            f"🔴 Prodotti terminati nelle raccolte TECH:\n{elenco}",
+        )
+
+
 async def controlla_offerte_terminate(app):
     while True:
         try:
@@ -5827,6 +6789,7 @@ async def controlla_offerte_terminate(app):
 
                 await asyncio.sleep(1.2)
             await controlla_raccolte_casa_terminate(app)
+            await controlla_raccolte_tech_terminate(app)
         except Exception as errore:
             print(f"Errore controllo offerte terminate: {errore}")
 
@@ -10760,6 +11723,21 @@ def main():
                 r"casa_bundle_discount_(5|10|15|20)|casa_bundle_quality|"
                 r"casa_bundle_quality_(standard|selettiva)|casa_bundle_themes|"
                 r"casa_bundle_theme_[a-z]+|casa_bundle_test)$"
+            ),
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            gestisci_raccolte_tech,
+            pattern=(
+                r"^(tech_collections|tech_bundle_toggle|tech_bundle_frequency|"
+                r"tech_bundle_frequency_(2|4|6|8)|tech_bundle_quantity|"
+                r"tech_bundle_quantity_(2|4|6)|tech_bundle_price|"
+                r"tech_bundle_price_(40|75|150|300)|tech_bundle_discount|"
+                r"tech_bundle_discount_(5|10|15|20)|tech_bundle_quality|"
+                r"tech_bundle_quality_(standard|selettiva)|tech_bundle_themes|"
+                r"tech_bundle_theme_[a-z]+|tech_bundle_test)$"
             ),
         )
     )
