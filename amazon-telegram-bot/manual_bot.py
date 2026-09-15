@@ -86,6 +86,14 @@ AMAZON_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "amazon_logo.png
 FONT_BOLD_PATH = Path(__file__).resolve().parent / "assets" / "DejaVuSans-Bold.ttf"
 RACCOLTA_CASA_LOCK = asyncio.Lock()
 RACCOLTA_TECH_LOCK = asyncio.Lock()
+TIKTOK_LOCK = asyncio.Lock()
+BUFFER_API_URL = "https://api.buffer.com"
+TIKTOK_MEDIA_DIR = Path(
+    os.environ.get(
+        "TIKTOK_MEDIA_DIR",
+        str(Path(DB_PATH).resolve().parent / "tiktok_media"),
+    )
+)
 
 
 def canale_pubblicazione_per_categoria(categoria):
@@ -839,6 +847,23 @@ class OfferteWebHandler(BaseHTTPRequestHandler):
                 print(f"Errore immagine offerta web: {exc}")
                 self._json({"errore": "immagine non disponibile"}, status=404)
             return
+        media_tiktok = re.fullmatch(
+            r"/media/tiktok/(tiktok_[0-9]{8}_[0-9]{4}_[0-9]+\.jpg)",
+            percorso,
+        )
+        if media_tiktok:
+            file_media = TIKTOK_MEDIA_DIR / media_tiktok.group(1)
+            try:
+                contenuto = file_media.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(contenuto)))
+                self.send_header("Cache-Control", "public, max-age=604800")
+                self.end_headers()
+                self.wfile.write(contenuto)
+            except (OSError, ValueError):
+                self._json({"errore": "immagine non disponibile"}, status=404)
+            return
         self._json({"errore": "non trovato"}, status=404)
 
     def log_message(self, formato, *argomenti):
@@ -853,6 +878,574 @@ def avvia_api_offerte_web():
     server = ThreadingHTTPServer(("0.0.0.0", int(porta)), OfferteWebHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     print(f"🌐 API offerte web attiva sulla porta {porta}")
+
+
+def inizializza_tiktok():
+    """Prepara lo storico che impedisce doppi post TikTok nello stesso slot."""
+    TIKTOK_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tiktok_pubblicazioni (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slot_data TEXT NOT NULL,
+            slot_ora TEXT NOT NULL,
+            categoria TEXT,
+            titolo TEXT,
+            file_immagine TEXT,
+            buffer_post_id TEXT,
+            stato TEXT NOT NULL DEFAULT 'preparazione',
+            tentativi INTEGER NOT NULL DEFAULT 0,
+            errore TEXT,
+            creato_il TEXT NOT NULL,
+            aggiornato_il TEXT NOT NULL,
+            UNIQUE(slot_data, slot_ora)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tiktok_pubblicazioni_prodotti (
+            pubblicazione_id INTEGER NOT NULL,
+            asin TEXT NOT NULL,
+            usato_il TEXT NOT NULL,
+            PRIMARY KEY (pubblicazione_id, asin),
+            FOREIGN KEY (pubblicazione_id) REFERENCES tiktok_pubblicazioni(id)
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tiktok_prodotti_asin "
+        "ON tiktok_pubblicazioni_prodotti(asin, usato_il)"
+    )
+    db.execute("CREATE TABLE IF NOT EXISTS tiktok_config (chiave TEXT PRIMARY KEY, valore TEXT NOT NULL)")
+    for chiave, valore in {
+        "attiva": "1",
+        "orari": os.environ.get("TIKTOK_POST_TIMES", "12:30,20:30"),
+        "sconto": os.environ.get("TIKTOK_MIN_DISCOUNT", "20"),
+    }.items():
+        db.execute("INSERT OR IGNORE INTO tiktok_config VALUES (?, ?)", (chiave, valore))
+    db.commit()
+    db.close()
+
+
+TIKTOK_STILI = (
+    ("#F7FAFC", "#17212B", "#168AAD", "#FFFFFF"),
+    ("#071426", "#FFFFFF", "#00A8FF", "#102A43"),
+    ("#101010", "#F5D67B", "#C89B3C", "#1D1D1D"),
+    ("#F20D18", "#FFFFFF", "#171717", "#FFFFFF"),
+    ("#F5F5F5", "#222222", "#FF9900", "#FFFFFF"),
+    ("#24113D", "#FFFFFF", "#D946EF", "#FFFFFF"),
+    ("#063B2B", "#FFFFFF", "#10B981", "#FFFFFF"),
+    ("#F5EEDF", "#181818", "#A64B2A", "#FFFFFF"),
+    ("#FFD438", "#102A43", "#1D4ED8", "#FFFFFF"),
+    ("#111827", "#E5E7EB", "#60A5FA", "#FFFFFF"),
+)
+
+
+def leggi_config_tiktok():
+    with sqlite3.connect(DB_PATH) as db:
+        return dict(db.execute("SELECT chiave, valore FROM tiktok_config"))
+
+
+def salva_config_tiktok(chiave, valore):
+    with sqlite3.connect(DB_PATH) as db:
+        db.execute("INSERT OR REPLACE INTO tiktok_config VALUES (?, ?)", (chiave, str(valore)))
+
+
+async def gestisci_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    if query.data == "tiktok_test":
+        return await testa_tiktok(update, context)
+    await query.answer()
+    azione = query.data
+    config = leggi_config_tiktok()
+    if azione == "tiktok_toggle":
+        salva_config_tiktok("attiva", "0" if config["attiva"] == "1" else "1")
+    elif azione.startswith("tiktok_times_"):
+        orari = azione.removeprefix("tiktok_times_").split("_")
+        salva_config_tiktok("orari", ",".join(x[:2] + ":" + x[2:] for x in orari))
+    elif azione.startswith("tiktok_discount_"):
+        salva_config_tiktok("sconto", azione.rsplit("_", 1)[1])
+    ritorno = [InlineKeyboardButton("⬅️ TORNA A TIKTOK", callback_data="tiktok_menu")]
+    if azione == "tiktok_times":
+        return await query.edit_message_text(
+            "🕒 DUE POST AL GIORNO — ORA ITALIANA\nScegli gli orari. I post già inviati a Buffer restano programmati.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(label, callback_data=data)] for label, data in [
+                    ("11:30 / 19:30", "tiktok_times_1130_1930"),
+                    ("12:30 / 20:30", "tiktok_times_1230_2030"),
+                    ("13:00 / 21:00", "tiktok_times_1300_2100"),
+                ]
+            ] + [ritorno]),
+        )
+    if azione == "tiktok_discount":
+        return await query.edit_message_text(
+            "🎯 FILTRI TIKTOK\nModalità SELETTIVA: due prodotti TECH della stessa categoria.\nScegli lo sconto minimo:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{n}%", callback_data=f"tiktok_discount_{n}") for n in (10, 20, 30, 40)],
+                ritorno,
+            ]),
+        )
+    if azione == "tiktok_history":
+        with sqlite3.connect(DB_PATH) as db:
+            righe = db.execute(
+                "SELECT slot_data, slot_ora, stato, titolo, errore FROM tiktok_pubblicazioni ORDER BY id DESC LIMIT 8"
+            ).fetchall()
+        testo = "📋 STORICO TIKTOK\nProgrammato = accettato da Buffer; controlla su Buffer l’esito finale.\n\n"
+        testo += "\n\n".join(
+            f"{data} {ora} · {stato}\n{titolo or ''}" + (f"\nErrore: {errore[:180]}" if errore else "")
+            for data, ora, stato, titolo, errore in righe
+        ) or "Nessun invio registrato."
+        return await query.edit_message_text(testo, reply_markup=InlineKeyboardMarkup([ritorno]))
+    config = leggi_config_tiktok()
+    attiva = config["attiva"] == "1"
+    operativo = _tiktok_configurato()
+    testo = (
+        "🎵 AUTOMAZIONE TIKTOK\n\n"
+        f"Stato: {'🟢 ATTIVA' if attiva else '🔴 IN PAUSA'}\n"
+        f"Invio: {'abilitato' if operativo else 'non abilitato (pausa o configurazione Railway)'}\n"
+        f"Orari italiani: {' / '.join(_orari_tiktok())}\n"
+        f"Sconto minimo: {config['sconto']}%\n"
+        "Modalità: SELETTIVA · 2 prodotti TECH della stessa categoria\n\n"
+        "La pausa ferma i prossimi invii. Un invio già in corso o già consegnato a Buffer va controllato su Buffer."
+    )
+    await query.edit_message_text(testo, reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔴 METTI IN PAUSA" if attiva else "🟢 ATTIVA", callback_data="tiktok_toggle")],
+        [InlineKeyboardButton("🧪 ANTEPRIMA COMPLETA", callback_data="tiktok_test")],
+        [InlineKeyboardButton("🕒 ORARI", callback_data="tiktok_times"), InlineKeyboardButton("🎯 FILTRI", callback_data="tiktok_discount")],
+        [InlineKeyboardButton("📋 STORICO E STATO", callback_data="tiktok_history")],
+        [InlineKeyboardButton("APRI BUFFER", url="https://publish.buffer.com")],
+        [InlineKeyboardButton("⬅️ MENU PRINCIPALE", callback_data="menu_admin")],
+    ]))
+
+
+def _orari_tiktok():
+    valori = []
+    for valore in leggi_config_tiktok()["orari"].split(","):
+        valore = valore.strip()
+        try:
+            datetime.strptime(valore, "%H:%M")
+        except ValueError:
+            continue
+        if valore not in valori:
+            valori.append(valore)
+    return valori[:2]
+
+
+def _tiktok_configurato():
+    attivo = os.environ.get("TIKTOK_AUTO_ENABLED", "1").strip().lower()
+    return (
+        attivo not in {"0", "false", "no", "off"}
+        and leggi_config_tiktok()["attiva"] == "1"
+        and bool(os.environ.get("BUFFER_API_KEY"))
+        and bool(os.environ.get("BUFFER_TIKTOK_CHANNEL_ID"))
+        and bool(os.environ.get("RAILWAY_PUBLIC_DOMAIN"))
+    )
+
+
+def _candidati_tiktok_per_categoria():
+    """Raggruppa le migliori offerte già pubblicate nel canale TECH."""
+    limite_giorni = max(1, int(os.environ.get("TIKTOK_CANDIDATE_DAYS", "7")))
+    riuso_giorni = max(1, int(os.environ.get("TIKTOK_REUSE_DAYS", "14")))
+    data_minima = (datetime.now(ROMA_TZ) - timedelta(days=limite_giorni)).isoformat(timespec="seconds")
+    riuso_da = (datetime.now(ROMA_TZ) - timedelta(days=riuso_giorni)).isoformat(timespec="seconds")
+    categorie = sorted(TECH_CATEGORIE)
+    segnaposti = ",".join("?" for _ in categorie)
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    try:
+        righe = db.execute(
+            f"""
+            SELECT r.id, r.asin, r.nome, r.link, r.prezzo, r.vecchio_prezzo,
+                   r.categoria, r.sconto, r.pubblicata_il
+            FROM recap_offerte r
+            WHERE r.stato='pubblicata'
+              AND r.telegram_chat_id=?
+              AND r.categoria IN ({segnaposti})
+              AND r.asin IS NOT NULL AND r.asin<>''
+              AND r.pubblicata_il>=?
+              AND COALESCE(r.origine, 'manuale')<>'raccolta'
+              AND NOT EXISTS (
+                  SELECT 1 FROM tiktok_pubblicazioni_prodotti tp
+                  WHERE tp.asin=r.asin AND tp.usato_il>=?
+              )
+            ORDER BY r.sconto DESC, r.pubblicata_il DESC, r.id DESC
+            LIMIT 80
+            """,
+            [str(CHANNEL_ID), *categorie, data_minima, riuso_da],
+        ).fetchall()
+    finally:
+        db.close()
+
+    gruppi = {}
+    asin_visti = set()
+    for riga in righe:
+        asin = str(riga["asin"] or "").upper()
+        if not asin or asin in asin_visti:
+            continue
+        asin_visti.add(asin)
+        gruppi.setdefault(riga["categoria"], []).append(dict(riga))
+    gruppi = {categoria: prodotti for categoria, prodotti in gruppi.items() if len(prodotti) >= 2}
+    return sorted(
+        gruppi.items(),
+        key=lambda elemento: sum(int(p.get("sconto") or 0) for p in elemento[1][:2]),
+        reverse=True,
+    )
+
+
+async def seleziona_coppia_tiktok():
+    minimo_sconto = max(0, int(leggi_config_tiktok()["sconto"]))
+    for categoria, righe in _candidati_tiktok_per_categoria():
+        righe = righe[:10]
+        per_asin = {str(riga["asin"]).upper(): riga for riga in righe}
+        configurazione = leggi_config_automatica("tech")
+        snapshot_filtri = carica_snapshot_filtri(categoria, configurazione)
+        try:
+            items = await asyncio.to_thread(get_items, list(per_asin))
+        except Exception as errore:
+            print(f"Errore aggiornamento candidati TikTok ({categoria}): {errore}")
+            continue
+        prodotti = []
+        for item in items:
+            prodotto = estrai_prodotto_creators(item)
+            if not prodotto or int(prodotto.get("sconto") or 0) < minimo_sconto:
+                continue
+            riga = per_asin.get(str(prodotto.get("asin") or "").upper())
+            if not riga:
+                continue
+            bonus_priorita, nome_priorita = valuta_priorita_prodotto(
+                prodotto, categoria, snapshot_filtri
+            )
+            approvato, punteggio, motivi = valuta_qualita_prodotto(
+                prodotto,
+                categoria,
+                "selettiva",
+                snapshot_filtri,
+                bonus_priorita,
+            )
+            if not approvato:
+                continue
+            prodotto["link"] = riga["link"]
+            prodotto["categoria"] = categoria
+            prodotto["bonus_priorita"] = bonus_priorita
+            prodotto["nome_priorita"] = nome_priorita
+            prodotto["punteggio_qualita"] = punteggio
+            prodotto["motivi_qualita"] = motivi
+            prodotti.append(prodotto)
+        prodotti.sort(
+            key=lambda p: (
+                int(p.get("bonus_priorita") or 0),
+                int(p.get("punteggio_qualita") or 0),
+                int(p.get("sconto") or 0),
+            ),
+            reverse=True,
+        )
+        if len(prodotti) >= 2:
+            return prodotti[:2], categoria
+    return [], None
+
+
+def _testo_su_righe(disegno, testo, font, larghezza, massimo_righe=3):
+    parole = str(testo or "").split()
+    righe = []
+    corrente = ""
+    for parola in parole:
+        prova = f"{corrente} {parola}".strip()
+        if disegno.textbbox((0, 0), prova, font=font)[2] <= larghezza:
+            corrente = prova
+        else:
+            if corrente:
+                righe.append(corrente)
+            corrente = parola
+            if len(righe) >= massimo_righe - 1:
+                break
+    if corrente and len(righe) < massimo_righe:
+        righe.append(corrente)
+    consumate = len(" ".join(righe))
+    if consumate < len(str(testo or "")) and righe:
+        ultima = righe[-1]
+        while ultima and disegno.textbbox((0, 0), ultima + "…", font=font)[2] > larghezza:
+            ultima = ultima[:-1]
+        righe[-1] = ultima.rstrip() + "…"
+    return righe
+
+
+def crea_locandina_tiktok(prodotti, categoria, indice_stile=0):
+    sfondo, testo, accento, scheda = TIKTOK_STILI[indice_stile % len(TIKTOK_STILI)]
+    canvas = Image.new("RGB", (1080, 1920), sfondo)
+    disegno = ImageDraw.Draw(canvas)
+    font_titolo = _font_terminata(62)
+    font_categoria = _font_terminata(34)
+    font_nome = _font_terminata(34)
+    font_prima = _font_terminata(28)
+    font_prezzo = _font_terminata(58)
+    font_sconto = _font_terminata(36)
+    font_cta = _font_terminata(43)
+
+    disegno.text((64, 72), "2 OFFERTE DA NON PERDERE", font=font_titolo, fill=testo)
+    etichetta = AUTO_CATEGORIE.get(categoria, (categoria.upper(),))[0]
+    etichetta = re.sub(r"^[^A-Za-zÀ-ÿ0-9]+\s*", "", etichetta).upper()
+    disegno.text((66, 154), etichetta, font=font_categoria, fill=accento)
+    if LOGO_PATH.exists():
+        logo = Image.open(LOGO_PATH).convert("RGBA")
+        logo = ImageOps.contain(logo, (185, 120), Image.Resampling.LANCZOS)
+        canvas.paste(logo, (1080 - logo.width - 55, 130), logo)
+
+    for indice, prodotto in enumerate(prodotti[:2]):
+        y0 = 285 + indice * 650
+        y1 = y0 + 585
+        disegno.rounded_rectangle((48, y0, 1032, y1), radius=38, fill=scheda, outline=accento, width=8)
+        disegno.rounded_rectangle((72, y0 + 24, 493, y1 - 24), radius=26, fill="#FFFFFF")
+        try:
+            risposta = requests.get(prodotto["immagine"], timeout=15)
+            risposta.raise_for_status()
+            foto = Image.open(BytesIO(risposta.content)).convert("RGB")
+            foto = ImageOps.contain(foto, (365, 460), Image.Resampling.LANCZOS)
+            canvas.paste(foto, (282 - foto.width // 2, y0 + 292 - foto.height // 2))
+        except Exception as errore:
+            print(f"Immagine TikTok non disponibile: {errore}")
+
+        disegno.rounded_rectangle((82, y0 + 35, 162, y0 + 105), radius=18, fill=accento)
+        disegno.text((105, y0 + 48), f"{indice + 1}", font=font_sconto, fill="#FFFFFF")
+        nome_x = 530
+        nome_y = y0 + 42
+        for riga in _testo_su_righe(disegno, prodotto.get("nome"), font_nome, 450, 3):
+            disegno.text((nome_x, nome_y), riga, font=font_nome, fill="#171717")
+            nome_y += 45
+
+        vecchio = _prezzo_caption_raccolta_tech(prodotto.get("vecchio_prezzo"))
+        attuale = _prezzo_caption_raccolta_tech(prodotto.get("prezzo"))
+        if vecchio != "—":
+            disegno.text((nome_x, y0 + 245), f"Prima {vecchio}", font=font_prima, fill="#777777")
+            bbox = disegno.textbbox((nome_x, y0 + 245), f"Prima {vecchio}", font=font_prima)
+            disegno.line((bbox[0], (bbox[1] + bbox[3]) // 2, bbox[2], (bbox[1] + bbox[3]) // 2), fill="#E11D48", width=4)
+        disegno.text((nome_x, y0 + 310), attuale, font=font_prezzo, fill=accento)
+        sconto = int(prodotto.get("sconto") or 0)
+        disegno.rounded_rectangle((nome_x, y0 + 405, 760, y0 + 482), radius=22, fill=accento)
+        disegno.text((553, y0 + 421), f"-{sconto}%", font=font_sconto, fill="#FFFFFF")
+
+    disegno.rounded_rectangle((145, 1635, 935, 1765), radius=55, fill=accento)
+    cta = "SCOPRI L’OFFERTA"
+    bbox = disegno.textbbox((0, 0), cta, font=font_cta)
+    disegno.text(((1080 - (bbox[2] - bbox[0])) // 2, 1672), cta, font=font_cta, fill="#FFFFFF")
+    disegno.text((215, 1800), "Prezzi e disponibilità possono variare", font=_font_terminata(25), fill=testo)
+
+    output = BytesIO()
+    output.name = "bestprice24h_tiktok.jpg"
+    canvas.save(output, "JPEG", quality=93, optimize=True)
+    output.seek(0)
+    return output
+
+
+def crea_testi_tiktok(prodotti, categoria):
+    sconto_migliore = max(int(p.get("sconto") or 0) for p in prodotti)
+    etichetta = AUTO_CATEGORIE.get(categoria, (categoria,))[0]
+    etichetta = re.sub(r"^[^A-Za-zÀ-ÿ0-9]+\s*", "", etichetta)
+    titolo = f"-{sconto_migliore}%: due offerte {etichetta}"
+    righe = [titolo]
+    for indice, prodotto in enumerate(prodotti, start=1):
+        nome = accorcia_nome_articolo(prodotto.get("nome"))
+        if len(nome) > 75:
+            nome = nome[:72].rsplit(" ", 1)[0] + "…"
+        prima = _prezzo_caption_raccolta_tech(prodotto.get("vecchio_prezzo"))
+        ora = _prezzo_caption_raccolta_tech(prodotto.get("prezzo"))
+        righe.append(
+            f"{indice}. {nome}\nPrima: {prima} | Ora: {ora} "
+            f"(-{int(prodotto.get('sconto') or 0)}%)\n{prodotto.get('link')}"
+        )
+    hashtag_categoria = AUTO_HASHTAG.get(categoria, "#tecnologia")
+    righe.extend([
+        "Scopri le offerte prima che terminino.",
+        f"BESTPRICE24H: {TECH_CHANNEL_URL}",
+        "Unisciti a BESTPRICE24H, invita i tuoi amici e guadagna buoni regalo Amazon!",
+        "Prezzo e disponibilità possono variare.",
+        f"#adv #amazon {hashtag_categoria} #offerteamazon #bestprice24h #risparmio",
+    ])
+    return titolo[:90], "\n\n".join(righe)[:2200]
+
+
+def _pubblica_su_buffer(titolo, descrizione, media_url, pubblica_il):
+    query = """
+    mutation CreateTikTokPost($input: CreatePostInput!) {
+      createPost(input: $input) {
+        __typename
+        ... on PostActionSuccess { post { id text } }
+        ... on MutationError { message }
+      }
+    }
+    """
+    input_post = {
+        "text": descrizione,
+        "channelId": os.environ["BUFFER_TIKTOK_CHANNEL_ID"],
+        "schedulingType": "automatic",
+        "mode": "customScheduled",
+        "dueAt": pubblica_il.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "assets": [{"image": {"url": media_url}}],
+        "metadata": {"tiktok": {"title": titolo}},
+    }
+    risposta = requests.post(
+        BUFFER_API_URL,
+        headers={
+            "Authorization": f"Bearer {os.environ['BUFFER_API_KEY']}",
+            "Content-Type": "application/json",
+        },
+        json={"query": query, "variables": {"input": input_post}},
+        timeout=30,
+    )
+    risposta.raise_for_status()
+    payload = risposta.json()
+    if payload.get("errors"):
+        raise RuntimeError(payload["errors"][0].get("message", "Errore API Buffer"))
+    risultato = (payload.get("data") or {}).get("createPost") or {}
+    if risultato.get("__typename") != "PostActionSuccess":
+        raise RuntimeError(risultato.get("message") or "Buffer non ha accettato il post")
+    return str((risultato.get("post") or {}).get("id") or "")
+
+
+async def _prepara_slot_tiktok(bot, data_slot, ora_slot):
+    if TIKTOK_LOCK.locked():
+        return False
+    async with TIKTOK_LOCK:
+        adesso = datetime.now(ROMA_TZ)
+        db = sqlite3.connect(DB_PATH)
+        riga = db.execute(
+            "SELECT id, stato, tentativi FROM tiktok_pubblicazioni WHERE slot_data=? AND slot_ora=?",
+            (data_slot, ora_slot),
+        ).fetchone()
+        inviati = db.execute(
+            "SELECT COUNT(*) FROM tiktok_pubblicazioni WHERE slot_data=? AND stato IN ('programmato','pubblicato')", (data_slot,)
+        ).fetchone()[0]
+        if inviati >= 2 or not _tiktok_configurato():
+            db.close()
+            return False
+        if riga and riga[1] in {"programmato", "pubblicato"}:
+            db.close()
+            return False
+        if riga and int(riga[2] or 0) >= 3:
+            db.close()
+            return False
+        if riga:
+            pubblicazione_id = riga[0]
+            db.execute(
+                "UPDATE tiktok_pubblicazioni SET stato='preparazione', tentativi=tentativi+1, aggiornato_il=? WHERE id=?",
+                (adesso.isoformat(timespec="seconds"), pubblicazione_id),
+            )
+        else:
+            cursore = db.execute(
+                """
+                INSERT INTO tiktok_pubblicazioni (
+                    slot_data, slot_ora, stato, tentativi, creato_il, aggiornato_il
+                ) VALUES (?, ?, 'preparazione', 1, ?, ?)
+                """,
+                (data_slot, ora_slot, adesso.isoformat(timespec="seconds"), adesso.isoformat(timespec="seconds")),
+            )
+            pubblicazione_id = cursore.lastrowid
+        db.commit()
+        db.close()
+
+        try:
+            prodotti, categoria = await seleziona_coppia_tiktok()
+            if len(prodotti) < 2:
+                raise RuntimeError("non ci sono due offerte TECH valide della stessa categoria")
+            db = sqlite3.connect(DB_PATH)
+            numero_stile = db.execute(
+                "SELECT COUNT(*) FROM tiktok_pubblicazioni WHERE stato IN ('programmato','pubblicato')"
+            ).fetchone()[0]
+            db.close()
+            immagine = await asyncio.to_thread(
+                crea_locandina_tiktok, prodotti, categoria, numero_stile
+            )
+            nome_file = f"tiktok_{data_slot.replace('-', '')}_{ora_slot.replace(':', '')}_{pubblicazione_id}.jpg"
+            percorso_file = TIKTOK_MEDIA_DIR / nome_file
+            percorso_file.write_bytes(immagine.getvalue())
+            dominio = os.environ["RAILWAY_PUBLIC_DOMAIN"].strip().strip("/")
+            media_url = f"https://{dominio}/media/tiktok/{nome_file}"
+            titolo, descrizione = crea_testi_tiktok(prodotti, categoria)
+            pubblica_il = max(
+                datetime.now(ROMA_TZ) + timedelta(minutes=2),
+                datetime.strptime(f"{data_slot} {ora_slot}", "%Y-%m-%d %H:%M").replace(tzinfo=ROMA_TZ),
+            )
+            if not _tiktok_configurato():
+                raise RuntimeError("automazione messa in pausa prima dell'invio")
+            buffer_post_id = await asyncio.to_thread(
+                _pubblica_su_buffer, titolo, descrizione, media_url, pubblica_il
+            )
+            aggiornato = datetime.now(ROMA_TZ).isoformat(timespec="seconds")
+            db = sqlite3.connect(DB_PATH)
+            db.execute(
+                """
+                UPDATE tiktok_pubblicazioni
+                SET categoria=?, titolo=?, file_immagine=?, buffer_post_id=?,
+                    stato='programmato', errore=NULL, aggiornato_il=?
+                WHERE id=?
+                """,
+                (categoria, titolo, nome_file, buffer_post_id, aggiornato, pubblicazione_id),
+            )
+            db.executemany(
+                "INSERT OR IGNORE INTO tiktok_pubblicazioni_prodotti (pubblicazione_id, asin, usato_il) VALUES (?, ?, ?)",
+                [(pubblicazione_id, p["asin"], aggiornato) for p in prodotti],
+            )
+            db.commit()
+            db.close()
+            await _notifica_admin_automazione(
+                bot,
+                f"✅ Post TikTok programmato per le {pubblica_il.strftime('%H:%M')}: "
+                f"{AUTO_CATEGORIE.get(categoria, (categoria,))[0]} · 2 prodotti · stile {numero_stile % 10 + 1}.",
+            )
+            return True
+        except Exception as errore:
+            db = sqlite3.connect(DB_PATH)
+            db.execute(
+                "UPDATE tiktok_pubblicazioni SET stato='errore', errore=?, aggiornato_il=? WHERE id=?",
+                (str(errore)[:1000], datetime.now(ROMA_TZ).isoformat(timespec="seconds"), pubblicazione_id),
+            )
+            db.commit()
+            db.close()
+            print(f"Errore automazione TikTok: {errore}")
+            await _notifica_admin_automazione(bot, f"❌ Post TikTok non programmato: {str(errore)[:700]}")
+            return False
+
+
+async def controlla_pubblicazioni_tiktok(app):
+    while True:
+        try:
+            if _tiktok_configurato():
+                adesso = datetime.now(ROMA_TZ)
+                for ora_slot in _orari_tiktok():
+                    slot = datetime.strptime(
+                        f"{adesso.date().isoformat()} {ora_slot}", "%Y-%m-%d %H:%M"
+                    ).replace(tzinfo=ROMA_TZ)
+                    ritardo = (adesso - slot).total_seconds()
+                    if 0 <= ritardo <= 15 * 60:
+                        await _prepara_slot_tiktok(
+                            app.bot, adesso.date().isoformat(), ora_slot
+                        )
+        except Exception as errore:
+            print(f"Errore controllo TikTok: {errore}")
+        await asyncio.sleep(30)
+
+
+async def testa_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    if update.callback_query:
+        await update.callback_query.answer()
+    destinazione = update.effective_message
+    messaggio = await destinazione.reply_text("🔎 Preparo un'anteprima TikTok con due offerte TECH…")
+    prodotti, categoria = await seleziona_coppia_tiktok()
+    if len(prodotti) < 2:
+        await messaggio.edit_text("ℹ️ Non ci sono due offerte TECH valide della stessa categoria negli ultimi giorni.")
+        return
+    immagine = await asyncio.to_thread(crea_locandina_tiktok, prodotti, categoria, 0)
+    titolo, descrizione = crea_testi_tiktok(prodotti, categoria)
+    await messaggio.delete()
+    await destinazione.reply_photo(photo=immagine, caption=f"🧪 ANTEPRIMA TIKTOK\n{titolo}")
+    await destinazione.reply_text(descrizione, reply_markup=InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎵 MENU TIKTOK", callback_data="tiktok_menu")
+    ]]))
 
 
 def crea_caption_con_link(messaggio, link, messaggio_gia_html=False):
@@ -1491,6 +2084,10 @@ async def avvia_programmazioni(app):
 
     app.create_task(
         controlla_offerte_terminate(app)
+    )
+
+    app.create_task(
+        controlla_pubblicazioni_tiktok(app)
     )
 
 
@@ -6813,6 +7410,7 @@ def menu_principale():
 
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("🎵 AUTOMAZIONE TIKTOK", callback_data="tiktok_menu")],
             [
                 InlineKeyboardButton(
                     "📤 PUBBLICA OFFERTA",
@@ -11341,6 +11939,7 @@ def main():
     inizializza_programmazioni()
     inizializza_recap()
     inizializza_automazione()
+    inizializza_tiktok()
     avvia_api_offerte_web()
 
     app = (
@@ -11515,6 +12114,13 @@ def main():
         )
     )
 
+    app.add_handler(
+        CommandHandler(
+            "tiktok_test",
+            testa_tiktok,
+        )
+    )
+
 
     # =====================================================
     # ADMIN OFFERTE
@@ -11623,6 +12229,8 @@ def main():
         allow_reentry=True,
     )
     app.add_handler(ricerca_archivio)
+
+    app.add_handler(CallbackQueryHandler(gestisci_tiktok, pattern=r"^tiktok_(menu|toggle|test|history|times|times_(1130_1930|1230_2030|1300_2100)|discount|discount_(10|20|30|40))$"))
 
     # Nuovi menu principali raggruppati.
     app.add_handler(

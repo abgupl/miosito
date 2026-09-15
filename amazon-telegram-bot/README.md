@@ -31,6 +31,25 @@ Vai su: repository → **Settings** → **Secrets and variables** → **Actions*
 | `TELEGRAM_BOT_TOKEN` | Il token che ti ha dato @BotFather |
 | `TELEGRAM_CHAT_ID` | `@nometuocanale` se il canale è pubblico, o l'ID numerico se privato |
 
+### Pubblicazione automatica su TikTok tramite Buffer
+
+Il bot può programmare due post fotografici TikTok al giorno, ciascuno con due
+offerte già pubblicate sul canale TECH, appartenenti alla stessa categoria e
+approvate nuovamente dal filtro qualità della modalità Selettiva.
+Configura queste variabili su Railway:
+
+| Variabile | Valore |
+|---|---|
+| `BUFFER_API_KEY` | Chiave API personale generata da Buffer |
+| `BUFFER_TIKTOK_CHANNEL_ID` | ID del canale TikTok restituito dalla Buffer API |
+| `TIKTOK_POST_TIMES` | Orari italiani separati da virgola, predefinito `12:30,20:30` |
+| `TIKTOK_AUTO_ENABLED` | `1` per attivare, `0` per sospendere; predefinito `1` |
+| `TIKTOK_MIN_DISCOUNT` | Sconto minimo corrente; predefinito `20` |
+
+`RAILWAY_PUBLIC_DOMAIN` viene fornita automaticamente da Railway e serve a
+Buffer per scaricare la locandina. Il comando amministratore `/tiktok_test`
+genera un'anteprima su Telegram senza pubblicarla e senza consumare lo slot.
+
 ### 3. Aggiungi il bot come amministratore del canale Telegram
 
 Impostazioni canale → Amministratori → Aggiungi admin → cerca il tuo bot,
@@ -75,3 +94,19 @@ python bot.py
   funzionare, controlla la pagina Associates per eventuali migrazioni richieste.
 - Cambia la frequenza modificando la riga `cron` nel file del workflow (il
   formato è minuto-ora-giorno-mese-giorno_settimana, in UTC).
+
+### Pannello amministratore TikTok
+
+Nel menu principale del bot: **🎵 AUTOMAZIONE TIKTOK**. Permette di mettere
+in pausa gli invii, scegliere una coppia di orari italiani (11:30/19:30,
+12:30/20:30 oppure 13:00/21:00), impostare lo sconto minimo e consultare gli
+ultimi otto tentativi. Il filtro resta Selettiva. Le impostazioni sono persistenti
+nel database: le variabili di orario e sconto inizializzano solo il primo avvio.
+`TIKTOK_AUTO_ENABLED=0` resta un blocco generale Railway.
+
+L'anteprima, anche via `/tiktok_test` nella chat privata amministratore,
+invia immagine e descrizione completa separatamente, senza pubblicare.
+La pausa non cancella post già affidati a Buffer o una richiesta già in corso.
+Lo stato “programmato” indica l'accettazione da Buffer, non la pubblicazione
+confermata da TikTok. Il pulsante **APRI BUFFER** consente il controllo finale.
+Il limite giornaliero resta due anche dopo un cambio di orari.
