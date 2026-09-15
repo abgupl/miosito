@@ -1617,7 +1617,6 @@ def inizializza_automazione():
     defaults_raccolte = {
         "raccolte_attive": "0",
         "raccolte_frequenza_post": "4",
-        "raccolte_massimo_giorno": "1",
         "raccolte_quantita": "4",
         "raccolte_prezzo_massimo": "25",
         "raccolte_sconto_minimo": "10",
@@ -1917,7 +1916,6 @@ def leggi_config_raccolte_casa():
     return {
         "attive": valore("raccolte_attive", "0") == "1",
         "frequenza_post": int(valore("raccolte_frequenza_post", "4")),
-        "massimo_giorno": int(valore("raccolte_massimo_giorno", "1")),
         "quantita": int(valore("raccolte_quantita", "4")),
         "prezzo_massimo": int(valore("raccolte_prezzo_massimo", "25")),
         "sconto_minimo": int(valore("raccolte_sconto_minimo", "10")),
@@ -2598,7 +2596,6 @@ async def mostra_menu_raccolte_casa(query):
         "🧺 RACCOLTE CASA\n\n"
         f"Stato: {stato}\n"
         f"Frequenza: ogni {configurazione['frequenza_post']} post CASA\n"
-        f"Limite: {configurazione['massimo_giorno']} raccolta al giorno\n"
         f"Prodotti: {configurazione['quantita']}\n"
         f"Prezzo massimo: {configurazione['prezzo_massimo']} €\n"
         f"Sconto minimo: {configurazione['sconto_minimo']}%\n"
@@ -3828,12 +3825,8 @@ async def testa_raccolta_casa(query, context):
 
 
 def raccolta_casa_pronta(configurazione):
-    oggi = datetime.now(ROMA_TZ).date().isoformat()
+    """La raccolta è pronta ogni N post CASA, senza alcun limite giornaliero."""
     db = sqlite3.connect(DB_PATH)
-    pubblicate_oggi = db.execute(
-        "SELECT COUNT(*) FROM raccolte_casa WHERE substr(pubblicata_il,1,10)=?",
-        (oggi,),
-    ).fetchone()[0]
     ultima = db.execute(
         "SELECT pubblicata_il FROM raccolte_casa ORDER BY pubblicata_il DESC LIMIT 1"
     ).fetchone()
@@ -3846,10 +3839,7 @@ def raccolta_casa_pronta(configurazione):
         f"SELECT COUNT(*) FROM recap_offerte WHERE {' AND '.join(condizioni)}", parametri
     ).fetchone()[0]
     db.close()
-    return (
-        pubblicate_oggi < configurazione["massimo_giorno"]
-        and post_da_ultima >= configurazione["frequenza_post"]
-    )
+    return post_da_ultima >= configurazione["frequenza_post"]
 
 
 async def tenta_pubblicazione_raccolta_casa(bot):
