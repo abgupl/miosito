@@ -34,7 +34,8 @@ Vai su: repository → **Settings** → **Secrets and variables** → **Actions*
 ### Pubblicazione automatica su TikTok tramite Buffer
 
 Il bot può programmare due post fotografici TikTok al giorno, ciascuno con due
-offerte già pubblicate sul canale TECH e appartenenti alla stessa categoria.
+offerte già pubblicate sul canale TECH, appartenenti alla stessa categoria e
+approvate nuovamente dal filtro qualità della modalità Selettiva.
 Configura queste variabili su Railway:
 
 | Variabile | Valore |

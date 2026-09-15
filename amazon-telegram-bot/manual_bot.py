@@ -1014,6 +1014,8 @@ async def seleziona_coppia_tiktok():
     for categoria, righe in _candidati_tiktok_per_categoria():
         righe = righe[:10]
         per_asin = {str(riga["asin"]).upper(): riga for riga in righe}
+        configurazione = leggi_config_automatica("tech")
+        snapshot_filtri = carica_snapshot_filtri(categoria, configurazione)
         try:
             items = await asyncio.to_thread(get_items, list(per_asin))
         except Exception as errore:
@@ -1027,11 +1029,31 @@ async def seleziona_coppia_tiktok():
             riga = per_asin.get(str(prodotto.get("asin") or "").upper())
             if not riga:
                 continue
+            bonus_priorita, nome_priorita = valuta_priorita_prodotto(
+                prodotto, categoria, snapshot_filtri
+            )
+            approvato, punteggio, motivi = valuta_qualita_prodotto(
+                prodotto,
+                categoria,
+                "selettiva",
+                snapshot_filtri,
+                bonus_priorita,
+            )
+            if not approvato:
+                continue
             prodotto["link"] = riga["link"]
             prodotto["categoria"] = categoria
+            prodotto["bonus_priorita"] = bonus_priorita
+            prodotto["nome_priorita"] = nome_priorita
+            prodotto["punteggio_qualita"] = punteggio
+            prodotto["motivi_qualita"] = motivi
             prodotti.append(prodotto)
         prodotti.sort(
-            key=lambda p: (int(p.get("sconto") or 0), -float(p.get("prezzo_valore") or 0)),
+            key=lambda p: (
+                int(p.get("bonus_priorita") or 0),
+                int(p.get("punteggio_qualita") or 0),
+                int(p.get("sconto") or 0),
+            ),
             reverse=True,
         )
         if len(prodotti) >= 2:
