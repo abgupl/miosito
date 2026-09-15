@@ -2108,7 +2108,16 @@ def leggi_config_raccolte_tech():
 
 
 def salva_config_raccolta_tech(chiave, valore):
-    salva_config_automatica(f"raccolte_{chiave}", valore, "tech")
+    # Le raccolte TECH hanno uno spazio di configurazione indipendente.
+    # La configurazione automatica TECH generale usa chiavi senza prefisso,
+    # quindi qui il prefisso va scritto esplicitamente.
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
+        (f"tech:raccolte_{chiave}", str(valore)),
+    )
+    db.commit()
+    db.close()
 
 
 def imposta_tema_raccolta_tech(tema):
