@@ -13,7 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
 ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
 TZ = ZoneInfo("Europe/Rome")
-LEAGUE_LAUNCH = datetime(2026, 10, 28, 0, 0, tzinfo=TZ)
+LEAGUE_LAUNCH = datetime(2026, 9, 28, 0, 0, tzinfo=TZ)
 STARTING_BUDGET = 100
 TEAM_SIZE = 5
 PRIZE_FIRST_EUR = 10
@@ -424,7 +424,7 @@ async def club_home(update, context):
         text = (
             "🏆 BESTPRICE LEAGUE\n\n"
             "Sta arrivando il Fantacalcio delle Offerte 🔥\n\n"
-            "📅 PARTENZA: 28 OTTOBRE 2026\n"
+            "📅 PARTENZA: 28 SETTEMBRE 2026\n"
             f"{countdown_text()}\n\n"
             "💰 100 crediti • 🛒 5 prodotti • ©️ 1 Capitano\n\n"
             f"🥇 1°: Gift Card Amazon.it da {PRIZE_FIRST_EUR} € 🎁\n"
