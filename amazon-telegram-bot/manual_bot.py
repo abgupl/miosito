@@ -50,6 +50,8 @@ from league import (
     league_admin_events, league_admin_scoring, league_admin_set_scoring,
     league_admin_set_captain_mult, league_admin_product, league_admin_cost,
     league_admin_coeff, league_admin_toggle, league_admin_sim, countdown_text,
+    league_admin_test_toggle, league_admin_test_player, league_admin_test_reset,
+    league_admin_test_sim_team, league_admin_test_product, league_admin_test_score,
 )
 
 # =========================================================
@@ -12592,6 +12594,12 @@ def main():
     app.add_handler(CallbackQueryHandler(league_admin_coeff, pattern=r"^league_coeff_"))
     app.add_handler(CallbackQueryHandler(league_admin_toggle, pattern=r"^league_toggle_"))
     app.add_handler(CallbackQueryHandler(league_admin_sim, pattern=r"^league_sim_"))
+    app.add_handler(CallbackQueryHandler(league_admin_test_toggle, pattern="^league_admin_test_toggle$"))
+    app.add_handler(CallbackQueryHandler(league_admin_test_player, pattern="^league_admin_test_player$"))
+    app.add_handler(CallbackQueryHandler(league_admin_test_reset, pattern="^league_admin_test_reset$"))
+    app.add_handler(CallbackQueryHandler(league_admin_test_sim_team, pattern="^league_admin_test_sim$"))
+    app.add_handler(CallbackQueryHandler(league_admin_test_product, pattern=r"^league_test_prod_"))
+    app.add_handler(CallbackQueryHandler(league_admin_test_score, pattern=r"^league_test_score_"))
 
 
     print(
