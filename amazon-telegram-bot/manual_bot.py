@@ -39,30 +39,18 @@ from telegram.ext import (
 
 
 # =========================================================
-# CLUB / PUNTI
+# BESTPRICE LEAGUE
 # =========================================================
 
-from club import (
-    inizializza_database,
-    registra_utente,
-    menu_club,
-    mostra_punti,
-    invita_amici,
-    mostra_premi,
-    richiedi_premio,
-    gestisci_premio_admin,
-    club_home,
-
-    admin_club_menu,
-    admin_club_utenti,
-    admin_club_utente,
-    admin_modifica_punti,
-    admin_storico_utente,
-    admin_movimenti,
-    admin_inviti,
-    admin_premi,
+from league import (
+    inizializza_database, club_home, league_signup, league_text_input,
+    league_profile, league_team, league_market, league_category, league_buy,
+    league_captain, league_set_captain, league_confirm, league_rank, league_gold,
+    league_rules, admin_club_menu, league_admin_users, league_admin_products,
+    league_admin_events, league_admin_scoring, league_admin_set_scoring,
+    league_admin_set_captain_mult, league_admin_product, league_admin_cost,
+    league_admin_coeff, league_admin_toggle, league_admin_sim, countdown_text,
 )
-
 
 # =========================================================
 # CONFIGURAZIONE
@@ -7614,39 +7602,11 @@ async def torna_menu_admin(
 
 
 def menu_utente_principale():
-
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "📱 TECH & GAMING",
-                    url="https://t.me/bestprice_2026",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🏠 CASA & FAI DA TE",
-                    url=CASA_CHANNEL_URL,
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🎁 CLUB & PREMI",
-                    callback_data="club_home",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "👥 INVITA AMICI",
-                    callback_data="club_invita",
-                ),
-                InlineKeyboardButton(
-                    "⭐ I MIEI PUNTI",
-                    callback_data="club_punti",
-                ),
-            ],
-        ]
-    )
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 TECH & GAMING", url="https://t.me/bestprice_2026")],
+        [InlineKeyboardButton("🏠 CASA & FAI DA TE", url=CASA_CHANNEL_URL)],
+        [InlineKeyboardButton("🏆 BESTPRICE LEAGUE", callback_data="club_home")],
+    ])
 
 
 async def torna_menu_utente(
@@ -7696,20 +7656,6 @@ async def start(
     # =====================================================
     # UTENTE NORMALE
     # =====================================================
-    invitato_da = None
-
-    if context.args:
-
-        try:
-            invitato_da = int(context.args[0])
-
-        except (ValueError, TypeError):
-            invitato_da = None
-
-    registra_utente(
-        user,
-        invitato_da
-    )
 
     testo = (
         "🔥 BENVENUTO SU BESTPRICE24H\n\n"
@@ -7719,8 +7665,8 @@ async def start(
         "che ti interessa.\n\n"
         "📲 Scegli i tuoi canali preferiti e non perderti "
         "le occasioni migliori.\n\n"
-        "🎁 Con il Club BestPrice24h puoi invitare amici, "
-        "accumulare punti e ottenere premi.\n\n"
+        "🏆 Entra nella BestPrice League: crea la tua squadra di prodotti "
+        "e sfida gli altri utenti sulle offerte del mese.\n\n"
         "👇 Da dove vuoi iniziare?"
     )
 
@@ -12563,6 +12509,13 @@ def main():
         gestione_programmati
     )
 
+    # Input testuale League: username, nome squadra e valori admin.
+    # Usa un gruppo precedente al fallback generico di reinvio.
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, league_text_input),
+        group=-1,
+    )
+
     # Deve stare dopo gestione_programmati: altrimenti intercetta
     # il numero digitato per modificare un post programmato.
     app.add_handler(
@@ -12610,123 +12563,39 @@ def main():
 
 
     # =====================================================
-    # CLUB UTENTI
+    # BESTPRICE LEAGUE
     # =====================================================
+    app.add_handler(CallbackQueryHandler(club_home, pattern="^club_home$"))
+    app.add_handler(CallbackQueryHandler(league_signup, pattern="^league_signup$"))
+    app.add_handler(CallbackQueryHandler(league_profile, pattern="^league_profile$"))
+    app.add_handler(CallbackQueryHandler(league_team, pattern="^league_team$"))
+    app.add_handler(CallbackQueryHandler(league_market, pattern="^league_market$"))
+    app.add_handler(CallbackQueryHandler(league_category, pattern=r"^league_cat_"))
+    app.add_handler(CallbackQueryHandler(league_buy, pattern=r"^league_buy_"))
+    app.add_handler(CallbackQueryHandler(league_captain, pattern="^league_captain$"))
+    app.add_handler(CallbackQueryHandler(league_set_captain, pattern=r"^league_cap_"))
+    app.add_handler(CallbackQueryHandler(league_confirm, pattern="^league_confirm$"))
+    app.add_handler(CallbackQueryHandler(league_rank, pattern="^league_rank$"))
+    app.add_handler(CallbackQueryHandler(league_gold, pattern="^league_gold$"))
+    app.add_handler(CallbackQueryHandler(league_rules, pattern="^league_rules$"))
 
-    app.add_handler(
-        CallbackQueryHandler(
-            mostra_punti,
-            pattern="^club_punti$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            invita_amici,
-            pattern="^club_invita$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            mostra_premi,
-            pattern="^club_premi$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            club_home,
-            pattern="^club_home$",
-        )
-    )
-
-
-    # =====================================================
-    # PREMI
-    # =====================================================
-
-    app.add_handler(
-        CallbackQueryHandler(
-            richiedi_premio,
-            pattern="^premio_(5|10)$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            gestisci_premio_admin,
-            pattern=(
-                "^(approva|rifiuta)"
-                "_premio_[0-9]+$"
-            ),
-        )
-    )
-
-
-    # =====================================================
-    # PANNELLO ADMIN CLUB
-    # =====================================================
-
-    app.add_handler(
-        CallbackQueryHandler(
-            admin_club_menu,
-            pattern="^admin_club$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            admin_club_utenti,
-            pattern="^adm_utenti$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            admin_club_utente,
-            pattern=r"^adm_user_[0-9]+$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            admin_modifica_punti,
-            pattern=r"^adm_pts_[0-9]+_(1|5|m1|m5)$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            admin_storico_utente,
-            pattern=r"^adm_storico_[0-9]+$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            admin_movimenti,
-            pattern="^adm_movimenti$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            admin_inviti,
-            pattern="^adm_inviti$",
-        )
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(
-            admin_premi,
-            pattern="^adm_premi$",
-        )
-    )
+    # ADMIN LEAGUE
+    app.add_handler(CallbackQueryHandler(admin_club_menu, pattern="^admin_club$"))
+    app.add_handler(CallbackQueryHandler(league_admin_users, pattern="^league_admin_users$"))
+    app.add_handler(CallbackQueryHandler(league_admin_products, pattern="^league_admin_products$"))
+    app.add_handler(CallbackQueryHandler(league_admin_events, pattern="^league_admin_events$"))
+    app.add_handler(CallbackQueryHandler(league_admin_scoring, pattern="^league_admin_scoring$"))
+    app.add_handler(CallbackQueryHandler(league_admin_set_scoring, pattern=r"^league_admin_pts_(10|20|30|40|50)$"))
+    app.add_handler(CallbackQueryHandler(league_admin_set_captain_mult, pattern="^league_admin_captain_mult$"))
+    app.add_handler(CallbackQueryHandler(league_admin_product, pattern=r"^league_admin_product_"))
+    app.add_handler(CallbackQueryHandler(league_admin_cost, pattern=r"^league_cost_"))
+    app.add_handler(CallbackQueryHandler(league_admin_coeff, pattern=r"^league_coeff_"))
+    app.add_handler(CallbackQueryHandler(league_admin_toggle, pattern=r"^league_toggle_"))
+    app.add_handler(CallbackQueryHandler(league_admin_sim, pattern=r"^league_sim_"))
 
 
     print(
-        "🤖 Amazon Offer Bot + Club V2 avviato"
+        "🤖 Amazon Offer Bot + BestPrice League V1 avviato"
     )
 
     app.run_polling()
