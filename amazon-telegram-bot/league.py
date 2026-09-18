@@ -79,14 +79,13 @@ async def verifica_admin(update):
 def current_week(now=None):
     """Restituisce la settimana di gioco corrente.
 
-    La prima settimana inaugurale è eccezionalmente corta: 28 ottobre-1 novembre 2026.
-    Dal 2 novembre le giornate di League vanno sempre da lunedì 00:00 a lunedì 00:00.
+    La League parte lunedì 28 settembre 2026.
+    Ogni settimana va da lunedì 00:00 a lunedì 00:00.
     """
     now = now or now_dt()
-    first_end = datetime(2026, 11, 2, 0, 0, tzinfo=TZ)
-    if now < first_end:
+    if now < LEAGUE_LAUNCH:
         start = LEAGUE_LAUNCH
-        end = first_end
+        end = start + timedelta(days=7)
     else:
         monday = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
         start = monday
@@ -413,9 +412,11 @@ def preseason_menu(registered):
 
 
 async def club_home(update, context):
-    """Mantiene il vecchio nome funzione per non rompere manual_bot.py."""
+    """Entry point League: callback interno o deep-link /start league."""
     query = update.callback_query
-    if query: await query.answer()
+    if query:
+        await query.answer()
+    message = query.message if query else update.effective_message
     user = update.effective_user
     league_user = get_league_user(user.id)
     if league_user: registra_o_aggiorna_telegram_user(user)
@@ -431,12 +432,12 @@ async def club_home(update, context):
             f"🥈 2°: Gift Card Amazon.it da {PRIZE_SECOND_EUR} € 🎁\n\n"
             + (f"✅ Pre-iscritto come {league_user['league_username']}" if league_user else "👇 Pre-iscriviti e scegli il tuo username di gioco.")
         )
-        await query.message.reply_text(text, reply_markup=preseason_menu(bool(league_user)))
+        await message.reply_text(text, reply_markup=preseason_menu(bool(league_user)))
         return
     if not league_user:
-        await query.message.reply_text("🏆 BESTPRICE LEAGUE\n\nPrima di giocare devi creare il tuo username.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 CREA USERNAME", callback_data="league_signup")]]))
+        await message.reply_text("🏆 BESTPRICE LEAGUE\n\nPrima di giocare devi creare il tuo username.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 CREA USERNAME", callback_data="league_signup")]]))
         return
-    await query.message.reply_text("🏆 BESTPRICE LEAGUE\n\n🟢 Settimana di gioco attiva!\nCrea la tua rosa, scegli il Capitano e scala la classifica.", reply_markup=menu_league())
+    await message.reply_text("🏆 BESTPRICE LEAGUE\n\n🟢 Settimana di gioco attiva!\nCrea la tua rosa, scegli il Capitano e scala la classifica.", reply_markup=menu_league())
 
 
 async def league_signup(update, context):
@@ -458,7 +459,7 @@ async def league_text_input(update, context):
         if not ok:
             await update.message.reply_text(f"❌ {err}\n\nProva con un altro username:"); return True
         context.user_data.pop("league_waiting", None)
-        await update.message.reply_text(f"✅ BENVENUTO {text.upper()}!\n\n🎟 Pre-iscrizione completata.\n{countdown_text()}\n\nIl 28 ottobre si aprirà la prima settimana di gioco.", reply_markup=preseason_menu(True)); return True
+        await update.message.reply_text(f"✅ BENVENUTO {text.upper()}!\n\n🎟 Pre-iscrizione completata.\n{countdown_text()}\n\nIl 28 settembre si aprirà la prima settimana di gioco.", reply_markup=preseason_menu(True)); return True
     if waiting == "team_name":
         ok, err = set_team_name(user.id, text)
         if not ok:
@@ -487,7 +488,7 @@ async def league_team(update, context):
     if not get_league_user(uid):
         await q.message.reply_text("Prima devi creare il tuo username League."); return
     if player_state(uid)=="PRESEASON":
-        await q.message.reply_text("🔒 La BestPrice League parte il 28 ottobre."); return
+        await q.message.reply_text("🔒 La BestPrice League parte il 28 settembre."); return
     team=ensure_team(uid)
     if not team["team_name"]:
         context.user_data["league_waiting"]="team_name"
@@ -505,7 +506,7 @@ async def league_team(update, context):
 async def league_market(update, context):
     q=update.callback_query; await q.answer(); uid=update.effective_user.id
     if player_state(uid)=="PRESEASON":
-        await q.message.reply_text("🔒 La BestPrice League parte il 28 ottobre."); return
+        await q.message.reply_text("🔒 La BestPrice League parte il 28 settembre."); return
     if not get_league_user(uid): await q.message.reply_text("Prima crea il tuo username League."); return
     team=ensure_team(uid)
     if not team["team_name"]:
@@ -605,7 +606,7 @@ async def league_rules(update, context):
           "10-19% = +1\n20-29% = +3\n30-39% = +5\n40-49% = +8\n50% o più = +12\n\n"
           "🏆 Vince chi totalizza più punti nella settimana.\n"
           f"🥇 1° = Gift Card Amazon.it da {PRIZE_FIRST_EUR} €\n🥈 2° = Gift Card Amazon.it da {PRIZE_SECOND_EUR} €\n\n"
-          "📅 Prima settimana: 28 ottobre-1 novembre 2026.\n"
+          "📅 Prima settimana: 28 settembre-4 ottobre 2026.\n"
           "Dalla settimana successiva: lunedì-domenica.\n"
           "A ogni nuova settimana punteggio e classifica ripartono da zero.")
     await q.message.reply_text(text, reply_markup=preseason_menu(bool(get_league_user(update.effective_user.id))) if stato_stagione()=="PRESEASON" else menu_league())
