@@ -1641,12 +1641,11 @@ async def invia_recap_giornaliero(bot, canale, telegram_chat_id):
         f"🔥 <b>RECAP {canale.upper()} DI OGGI</b>\n\n"
     )
 
-    club_footer = (
+    league_footer = (
         "\n\n────────────────\n"
-        '🎁 <a href="https://t.me/BestPrice24h_bot">'
-        "<b>Entra nel Club</b></a>"
-        " → invita amici e accumula punti!\n"
-        "👥 Invita amici • ⭐ Accumula punti • 🎁 Ottieni premi"
+        '🏆 <a href="https://t.me/BestPrice24h_bot?start=league">'
+        "<b>BESTPRICE LEAGUE</b></a>\n"
+        "Crea la tua squadra e trasforma le offerte in punti. ⚽"
     )
 
     messaggi = []
@@ -1657,7 +1656,7 @@ async def invia_recap_giornaliero(bot, canale, telegram_chat_id):
         candidato = corrente + riga + "\n\n"
 
         if (
-            len(candidato) + len(club_footer) > 3900
+            len(candidato) + len(league_footer) > 3900
             and corrente != intestazione
         ):
             messaggi.append(corrente.rstrip())
@@ -1667,7 +1666,7 @@ async def invia_recap_giornaliero(bot, canale, telegram_chat_id):
 
     if corrente.strip():
         messaggi.append(
-            corrente.rstrip() + club_footer
+            corrente.rstrip() + league_footer
         )
 
     for testo in messaggi:
@@ -1913,8 +1912,8 @@ async def invia_offerta_programmata(
         [
             [
                 InlineKeyboardButton(
-                    "🎁 CLUB",
-                    url="https://t.me/BestPrice24h_bot",
+                    "🏆 LEAGUE",
+                    url="https://t.me/BestPrice24h_bot?start=league",
                 ),
                 InlineKeyboardButton(
                     "🛒 APRI",
@@ -4639,7 +4638,7 @@ def crea_caption_raccolta_casa(prodotti, tema, anteprima=False):
 
 def tastiera_raccolta_casa():
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
+        InlineKeyboardButton("🏆 LEAGUE", url="https://t.me/BestPrice24h_bot?start=league"),
         InlineKeyboardButton("🏠 CANALE CASA", url=CASA_CHANNEL_URL),
     ]])
 
@@ -5036,7 +5035,7 @@ def crea_caption_raccolta_tech(prodotti, tema, anteprima=False):
 
 def tastiera_raccolta_tech():
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
+        InlineKeyboardButton("🏆 LEAGUE", url="https://t.me/BestPrice24h_bot?start=league"),
         InlineKeyboardButton("📱 CANALE TECH", url=TECH_CHANNEL_URL),
     ]])
 
@@ -6292,7 +6291,7 @@ def crea_corpo_offerta_automatica(prodotto, categoria=None):
 
 def tastiera_offerta_automatica(link):
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
+        InlineKeyboardButton("🏆 LEAGUE", url="https://t.me/BestPrice24h_bot?start=league"),
         InlineKeyboardButton("🛒 APRI", url=link),
     ]])
 
@@ -7605,9 +7604,12 @@ async def torna_menu_admin(
 
 def menu_utente_principale():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📱 TECH & GAMING", url="https://t.me/bestprice_2026")],
-        [InlineKeyboardButton("🏠 CASA & FAI DA TE", url=CASA_CHANNEL_URL)],
-        [InlineKeyboardButton("🏆 BESTPRICE LEAGUE", callback_data="club_home")],
+        [InlineKeyboardButton("🏆 GIOCA ALLA LEAGUE", callback_data="club_home")],
+        [
+            InlineKeyboardButton("📱 OFFERTE TECH", url="https://t.me/bestprice_2026"),
+            InlineKeyboardButton("🏠 OFFERTE CASA", url=CASA_CHANNEL_URL),
+        ],
+        [InlineKeyboardButton("📖 COME FUNZIONA", callback_data="league_rules")],
     ])
 
 
@@ -7621,7 +7623,8 @@ async def torna_menu_utente(
 
     await query.edit_message_text(
         "🔥 BESTPRICE24H\n\n"
-        "Meno offerte. Più affari.\n\n"
+        "Offerte selezionate e BestPrice League.\n\n"
+        "🏆 Crea la tua squadra, segui le offerte e scala la classifica.\n\n"
         "Scegli cosa vuoi fare 👇",
         reply_markup=menu_utente_principale(),
     )
@@ -7639,6 +7642,12 @@ async def start(
     user = update.effective_user
 
     if not user:
+        return ConversationHandler.END
+
+    # Deep-link dai pulsanti sotto i post Telegram.
+    # Apre direttamente la BestPrice League sia per utenti sia per admin.
+    if context.args and context.args[0].lower() == "league":
+        await club_home(update, context)
         return ConversationHandler.END
 
     # =====================================================
@@ -7661,14 +7670,10 @@ async def start(
 
     testo = (
         "🔥 BENVENUTO SU BESTPRICE24H\n\n"
-        "Meno offerte. Più affari.\n\n"
-        "Qui trovi una selezione delle migliori offerte Amazon, "
-        "organizzate per categoria, così puoi seguire solo quello "
-        "che ti interessa.\n\n"
-        "📲 Scegli i tuoi canali preferiti e non perderti "
-        "le occasioni migliori.\n\n"
-        "🏆 Entra nella BestPrice League: crea la tua squadra di prodotti "
-        "e sfida gli altri utenti sulle offerte del mese.\n\n"
+        "Offerte selezionate e BestPrice League.\n\n"
+        "🏆 Crea la tua squadra di prodotti, segui gli sconti e "
+        "scala la classifica settimanale.\n\n"
+        "📱 Segui le offerte Tech oppure 🏠 Casa direttamente dai nostri canali.\n\n"
         "👇 Da dove vuoi iniziare?"
     )
 
@@ -10826,8 +10831,8 @@ async def conferma(
             [
                 [
                     InlineKeyboardButton(
-                        "🎁 CLUB",
-                        url="https://t.me/BestPrice24h_bot",
+                        "🏆 LEAGUE",
+                        url="https://t.me/BestPrice24h_bot?start=league",
                     ),
                     InlineKeyboardButton(
                         "🛒 APRI",
@@ -11581,7 +11586,7 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
         messaggio_gia_html=draft.get("template") == "automatico",
     )
     bottoni = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎁 CLUB", url="https://t.me/BestPrice24h_bot"),
+        InlineKeyboardButton("🏆 LEAGUE", url="https://t.me/BestPrice24h_bot?start=league"),
         InlineKeyboardButton("🛒 APRI", url=draft["link"]),
     ]])
 
