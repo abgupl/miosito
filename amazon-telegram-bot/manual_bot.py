@@ -7433,7 +7433,7 @@ def menu_principale():
             ],
             [
                 InlineKeyboardButton(
-                    "👥 GESTIONE CLUB",
+                    "🏆 GESTIONE LEAGUE",
                     callback_data="admin_club",
                 )
             ],
