@@ -88,6 +88,21 @@ def stato_stagione():
     return "ENDED"
 
 
+def test_mode_active():
+    return league_setting("test_mode", "0") == "1"
+
+
+def player_state(user_id):
+    """L'admin in modalità test vede la League come ACTIVE prima del lancio."""
+    if e_admin(user_id) and test_mode_active() and stato_stagione() == "PRESEASON":
+        return "ACTIVE"
+    return stato_stagione()
+
+
+def is_test_player(user_id):
+    return e_admin(user_id) and test_mode_active() and stato_stagione() == "PRESEASON"
+
+
 def countdown_text():
     delta = SEASON_START - now_dt()
     if delta.total_seconds() <= 0:
@@ -379,7 +394,7 @@ async def club_home(update, context):
     user = update.effective_user
     league_user = get_league_user(user.id)
     if league_user: registra_o_aggiorna_telegram_user(user)
-    state = stato_stagione()
+    state = player_state(user.id)
     if state == "PRESEASON":
         text = (
             "🏆 BESTPRICE LEAGUE\n\n"
@@ -438,16 +453,16 @@ async def league_profile(update, context):
     if team:
         text += f"⚽ Squadra: {team['team_name'] or 'da creare'}\n🏆 Punti stagione: {team['score']}\n"
     if pos: text += f"📊 Posizione: #{pos}\n"
-    if stato_stagione()=="PRESEASON": text += f"\n{countdown_text()}"
-    await q.message.reply_text(text, reply_markup=menu_league() if stato_stagione()!='PRESEASON' else preseason_menu(True))
+    if player_state(uid)=="PRESEASON": text += f"\n{countdown_text()}"
+    await q.message.reply_text(text, reply_markup=menu_league() if player_state(uid)!='PRESEASON' else preseason_menu(True))
 
 
 async def league_team(update, context):
     q=update.callback_query; await q.answer(); uid=update.effective_user.id
     if not get_league_user(uid):
         await q.message.reply_text("Prima devi creare il tuo username League."); return
-    if stato_stagione()=="PRESEASON":
-        await q.answer("🔒 Il mercato apre il 1° ottobre.", show_alert=True); return
+    if player_state(uid)=="PRESEASON":
+        await q.message.reply_text("🔒 Il mercato apre il 1° ottobre."); return
     team=ensure_team(uid)
     if not team["team_name"]:
         context.user_data["league_waiting"]="team_name"
@@ -458,14 +473,14 @@ async def league_team(update, context):
     if not products: lines.append("Rosa ancora vuota.")
     buttons=[[InlineKeyboardButton("🛒 MERCATO", callback_data="league_market")]]
     if len(products)==TEAM_SIZE and not team["confirmed"]: buttons.append([InlineKeyboardButton("©️ SCEGLI CAPITANO", callback_data="league_captain")])
-    buttons.append([InlineKeyboardButton("⬅️ LEAGUE", callback_data="club")])
+    buttons.append([InlineKeyboardButton("⬅️ LEAGUE", callback_data="club_home")])
     await q.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def league_market(update, context):
     q=update.callback_query; await q.answer(); uid=update.effective_user.id
-    if stato_stagione()=="PRESEASON":
-        await q.answer("🔒 Il mercato apre il 1° ottobre.", show_alert=True); return
+    if player_state(uid)=="PRESEASON":
+        await q.message.reply_text("🔒 Il mercato apre il 1° ottobre."); return
     if not get_league_user(uid): await q.message.reply_text("Prima crea il tuo username League."); return
     team=ensure_team(uid)
     if not team["team_name"]:
@@ -633,7 +648,11 @@ def _ensure_balance_schema():
         cur.execute("ALTER TABLE league_products ADD COLUMN coefficient REAL NOT NULL DEFAULT 1.0")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_league_products_asin ON league_products(asin) WHERE asin IS NOT NULL AND asin<>''")
     cur.execute("CREATE TABLE IF NOT EXISTS league_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-    for k, v in {"pts_10":"1","pts_20":"3","pts_30":"5","pts_40":"8","pts_50":"12","captain_multiplier":"2"}.items():
+    cur.execute("PRAGMA table_info(league_score_events)")
+    event_cols = {r[1] for r in cur.fetchall()}
+    if "is_test" not in event_cols:
+        cur.execute("ALTER TABLE league_score_events ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0")
+    for k, v in {"pts_10":"1","pts_20":"3","pts_30":"5","pts_40":"8","pts_50":"12","captain_multiplier":"2","test_mode":"0"}.items():
         cur.execute("INSERT OR IGNORE INTO league_settings(key,value) VALUES(?,?)", (k,v))
     db.commit(); db.close()
 
@@ -820,3 +839,151 @@ async def admin_club_menu(update, context):
     ])
     extra=countdown_text() if stato_stagione()=="PRESEASON" else ""
     await q.message.reply_text(f"⚙️ GESTIONE BESTPRICE LEAGUE\n\n📅 {SEASON_NAME}\n🟢 Stato: {stato_stagione()}\n👥 Giocatori: {users}\n⚽ Squadre confermate: {teams}\n📜 Eventi punti: {events}\n\n{extra}",reply_markup=kb)
+
+
+# =========================================================
+# MODALITÀ TEST AMMINISTRATORE
+# =========================================================
+
+def reset_admin_test_player(user_id):
+    """Azzera solo la squadra/eventi test dell'admin, conservando username e Gettoni."""
+    with connessione() as db:
+        team = db.execute(
+            "SELECT id FROM league_teams WHERE telegram_id=? AND season_code=?",
+            (user_id, SEASON_CODE),
+        ).fetchone()
+        if team:
+            team_id = team["id"]
+            db.execute("DELETE FROM league_score_events WHERE team_id=? AND is_test=1", (team_id,))
+            db.execute("DELETE FROM league_team_products WHERE team_id=?", (team_id,))
+            db.execute(
+                "UPDATE league_teams SET team_name=NULL, score=0, confirmed=0, confirmed_at=NULL WHERE id=?",
+                (team_id,),
+            )
+
+
+async def league_admin_test_toggle(update, context):
+    if not await verifica_admin(update): return
+    q = update.callback_query; await q.answer()
+    new_value = "0" if test_mode_active() else "1"
+    set_league_setting("test_mode", new_value)
+    stato = "🟢 ATTIVA" if new_value == "1" else "🔴 DISATTIVATA"
+    await q.message.reply_text(
+        f"🧪 MODALITÀ TEST {stato}\n\n"
+        + ("Ora puoi aprire la League come giocatore e bypassare il PRESEASON." if new_value == "1" else "Il bypass admin è stato disattivato."),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ GESTIONE LEAGUE", callback_data="admin_club")]])
+    )
+
+
+async def league_admin_test_player(update, context):
+    if not await verifica_admin(update): return
+    q = update.callback_query; await q.answer()
+    if not test_mode_active():
+        await q.message.reply_text("❌ Attiva prima la Modalità Test."); return
+    # Mostra esattamente la home che vede un giocatore con stagione attiva.
+    user = update.effective_user
+    league_user = get_league_user(user.id)
+    if not league_user:
+        await q.message.reply_text(
+            "🧪 VISTA GIOCATORE\n\nPrima crea il tuo username League.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 CREA USERNAME", callback_data="league_signup")]])
+        ); return
+    await q.message.reply_text(
+        "🧪 VISTA GIOCATORE — TEST\n\n🏆 BESTPRICE LEAGUE\n🟢 Mercato aperto in modalità test.\n"
+        "Puoi creare la squadra, scegliere i 5 prodotti, il Capitano e confermare la rosa.",
+        reply_markup=menu_league(),
+    )
+
+
+async def league_admin_test_reset(update, context):
+    if not await verifica_admin(update): return
+    q = update.callback_query; await q.answer()
+    reset_admin_test_player(update.effective_user.id)
+    context.user_data.pop("league_waiting", None)
+    await q.message.reply_text(
+        "♻️ TEST AZZERATO\n\nLa tua squadra, rosa, punteggio ed eventi TEST sono stati azzerati.\nUsername League e Gettoni d'Oro sono rimasti invariati.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("👤 APRI COME GIOCATORE", callback_data="league_admin_test_player")],
+            [InlineKeyboardButton("⬅️ GESTIONE LEAGUE", callback_data="admin_club")],
+        ]),
+    )
+
+
+async def league_admin_test_sim_team(update, context):
+    if not await verifica_admin(update): return
+    q=update.callback_query; await q.answer()
+    if not test_mode_active():
+        await q.message.reply_text("❌ Attiva prima la Modalità Test."); return
+    team=get_team(update.effective_user.id)
+    if not team or not team["confirmed"]:
+        await q.message.reply_text("⚠️ Prima crea e conferma la tua squadra test.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 APRI COME GIOCATORE", callback_data="league_admin_test_player")]])); return
+    products=team_products(team["id"])
+    buttons=[[InlineKeyboardButton(("©️ " if p["is_captain"] else "")+p["name"], callback_data=f"league_test_prod_{p['product_code']}")] for p in products]
+    buttons.append([InlineKeyboardButton("⬅️ GESTIONE LEAGUE", callback_data="admin_club")])
+    await q.message.reply_text("⚽ SIMULA OFFERTA SULLA TUA ROSA\n\nScegli il prodotto:", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def league_admin_test_product(update, context):
+    if not await verifica_admin(update): return
+    q=update.callback_query; await q.answer(); code=q.data.replace("league_test_prod_", "", 1)
+    with connessione() as db:
+        p=db.execute("SELECT name FROM league_products WHERE code=?",(code,)).fetchone()
+    if not p: return
+    buttons=[[InlineKeyboardButton(f"-{d}%", callback_data=f"league_test_score_{code}_{d}") for d in (10,20,30)],
+             [InlineKeyboardButton(f"-{d}%", callback_data=f"league_test_score_{code}_{d}") for d in (40,50,60)],
+             [InlineKeyboardButton("⬅️ SCEGLI PRODOTTO", callback_data="league_admin_test_sim")]]
+    await q.message.reply_text(f"🧪 {p['name']}\n\nScegli lo sconto da simulare:", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def league_admin_test_score(update, context):
+    if not await verifica_admin(update): return
+    q=update.callback_query; await q.answer()
+    m=re.fullmatch(r"league_test_score_(.+)_(10|20|30|40|50|60)", q.data)
+    if not m: return
+    code, discount=m.groups(); discount=int(discount)
+    uid=update.effective_user.id; team=get_team(uid)
+    if not test_mode_active() or not team or not team["confirmed"]: return
+    products=team_products(team["id"]); selected=next((p for p in products if p["product_code"]==code),None)
+    if not selected: return
+    base, coeff, points=product_adjusted_points(code,discount,bool(selected["is_captain"]))
+    event_key=f"TEST:{uid}:{team['id']}:{code}:{ora()}"
+    with connessione() as db:
+        db.execute("UPDATE league_teams SET score=score+? WHERE id=?",(points,team["id"]))
+        db.execute("""INSERT INTO league_score_events
+            (event_key,season_code,telegram_id,team_id,product_code,discount,base_points,multiplier,points,reason,created_at,is_test)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,1)""",
+            (event_key,SEASON_CODE,uid,team["id"],code,discount,base,int(league_setting("captain_multiplier","2")) if selected["is_captain"] else 1,points,"SIMULAZIONE TEST ADMIN",ora()))
+    updated=get_team(uid)
+    captain_note=f" · ©️ x{league_setting('captain_multiplier','2')}" if selected["is_captain"] else ""
+    await q.message.reply_text(
+        f"🚨 GOOOOL! ⚽🧪\n\n{selected['name']} è sceso del {discount}%!\n\n"
+        f"Base: +{base} · coeff. {coeff:g}x{captain_note}\n⚽ +{points} PUNTI TEST\n\n"
+        f"{updated['team_name']} → {updated['score']} punti\n\nℹ️ Evento marcato TEST e azzerabile dal pannello admin.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚽ SIMULA ALTRA OFFERTA", callback_data="league_admin_test_sim")],[InlineKeyboardButton("🏆 CLASSIFICA", callback_data="league_rank")]])
+    )
+
+
+# Ridefinizione finale del pannello admin con Modalità Test.
+async def admin_club_menu(update, context):
+    if not await verifica_admin(update): return
+    q=update.callback_query; await q.answer()
+    with connessione() as db:
+        users=db.execute("SELECT COUNT(*) FROM league_users").fetchone()[0]
+        teams=db.execute("SELECT COUNT(*) FROM league_teams WHERE season_code=? AND confirmed=1",(SEASON_CODE,)).fetchone()[0]
+        events=db.execute("SELECT COUNT(*) FROM league_score_events WHERE season_code=?",(SEASON_CODE,)).fetchone()[0]
+    test_on=test_mode_active()
+    kb=InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 GIOCATORI",callback_data="league_admin_users"),InlineKeyboardButton("🏆 CLASSIFICA",callback_data="league_rank")],
+        [InlineKeyboardButton("📦 PRODOTTI",callback_data="league_admin_products"),InlineKeyboardButton("⚽ PUNTEGGI",callback_data="league_admin_scoring")],
+        [InlineKeyboardButton("📜 EVENTI",callback_data="league_admin_events")],
+        [InlineKeyboardButton("🔴 DISATTIVA TEST" if test_on else "🟢 ATTIVA TEST", callback_data="league_admin_test_toggle")],
+        [InlineKeyboardButton("👤 APRI COME GIOCATORE", callback_data="league_admin_test_player"), InlineKeyboardButton("⚽ SIMULA OFFERTA", callback_data="league_admin_test_sim")],
+        [InlineKeyboardButton("♻️ RESET MIA SQUADRA TEST", callback_data="league_admin_test_reset")],
+        [InlineKeyboardButton("⬅️ MENU PRINCIPALE",callback_data="menu_admin")],
+    ])
+    extra=countdown_text() if stato_stagione()=="PRESEASON" else ""
+    await q.message.reply_text(
+        f"⚙️ GESTIONE BESTPRICE LEAGUE\n\n📅 {SEASON_NAME}\n🟢 Stato reale: {stato_stagione()}\n"
+        f"🧪 Test admin: {'ATTIVO' if test_on else 'DISATTIVATO'}\n👥 Giocatori: {users}\n⚽ Squadre confermate: {teams}\n📜 Eventi punti: {events}\n\n{extra}",
+        reply_markup=kb,
+    )
