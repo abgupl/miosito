@@ -1,7 +1,7 @@
 import os
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -13,14 +13,11 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
 ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
 TZ = ZoneInfo("Europe/Rome")
-SEASON_CODE = "2026-10"
-SEASON_NAME = "OTTOBRE 2026"
-SEASON_START = datetime(2026, 10, 1, 0, 0, tzinfo=TZ)
-SEASON_END = datetime(2026, 11, 1, 0, 0, tzinfo=TZ)
+LEAGUE_LAUNCH = datetime(2026, 10, 28, 0, 0, tzinfo=TZ)
 STARTING_BUDGET = 100
 TEAM_SIZE = 5
-GOLD_FIRST = 30
-GOLD_SECOND = 10
+PRIZE_FIRST_EUR = 10
+PRIZE_SECOND_EUR = 5
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
 TEAM_NAME_RE = re.compile(r"^[A-Za-zÀ-ÿ0-9 _.'-]{3,24}$")
 
@@ -79,13 +76,40 @@ async def verifica_admin(update):
     return True
 
 
+def current_week(now=None):
+    """Restituisce la settimana di gioco corrente.
+
+    La prima settimana inaugurale è eccezionalmente corta: 28 ottobre-1 novembre 2026.
+    Dal 2 novembre le giornate di League vanno sempre da lunedì 00:00 a lunedì 00:00.
+    """
+    now = now or now_dt()
+    first_end = datetime(2026, 11, 2, 0, 0, tzinfo=TZ)
+    if now < first_end:
+        start = LEAGUE_LAUNCH
+        end = first_end
+    else:
+        monday = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        start = monday
+        end = monday + timedelta(days=7)
+    code = f"WEEK_{start:%Y%m%d}"
+    mesi = ["", "GENNAIO", "FEBBRAIO", "MARZO", "APRILE", "MAGGIO", "GIUGNO", "LUGLIO", "AGOSTO", "SETTEMBRE", "OTTOBRE", "NOVEMBRE", "DICEMBRE"]
+    last_day = (end - timedelta(seconds=1)).day
+    if start.month == (end - timedelta(seconds=1)).month:
+        name = f"{start.day}-{last_day} {mesi[start.month]} {start.year}"
+    else:
+        last = end - timedelta(seconds=1)
+        name = f"{start.day} {mesi[start.month]}-{last.day} {mesi[last.month]} {last.year}"
+    return code, name, start, end
+
+
+def season_code(): return current_week()[0]
+def season_name(): return current_week()[1]
+def season_start(): return current_week()[2]
+def season_end(): return current_week()[3]
+
+
 def stato_stagione():
-    adesso = now_dt()
-    if adesso < SEASON_START:
-        return "PRESEASON"
-    if adesso < SEASON_END:
-        return "ACTIVE"
-    return "ENDED"
+    return "PRESEASON" if now_dt() < LEAGUE_LAUNCH else "ACTIVE"
 
 
 def test_mode_active():
@@ -104,7 +128,7 @@ def is_test_player(user_id):
 
 
 def countdown_text():
-    delta = SEASON_START - now_dt()
+    delta = LEAGUE_LAUNCH - now_dt()
     if delta.total_seconds() <= 0:
         return "🟢 LA STAGIONE È INIZIATA"
     total_minutes = int(delta.total_seconds() // 60)
@@ -202,11 +226,12 @@ def inizializza_database():
         )
     """)
 
+    code, name, start_at, end_at = current_week()
     cur.execute("""
         INSERT OR IGNORE INTO league_seasons
         (code, name, start_at, end_at, status, first_gold, second_gold)
         VALUES (?, ?, ?, ?, 'scheduled', ?, ?)
-    """, (SEASON_CODE, SEASON_NAME, SEASON_START.isoformat(), SEASON_END.isoformat(), GOLD_FIRST, GOLD_SECOND))
+    """, (code, name, start_at.isoformat(), end_at.isoformat(), PRIZE_FIRST_EUR, PRIZE_SECOND_EUR))
 
     cur.executemany("""
         INSERT OR IGNORE INTO league_products (code, name, category, cost, active)
@@ -254,7 +279,7 @@ def crea_league_user(user, league_username):
 
 def get_team(user_id):
     db = connessione(); cur = db.cursor()
-    cur.execute("SELECT * FROM league_teams WHERE telegram_id=? AND season_code=?", (user_id, SEASON_CODE))
+    cur.execute("SELECT * FROM league_teams WHERE telegram_id=? AND season_code=?", (user_id, season_code()))
     row = cur.fetchone(); db.close(); return row
 
 
@@ -265,7 +290,7 @@ def ensure_team(user_id):
     cur.execute("""
         INSERT INTO league_teams (telegram_id, season_code, budget_total, score, confirmed, created_at)
         VALUES (?, ?, ?, 0, 0, ?)
-    """, (user_id, SEASON_CODE, STARTING_BUDGET, ora()))
+    """, (user_id, season_code(), STARTING_BUDGET, ora()))
     db.commit(); db.close(); return get_team(user_id)
 
 
@@ -351,19 +376,19 @@ def classifica(limit=20):
         FROM league_teams t JOIN league_users u ON u.telegram_id=t.telegram_id
         WHERE t.season_code=? AND t.confirmed=1
         ORDER BY t.score DESC, t.confirmed_at ASC LIMIT ?
-    """, (SEASON_CODE, limit))
+    """, (season_code(), limit))
     rows = cur.fetchall(); db.close(); return rows
 
 
 def posizione(user_id):
     db = connessione(); cur = db.cursor()
-    cur.execute("SELECT score, confirmed_at FROM league_teams WHERE telegram_id=? AND season_code=? AND confirmed=1", (user_id, SEASON_CODE))
+    cur.execute("SELECT score, confirmed_at FROM league_teams WHERE telegram_id=? AND season_code=? AND confirmed=1", (user_id, season_code()))
     mine = cur.fetchone()
     if not mine: db.close(); return None
     cur.execute("""
         SELECT COUNT(*)+1 FROM league_teams
         WHERE season_code=? AND confirmed=1 AND (score>? OR (score=? AND confirmed_at<?))
-    """, (SEASON_CODE, mine["score"], mine["score"], mine["confirmed_at"]))
+    """, (season_code(), mine["score"], mine["score"], mine["confirmed_at"]))
     pos = cur.fetchone()[0]; db.close(); return pos
 
 
@@ -371,7 +396,7 @@ def menu_league():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⚽ LA MIA SQUADRA", callback_data="league_team"), InlineKeyboardButton("🏆 CLASSIFICA", callback_data="league_rank")],
         [InlineKeyboardButton("🛒 MERCATO", callback_data="league_market"), InlineKeyboardButton("📊 PROFILO", callback_data="league_profile")],
-        [InlineKeyboardButton("🪙 GETTONI D'ORO", callback_data="league_gold"), InlineKeyboardButton("📖 REGOLAMENTO", callback_data="league_rules")],
+        [InlineKeyboardButton("🎁 PREMI SETTIMANALI", callback_data="league_gold"), InlineKeyboardButton("📖 REGOLAMENTO", callback_data="league_rules")],
         [InlineKeyboardButton("⬅️ MENU PRINCIPALE", callback_data="menu_utente")],
     ])
 
@@ -399,11 +424,11 @@ async def club_home(update, context):
         text = (
             "🏆 BESTPRICE LEAGUE\n\n"
             "Sta arrivando il Fantacalcio delle Offerte 🔥\n\n"
-            f"📅 PRIMA STAGIONE: {SEASON_NAME}\n"
+            "📅 PARTENZA: 28 OTTOBRE 2026\n"
             f"{countdown_text()}\n\n"
             "💰 100 crediti • 🛒 5 prodotti • ©️ 1 Capitano\n\n"
-            "🥇 1°: 30 Gettoni d'Oro 🪙\n"
-            "🥈 2°: 10 Gettoni d'Oro 🪙\n\n"
+            f"🥇 1°: Gift Card Amazon.it da {PRIZE_FIRST_EUR} € 🎁\n"
+            f"🥈 2°: Gift Card Amazon.it da {PRIZE_SECOND_EUR} € 🎁\n\n"
             + (f"✅ Pre-iscritto come {league_user['league_username']}" if league_user else "👇 Pre-iscriviti e scegli il tuo username di gioco.")
         )
         await query.message.reply_text(text, reply_markup=preseason_menu(bool(league_user)))
@@ -411,7 +436,7 @@ async def club_home(update, context):
     if not league_user:
         await query.message.reply_text("🏆 BESTPRICE LEAGUE\n\nPrima di giocare devi creare il tuo username.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 CREA USERNAME", callback_data="league_signup")]]))
         return
-    await query.message.reply_text("🏆 BESTPRICE LEAGUE\n\n🟢 Stagione attiva!\nCrea la tua rosa, scegli il Capitano e scala la classifica.", reply_markup=menu_league())
+    await query.message.reply_text("🏆 BESTPRICE LEAGUE\n\n🟢 Settimana di gioco attiva!\nCrea la tua rosa, scegli il Capitano e scala la classifica.", reply_markup=menu_league())
 
 
 async def league_signup(update, context):
@@ -433,7 +458,7 @@ async def league_text_input(update, context):
         if not ok:
             await update.message.reply_text(f"❌ {err}\n\nProva con un altro username:"); return True
         context.user_data.pop("league_waiting", None)
-        await update.message.reply_text(f"✅ BENVENUTO {text.upper()}!\n\n🎟 Pre-iscrizione completata.\n{countdown_text()}\n\nIl 1° ottobre si aprirà il mercato.", reply_markup=preseason_menu(True)); return True
+        await update.message.reply_text(f"✅ BENVENUTO {text.upper()}!\n\n🎟 Pre-iscrizione completata.\n{countdown_text()}\n\nIl 28 ottobre si aprirà la prima settimana di gioco.", reply_markup=preseason_menu(True)); return True
     if waiting == "team_name":
         ok, err = set_team_name(user.id, text)
         if not ok:
@@ -449,9 +474,9 @@ async def league_profile(update, context):
     if not u:
         await q.message.reply_text("Prima devi pre-iscriverti."); return
     team=get_team(uid); pos=posizione(uid)
-    text=(f"👤 PROFILO LEAGUE\n\nUsername: {u['league_username']}\n🪙 Gettoni d'Oro: {u['gold_tokens']}\n")
+    text=(f"👤 PROFILO LEAGUE\n\nUsername: {u['league_username']}\n")
     if team:
-        text += f"⚽ Squadra: {team['team_name'] or 'da creare'}\n🏆 Punti stagione: {team['score']}\n"
+        text += f"⚽ Squadra: {team['team_name'] or 'da creare'}\n🏆 Punti settimana: {team['score']}\n"
     if pos: text += f"📊 Posizione: #{pos}\n"
     if player_state(uid)=="PRESEASON": text += f"\n{countdown_text()}"
     await q.message.reply_text(text, reply_markup=menu_league() if player_state(uid)!='PRESEASON' else preseason_menu(True))
@@ -462,7 +487,7 @@ async def league_team(update, context):
     if not get_league_user(uid):
         await q.message.reply_text("Prima devi creare il tuo username League."); return
     if player_state(uid)=="PRESEASON":
-        await q.message.reply_text("🔒 Il mercato apre il 1° ottobre."); return
+        await q.message.reply_text("🔒 La BestPrice League parte il 28 ottobre."); return
     team=ensure_team(uid)
     if not team["team_name"]:
         context.user_data["league_waiting"]="team_name"
@@ -480,7 +505,7 @@ async def league_team(update, context):
 async def league_market(update, context):
     q=update.callback_query; await q.answer(); uid=update.effective_user.id
     if player_state(uid)=="PRESEASON":
-        await q.message.reply_text("🔒 Il mercato apre il 1° ottobre."); return
+        await q.message.reply_text("🔒 La BestPrice League parte il 28 ottobre."); return
     if not get_league_user(uid): await q.message.reply_text("Prima crea il tuo username League."); return
     team=ensure_team(uid)
     if not team["team_name"]:
@@ -541,12 +566,12 @@ async def league_confirm(update, context):
     if not ok:
         await q.answer(f"❌ {err}", show_alert=True); return
     team=get_team(update.effective_user.id)
-    await q.message.reply_text(f"🔒 SQUADRA CONFERMATA!\n\n⚽ {team['team_name']}\n💰 Budget usato: {budget_used(team['id'])}/{STARTING_BUDGET}\n\nDa questo momento la rosa è iscritta alla stagione {SEASON_NAME}. 🔥", reply_markup=menu_league())
+    await q.message.reply_text(f"🔒 SQUADRA CONFERMATA!\n\n⚽ {team['team_name']}\n💰 Budget usato: {budget_used(team['id'])}/{STARTING_BUDGET}\n\nDa questo momento la rosa è iscritta alla settimana {season_name()}. 🔥", reply_markup=menu_league())
 
 
 async def league_rank(update, context):
     q=update.callback_query; await q.answer(); rows=classifica(); uid=update.effective_user.id
-    lines=[f"🏆 CLASSIFICA — {SEASON_NAME}", ""]
+    lines=[f"🏆 CLASSIFICA — {season_name()}", ""]
     medals=["🥇","🥈","🥉"]
     for i,r in enumerate(rows,1):
         mark=medals[i-1] if i<=3 else f"{i}°"
@@ -559,9 +584,15 @@ async def league_rank(update, context):
 
 
 async def league_gold(update, context):
-    q=update.callback_query; await q.answer(); u=get_league_user(update.effective_user.id)
-    tokens=u['gold_tokens'] if u else 0
-    await q.message.reply_text(f"🪙 GETTONI D'ORO\n\nIl tuo saldo: {tokens} 🪙\n\nI Gettoni sono trofei virtuali permanenti.\n🥇 1° del mese: +{GOLD_FIRST}\n🥈 2° del mese: +{GOLD_SECOND}\n\nNon hanno valore economico e non sono convertibili in denaro o premi.", reply_markup=menu_league())
+    q=update.callback_query; await q.answer()
+    await q.message.reply_text(
+        f"🎁 PREMI SETTIMANALI\n\n"
+        f"🥇 1° classificato: Gift Card Amazon.it da {PRIZE_FIRST_EUR} €\n"
+        f"🥈 2° classificato: Gift Card Amazon.it da {PRIZE_SECOND_EUR} €\n\n"
+        f"📅 Settimana corrente: {season_name()}\n"
+        "La classifica riparte da zero a ogni nuova settimana.",
+        reply_markup=menu_league(),
+    )
 
 
 async def league_rules(update, context):
@@ -572,9 +603,11 @@ async def league_rules(update, context):
           "©️ Scegli un Capitano: i suoi punti valgono x2.\n\n"
           "📈 PUNTI SCONTO\n"
           "10-19% = +1\n20-29% = +3\n30-39% = +5\n40-49% = +8\n50% o più = +12\n\n"
-          "🏆 Vince chi totalizza più punti nella stagione mensile.\n"
-          f"🥇 1° = {GOLD_FIRST} Gettoni d'Oro virtuali\n🥈 2° = {GOLD_SECOND} Gettoni d'Oro virtuali\n\n"
-          "I Gettoni non hanno valore economico. Le regole potranno essere affinate prima dell'apertura del mercato.")
+          "🏆 Vince chi totalizza più punti nella settimana.\n"
+          f"🥇 1° = Gift Card Amazon.it da {PRIZE_FIRST_EUR} €\n🥈 2° = Gift Card Amazon.it da {PRIZE_SECOND_EUR} €\n\n"
+          "📅 Prima settimana: 28 ottobre-1 novembre 2026.\n"
+          "Dalla settimana successiva: lunedì-domenica.\n"
+          "A ogni nuova settimana punteggio e classifica ripartono da zero.")
     await q.message.reply_text(text, reply_markup=preseason_menu(bool(get_league_user(update.effective_user.id))) if stato_stagione()=="PRESEASON" else menu_league())
 
 
@@ -584,15 +617,15 @@ async def admin_club_menu(update, context):
     q=update.callback_query; await q.answer()
     db=connessione(); cur=db.cursor()
     cur.execute("SELECT COUNT(*) FROM league_users"); users=cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM league_teams WHERE season_code=? AND confirmed=1", (SEASON_CODE,)); teams=cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM league_score_events WHERE season_code=?", (SEASON_CODE,)); events=cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM league_teams WHERE season_code=? AND confirmed=1", (season_code(),)); teams=cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM league_score_events WHERE season_code=?", (season_code(),)); events=cur.fetchone()[0]
     db.close()
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 GIOCATORI", callback_data="league_admin_users"), InlineKeyboardButton("🏆 CLASSIFICA", callback_data="league_rank")],
         [InlineKeyboardButton("📦 PRODOTTI", callback_data="league_admin_products"), InlineKeyboardButton("📜 EVENTI PUNTI", callback_data="league_admin_events")],
         [InlineKeyboardButton("⬅️ MENU PRINCIPALE", callback_data="menu_admin")],
     ])
-    await q.message.reply_text(f"⚙️ GESTIONE BESTPRICE LEAGUE\n\n📅 {SEASON_NAME}\n🟢 Stato: {stato_stagione()}\n👥 Giocatori: {users}\n⚽ Squadre confermate: {teams}\n📜 Eventi punti: {events}\n\n{countdown_text() if stato_stagione()=='PRESEASON' else ''}", reply_markup=kb)
+    await q.message.reply_text(f"⚙️ GESTIONE BESTPRICE LEAGUE\n\n📅 Settimana: {season_name()}\n🟢 Stato: {stato_stagione()}\n👥 Giocatori: {users}\n⚽ Squadre confermate: {teams}\n📜 Eventi punti: {events}\n\n{countdown_text() if stato_stagione()=='PRESEASON' else ''}", reply_markup=kb)
 
 
 async def league_admin_users(update, context):
@@ -620,7 +653,7 @@ async def league_admin_products(update, context):
 async def league_admin_events(update, context):
     if not await verifica_admin(update): return
     q=update.callback_query; await q.answer(); db=connessione(); cur=db.cursor()
-    cur.execute("SELECT * FROM league_score_events WHERE season_code=? ORDER BY id DESC LIMIT 30", (SEASON_CODE,)); rows=cur.fetchall(); db.close()
+    cur.execute("SELECT * FROM league_score_events WHERE season_code=? ORDER BY id DESC LIMIT 30", (season_code(),)); rows=cur.fetchall(); db.close()
     lines=["📜 ULTIMI EVENTI PUNTI",""]+[f"• {r['product_code']} +{r['points']} — {r['reason']}" for r in rows]
     if not rows: lines.append("Nessun evento: il motore Amazon verrà collegato nella Fase 2.")
     await q.message.reply_text("\n".join(lines))
@@ -829,8 +862,8 @@ async def admin_club_menu(update, context):
     q=update.callback_query; await q.answer()
     with connessione() as db:
         users=db.execute("SELECT COUNT(*) FROM league_users").fetchone()[0]
-        teams=db.execute("SELECT COUNT(*) FROM league_teams WHERE season_code=? AND confirmed=1",(SEASON_CODE,)).fetchone()[0]
-        events=db.execute("SELECT COUNT(*) FROM league_score_events WHERE season_code=?",(SEASON_CODE,)).fetchone()[0]
+        teams=db.execute("SELECT COUNT(*) FROM league_teams WHERE season_code=? AND confirmed=1",(season_code(),)).fetchone()[0]
+        events=db.execute("SELECT COUNT(*) FROM league_score_events WHERE season_code=?",(season_code(),)).fetchone()[0]
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 GIOCATORI",callback_data="league_admin_users"),InlineKeyboardButton("🏆 CLASSIFICA",callback_data="league_rank")],
         [InlineKeyboardButton("📦 PRODOTTI",callback_data="league_admin_products"),InlineKeyboardButton("⚽ PUNTEGGI",callback_data="league_admin_scoring")],
@@ -838,7 +871,7 @@ async def admin_club_menu(update, context):
         [InlineKeyboardButton("⬅️ MENU PRINCIPALE",callback_data="menu_admin")],
     ])
     extra=countdown_text() if stato_stagione()=="PRESEASON" else ""
-    await q.message.reply_text(f"⚙️ GESTIONE BESTPRICE LEAGUE\n\n📅 {SEASON_NAME}\n🟢 Stato: {stato_stagione()}\n👥 Giocatori: {users}\n⚽ Squadre confermate: {teams}\n📜 Eventi punti: {events}\n\n{extra}",reply_markup=kb)
+    await q.message.reply_text(f"⚙️ GESTIONE BESTPRICE LEAGUE\n\n📅 Settimana: {season_name()}\n🟢 Stato: {stato_stagione()}\n👥 Giocatori: {users}\n⚽ Squadre confermate: {teams}\n📜 Eventi punti: {events}\n\n{extra}",reply_markup=kb)
 
 
 # =========================================================
@@ -846,11 +879,11 @@ async def admin_club_menu(update, context):
 # =========================================================
 
 def reset_admin_test_player(user_id):
-    """Azzera solo la squadra/eventi test dell'admin, conservando username e Gettoni."""
+    """Azzera solo la squadra/eventi test dell'admin, conservando lo username League."""
     with connessione() as db:
         team = db.execute(
             "SELECT id FROM league_teams WHERE telegram_id=? AND season_code=?",
-            (user_id, SEASON_CODE),
+            (user_id, season_code()),
         ).fetchone()
         if team:
             team_id = team["id"]
@@ -901,7 +934,7 @@ async def league_admin_test_reset(update, context):
     reset_admin_test_player(update.effective_user.id)
     context.user_data.pop("league_waiting", None)
     await q.message.reply_text(
-        "♻️ TEST AZZERATO\n\nLa tua squadra, rosa, punteggio ed eventi TEST sono stati azzerati.\nUsername League e Gettoni d'Oro sono rimasti invariati.",
+        "♻️ TEST AZZERATO\n\nLa tua squadra, rosa, punteggio ed eventi TEST sono stati azzerati.\nIl tuo username League è rimasto invariato.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("👤 APRI COME GIOCATORE", callback_data="league_admin_test_player")],
             [InlineKeyboardButton("⬅️ GESTIONE LEAGUE", callback_data="admin_club")],
@@ -952,7 +985,7 @@ async def league_admin_test_score(update, context):
         db.execute("""INSERT INTO league_score_events
             (event_key,season_code,telegram_id,team_id,product_code,discount,base_points,multiplier,points,reason,created_at,is_test)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,1)""",
-            (event_key,SEASON_CODE,uid,team["id"],code,discount,base,int(league_setting("captain_multiplier","2")) if selected["is_captain"] else 1,points,"SIMULAZIONE TEST ADMIN",ora()))
+            (event_key,season_code(),uid,team["id"],code,discount,base,int(league_setting("captain_multiplier","2")) if selected["is_captain"] else 1,points,"SIMULAZIONE TEST ADMIN",ora()))
     updated=get_team(uid)
     captain_note=f" · ©️ x{league_setting('captain_multiplier','2')}" if selected["is_captain"] else ""
     await q.message.reply_text(
@@ -969,8 +1002,8 @@ async def admin_club_menu(update, context):
     q=update.callback_query; await q.answer()
     with connessione() as db:
         users=db.execute("SELECT COUNT(*) FROM league_users").fetchone()[0]
-        teams=db.execute("SELECT COUNT(*) FROM league_teams WHERE season_code=? AND confirmed=1",(SEASON_CODE,)).fetchone()[0]
-        events=db.execute("SELECT COUNT(*) FROM league_score_events WHERE season_code=?",(SEASON_CODE,)).fetchone()[0]
+        teams=db.execute("SELECT COUNT(*) FROM league_teams WHERE season_code=? AND confirmed=1",(season_code(),)).fetchone()[0]
+        events=db.execute("SELECT COUNT(*) FROM league_score_events WHERE season_code=?",(season_code(),)).fetchone()[0]
     test_on=test_mode_active()
     kb=InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 GIOCATORI",callback_data="league_admin_users"),InlineKeyboardButton("🏆 CLASSIFICA",callback_data="league_rank")],
@@ -983,7 +1016,7 @@ async def admin_club_menu(update, context):
     ])
     extra=countdown_text() if stato_stagione()=="PRESEASON" else ""
     await q.message.reply_text(
-        f"⚙️ GESTIONE BESTPRICE LEAGUE\n\n📅 {SEASON_NAME}\n🟢 Stato reale: {stato_stagione()}\n"
+        f"⚙️ GESTIONE BESTPRICE LEAGUE\n\n📅 Settimana: {season_name()}\n🟢 Stato reale: {stato_stagione()}\n"
         f"🧪 Test admin: {'ATTIVO' if test_on else 'DISATTIVATO'}\n👥 Giocatori: {users}\n⚽ Squadre confermate: {teams}\n📜 Eventi punti: {events}\n\n{extra}",
         reply_markup=kb,
     )
