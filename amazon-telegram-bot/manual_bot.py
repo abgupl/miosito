@@ -39,22 +39,6 @@ from telegram.ext import (
 
 
 # =========================================================
-# BESTPRICE LEAGUE
-# =========================================================
-
-from league import (
-    inizializza_database, club_home, league_signup, league_text_input,
-    league_profile, league_team, league_market, league_category, league_buy,
-    league_captain, league_set_captain, league_confirm, league_rank, league_gold,
-    league_rules, admin_club_menu, league_admin_users, league_admin_products,
-    league_admin_events, league_admin_scoring, league_admin_set_scoring,
-    league_admin_set_captain_mult, league_admin_product, league_admin_cost,
-    league_admin_coeff, league_admin_toggle, league_admin_sim, countdown_text,
-    league_admin_test_toggle, league_admin_test_player, league_admin_test_reset,
-    league_admin_test_sim_team, league_admin_test_product, league_admin_test_score,
-)
-
-# =========================================================
 # CONFIGURAZIONE
 # =========================================================
 
@@ -63,6 +47,7 @@ CHANNEL_ID = os.environ["TELEGRAM_CHAT_ID"]
 CASA_CHANNEL_ID = os.environ.get("TELEGRAM_CHAT_ID_CASA", "@BestPrice24hCasa")
 CASA_CHANNEL_URL = "https://t.me/BestPrice24hCasa"
 TECH_CHANNEL_URL = "https://t.me/bestprice_2026"
+COMMUNITY_URL = os.environ.get("COMMUNITY_URL", "").strip()
 TECH_CATEGORIE = {"elettronica", "informatica", "smartphone", "tvaudio", "gaming"}
 CASA_CATEGORIE = {
     "casa", "elettrodomestici", "faidate", "giardino", "arredamento",
@@ -1641,13 +1626,6 @@ async def invia_recap_giornaliero(bot, canale, telegram_chat_id):
         f"🔥 <b>RECAP {canale.upper()} DI OGGI</b>\n\n"
     )
 
-    league_footer = (
-        "\n\n────────────────\n"
-        '🏆 <a href="https://t.me/BestPrice24h_bot?start=league">'
-        "<b>BESTPRICE LEAGUE</b></a>\n"
-        "Crea la tua squadra e trasforma le offerte in punti. ⚽"
-    )
-
     messaggi = []
     corrente = intestazione
 
@@ -1656,7 +1634,7 @@ async def invia_recap_giornaliero(bot, canale, telegram_chat_id):
         candidato = corrente + riga + "\n\n"
 
         if (
-            len(candidato) + len(league_footer) > 3900
+            len(candidato) > 3900
             and corrente != intestazione
         ):
             messaggi.append(corrente.rstrip())
@@ -1665,9 +1643,7 @@ async def invia_recap_giornaliero(bot, canale, telegram_chat_id):
             corrente = candidato
 
     if corrente.strip():
-        messaggi.append(
-            corrente.rstrip() + league_footer
-        )
+        messaggi.append(corrente.rstrip())
 
     for testo in messaggi:
         await bot.send_message(
@@ -1908,20 +1884,7 @@ async def invia_offerta_programmata(
         messaggio_gia_html=messaggio_html,
     )
 
-    bottone_offerta = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🏆 LEAGUE",
-                    url="https://t.me/BestPrice24h_bot?start=league",
-                ),
-                InlineKeyboardButton(
-                    "🛒 APRI",
-                    url=link,
-                )
-            ]
-        ]
-    )
+    bottone_offerta = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 APRI", url=link,)]])
 
     if foto_file_id:
         messaggio_telegram = await bot.send_photo(
@@ -4637,10 +4600,8 @@ def crea_caption_raccolta_casa(prodotti, tema, anteprima=False):
 
 
 def tastiera_raccolta_casa():
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🏆 LEAGUE", url="https://t.me/BestPrice24h_bot?start=league"),
-        InlineKeyboardButton("🏠 CANALE CASA", url=CASA_CHANNEL_URL),
-    ]])
+    # La raccolta contiene più prodotti: i link APRI sono già nei singoli articoli.
+    return None
 
 
 def salva_raccolta_casa(prodotti, tema, messaggio_telegram, foto_file_id):
@@ -5034,10 +4995,8 @@ def crea_caption_raccolta_tech(prodotti, tema, anteprima=False):
 
 
 def tastiera_raccolta_tech():
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🏆 LEAGUE", url="https://t.me/BestPrice24h_bot?start=league"),
-        InlineKeyboardButton("📱 CANALE TECH", url=TECH_CHANNEL_URL),
-    ]])
+    # La raccolta contiene più prodotti: i link APRI sono già nei singoli articoli.
+    return None
 
 
 def salva_raccolta_tech(prodotti, tema, messaggio_telegram, foto_file_id):
@@ -6291,7 +6250,6 @@ def crea_corpo_offerta_automatica(prodotto, categoria=None):
 
 def tastiera_offerta_automatica(link):
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🏆 LEAGUE", url="https://t.me/BestPrice24h_bot?start=league"),
         InlineKeyboardButton("🛒 APRI", url=link),
     ]])
 
@@ -7399,49 +7357,13 @@ def menu_principale():
 
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("📤 PUBBLICA OFFERTA", callback_data="publish_menu")],
+            [InlineKeyboardButton("🔎 CERCA OFFERTE", callback_data="offer_search")],
+            [InlineKeyboardButton("🤖 INVIO AUTOMATICO", callback_data="auto_channels")],
+            [InlineKeyboardButton("📅 POST PROGRAMMATI", callback_data="programmati")],
+            [InlineKeyboardButton("📚 STORICO E REINVIO", callback_data="history_menu")],
             [InlineKeyboardButton("🎵 AUTOMAZIONE TIKTOK", callback_data="tiktok_menu")],
-            [
-                InlineKeyboardButton(
-                    "📤 PUBBLICA OFFERTA",
-                    callback_data="publish_menu",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🤖 INVIO AUTOMATICO",
-                    callback_data="auto_channels",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🔎 CERCA OFFERTE",
-                    callback_data="offer_search",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "📅 POST PROGRAMMATI",
-                    callback_data="programmati",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "📚 STORICO E REINVIO",
-                    callback_data="history_menu",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🏆 GESTIONE LEAGUE",
-                    callback_data="admin_club",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⚙️ IMPOSTAZIONI",
-                    callback_data="settings_menu",
-                )
-            ],
+            [InlineKeyboardButton("⚙️ IMPOSTAZIONI", callback_data="settings_menu")],
         ]
     )
 
@@ -7603,29 +7525,50 @@ async def torna_menu_admin(
 
 
 def menu_utente_principale():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏆 GIOCA ALLA LEAGUE", callback_data="club_home")],
-        [
-            InlineKeyboardButton("📱 OFFERTE TECH", url="https://t.me/bestprice_2026"),
-            InlineKeyboardButton("🏠 OFFERTE CASA", url=CASA_CHANNEL_URL),
-        ],
-        [InlineKeyboardButton("📖 COME FUNZIONA", callback_data="league_rules")],
-    ])
+    righe = [
+        [InlineKeyboardButton("📱 OFFERTE TECH", url=TECH_CHANNEL_URL)],
+        [InlineKeyboardButton("🏠 OFFERTE CASA — 🚧 IN COSTRUZIONE", callback_data="casa_costruzione")],
+    ]
+    if COMMUNITY_URL:
+        righe.append([InlineKeyboardButton("👥 COMMUNITY", url=COMMUNITY_URL)])
+    else:
+        righe.append([InlineKeyboardButton("👥 COMMUNITY", callback_data="community_info")])
+    return InlineKeyboardMarkup(righe)
+
+
+async def casa_in_costruzione(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "🏠 OFFERTE CASA\n\n"
+        "🚧 Sezione in costruzione. Sarà disponibile prossimamente.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ TORNA AL MENU", callback_data="menu_utente")
+        ]]),
+    )
+
+
+async def community_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "👥 COMMUNITY BESTPRICE24H\n\n"
+        "Il collegamento alla Community non è ancora configurato nel bot.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ TORNA AL MENU", callback_data="menu_utente")
+        ]]),
+    )
 
 
 async def torna_menu_utente(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-
     query = update.callback_query
     await query.answer()
-
     await query.edit_message_text(
         "🔥 BESTPRICE24H\n\n"
-        "Offerte selezionate e BestPrice League.\n\n"
-        "🏆 Crea la tua squadra, segui le offerte e scala la classifica.\n\n"
-        "Scegli cosa vuoi fare 👇",
+        "Trova le offerte Amazon selezionate ogni giorno da BestPrice24h 👇",
         reply_markup=menu_utente_principale(),
     )
 
@@ -7644,11 +7587,6 @@ async def start(
     if not user:
         return ConversationHandler.END
 
-    # Deep-link dai pulsanti sotto i post Telegram.
-    # Apre direttamente la BestPrice League sia per utenti sia per admin.
-    if context.args and context.args[0].lower() == "league":
-        await club_home(update, context)
-        return ConversationHandler.END
 
     # =====================================================
     # ADMIN
@@ -7670,10 +7608,10 @@ async def start(
 
     testo = (
         "🔥 BENVENUTO SU BESTPRICE24H\n\n"
-        "Offerte selezionate e BestPrice League.\n\n"
-        "🏆 Crea la tua squadra di prodotti, segui gli sconti e "
-        "scala la classifica settimanale.\n\n"
-        "📱 Segui le offerte Tech oppure 🏠 Casa direttamente dai nostri canali.\n\n"
+        "Trova le offerte Amazon selezionate ogni giorno da BestPrice24h.\n\n"
+        "📱 Il canale Tech è già disponibile.\n"
+        "🏠 Offerte Casa è in costruzione.\n"
+        "👥 Puoi anche accedere alla Community.\n\n"
         "👇 Da dove vuoi iniziare?"
     )
 
@@ -10827,20 +10765,7 @@ async def conferma(
 
         messaggio_con_link = crea_caption_con_link(messaggio, link)
 
-        bottone_offerta = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "🏆 LEAGUE",
-                        url="https://t.me/BestPrice24h_bot?start=league",
-                    ),
-                    InlineKeyboardButton(
-                        "🛒 APRI",
-                        url=link,
-                    )
-                ]
-            ]
-        )
+        bottone_offerta = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 APRI", url=link,)]])
 
         foto_file_id = context.user_data.get(
             "foto_file_id"
@@ -11586,7 +11511,6 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
         messaggio_gia_html=draft.get("template") == "automatico",
     )
     bottoni = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🏆 LEAGUE", url="https://t.me/BestPrice24h_bot?start=league"),
         InlineKeyboardButton("🛒 APRI", url=draft["link"]),
     ]])
 
@@ -11888,7 +11812,6 @@ async def annulla(
 
 def main():
 
-    inizializza_database()
     inizializza_programmazioni()
     inizializza_recap()
     inizializza_automazione()
@@ -12516,12 +12439,6 @@ def main():
         gestione_programmati
     )
 
-    # Input testuale League: username, nome squadra e valori admin.
-    # Usa un gruppo precedente al fallback generico di reinvio.
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, league_text_input),
-        group=-1,
-    )
 
     # Deve stare dopo gestione_programmati: altrimenti intercetta
     # il numero digitato per modificare un post programmato.
@@ -12561,6 +12478,9 @@ def main():
     )
 
 
+    app.add_handler(CallbackQueryHandler(casa_in_costruzione, pattern="^casa_costruzione$"))
+    app.add_handler(CallbackQueryHandler(community_info, pattern="^community_info$"))
+
     app.add_handler(
         CallbackQueryHandler(
             torna_menu_utente,
@@ -12569,46 +12489,8 @@ def main():
     )
 
 
-    # =====================================================
-    # BESTPRICE LEAGUE
-    # =====================================================
-    app.add_handler(CallbackQueryHandler(club_home, pattern="^club_home$"))
-    app.add_handler(CallbackQueryHandler(league_signup, pattern="^league_signup$"))
-    app.add_handler(CallbackQueryHandler(league_profile, pattern="^league_profile$"))
-    app.add_handler(CallbackQueryHandler(league_team, pattern="^league_team$"))
-    app.add_handler(CallbackQueryHandler(league_market, pattern="^league_market$"))
-    app.add_handler(CallbackQueryHandler(league_category, pattern=r"^league_cat_"))
-    app.add_handler(CallbackQueryHandler(league_buy, pattern=r"^league_buy_"))
-    app.add_handler(CallbackQueryHandler(league_captain, pattern="^league_captain$"))
-    app.add_handler(CallbackQueryHandler(league_set_captain, pattern=r"^league_cap_"))
-    app.add_handler(CallbackQueryHandler(league_confirm, pattern="^league_confirm$"))
-    app.add_handler(CallbackQueryHandler(league_rank, pattern="^league_rank$"))
-    app.add_handler(CallbackQueryHandler(league_gold, pattern="^league_gold$"))
-    app.add_handler(CallbackQueryHandler(league_rules, pattern="^league_rules$"))
-
-    # ADMIN LEAGUE
-    app.add_handler(CallbackQueryHandler(admin_club_menu, pattern="^admin_club$"))
-    app.add_handler(CallbackQueryHandler(league_admin_users, pattern="^league_admin_users$"))
-    app.add_handler(CallbackQueryHandler(league_admin_products, pattern="^league_admin_products$"))
-    app.add_handler(CallbackQueryHandler(league_admin_events, pattern="^league_admin_events$"))
-    app.add_handler(CallbackQueryHandler(league_admin_scoring, pattern="^league_admin_scoring$"))
-    app.add_handler(CallbackQueryHandler(league_admin_set_scoring, pattern=r"^league_admin_pts_(10|20|30|40|50)$"))
-    app.add_handler(CallbackQueryHandler(league_admin_set_captain_mult, pattern="^league_admin_captain_mult$"))
-    app.add_handler(CallbackQueryHandler(league_admin_product, pattern=r"^league_admin_product_"))
-    app.add_handler(CallbackQueryHandler(league_admin_cost, pattern=r"^league_cost_"))
-    app.add_handler(CallbackQueryHandler(league_admin_coeff, pattern=r"^league_coeff_"))
-    app.add_handler(CallbackQueryHandler(league_admin_toggle, pattern=r"^league_toggle_"))
-    app.add_handler(CallbackQueryHandler(league_admin_sim, pattern=r"^league_sim_"))
-    app.add_handler(CallbackQueryHandler(league_admin_test_toggle, pattern="^league_admin_test_toggle$"))
-    app.add_handler(CallbackQueryHandler(league_admin_test_player, pattern="^league_admin_test_player$"))
-    app.add_handler(CallbackQueryHandler(league_admin_test_reset, pattern="^league_admin_test_reset$"))
-    app.add_handler(CallbackQueryHandler(league_admin_test_sim_team, pattern="^league_admin_test_sim$"))
-    app.add_handler(CallbackQueryHandler(league_admin_test_product, pattern=r"^league_test_prod_"))
-    app.add_handler(CallbackQueryHandler(league_admin_test_score, pattern=r"^league_test_score_"))
-
-
     print(
-        "🤖 Amazon Offer Bot + BestPrice League V1 avviato"
+        "🤖 BestPrice24h Offer Bot avviato"
     )
 
     app.run_polling()
