@@ -7788,17 +7788,37 @@ def leggi_prodotto_amazon(url):
 
 
 def estrai_asin_da_link(link):
-    testo = str(link or "")
+    testo = str(link or "").strip()
+
+    # Link Amazon classici: /dp/ASIN, /gp/product/ASIN, /gp/aw/d/ASIN.
     corrispondenza = re.search(
         r"/(?:dp|gp/product|gp/aw/d)/([A-Z0-9]{10})(?:[/?]|$)",
+        testo,
+        flags=re.IGNORECASE,
+    )
+    if corrispondenza:
+        return corrispondenza.group(1).upper()
+
+    # Nuovo formato condiviso da Amazon: https://link.amazon/ASIN
+    corrispondenza = re.search(
+        r"https?://(?:www\.)?link\.amazon/([A-Z0-9]{10})(?:[/?#]|$)",
         testo,
         flags=re.IGNORECASE,
     )
     return corrispondenza.group(1).upper() if corrispondenza else None
 
 
+def link_amazon_valido(link):
+    testo = str(link or "").strip().lower()
+    return (
+        "amazon." in testo
+        or "amzn." in testo
+        or "link.amazon/" in testo
+    )
+
+
 def risolvi_asin_da_link(link):
-    """Estrae l'ASIN anche dai collegamenti brevi amzn.to/amzn.eu."""
+    """Estrae l'ASIN da link Amazon classici, brevi e link.amazon."""
     asin = estrai_asin_da_link(link)
     if asin:
         return asin
@@ -7882,10 +7902,7 @@ async def ricevi_link(
 
     link = update.message.text.strip()
 
-    if (
-        "amazon." not in link
-        and "amzn." not in link
-    ):
+    if not link_amazon_valido(link):
 
         await update.message.reply_text(
             "❌ Non sembra un link Amazon.\n\n"
@@ -7942,14 +7959,32 @@ async def ricevi_link(
 
     if not dati:
 
-        await messaggio_attesa.edit_text(
-            "⚠️ Non sono riuscito a leggere "
-            "automaticamente i dati.\n\n"
-            "Nessun problema: continuiamo manualmente.\n\n"
-            "📦 Scrivi il nome del prodotto:"
+        tastiera_riprova = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "🔄 RIPROVA",
+                        callback_data="dati_riprova",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "✏️ INSERISCI MANUALMENTE",
+                        callback_data="dati_manual",
+                    )
+                ],
+            ]
         )
 
-        return NOME
+        await messaggio_attesa.edit_text(
+            "⚠️ Non sono riuscito a leggere automaticamente i dati "
+            "dopo 3 tentativi.\n\n"
+            "Puoi riprovare: verranno eseguiti altri 3 tentativi. "
+            "In alternativa puoi continuare manualmente.",
+            reply_markup=tastiera_riprova,
+        )
+
+        return DATI_AUTOMATICI
 
     nome = dati.get("nome")
     prezzo = dati.get("prezzo")
@@ -8020,6 +8055,38 @@ async def conferma_dati_automatici(
     query = update.callback_query
 
     await query.answer()
+
+    if query.data == "dati_riprova":
+        link = context.user_data.get("link")
+        if not link:
+            await query.edit_message_text(
+                "❌ Non trovo più il link del prodotto. Invia nuovamente l'offerta."
+            )
+            return ConversationHandler.END
+
+        await query.edit_message_text(
+            "🔄 Riprovo la ricerca del prodotto: eseguirò fino a 3 nuovi tentativi..."
+        )
+
+        # Riutilizza la stessa procedura dell'invio manuale senza chiedere di nuovo il link.
+        class _MessaggioRiprova:
+            def __init__(self, message, testo):
+                self._message = message
+                self.text = testo
+
+            async def reply_text(self, *args, **kwargs):
+                return await self._message.reply_text(*args, **kwargs)
+
+        class _UpdateRiprova:
+            def __init__(self, update_originale, message):
+                self.effective_user = update_originale.effective_user
+                self.effective_chat = update_originale.effective_chat
+                self.message = _MessaggioRiprova(message, link)
+
+        return await ricevi_link(
+            _UpdateRiprova(update, query.message),
+            context,
+        )
 
     if query.data == "dati_ok":
 
@@ -8295,10 +8362,7 @@ async def ricevi_rapido(
 
     link, nome, prezzo, vecchio = parti
 
-    if (
-        "amazon." not in link
-        and "amzn." not in link
-    ):
+    if not link_amazon_valido(link):
 
         await update.message.reply_text(
             "❌ Il primo campo deve essere un link Amazon."
@@ -11874,7 +11938,7 @@ def main():
             DATI_AUTOMATICI: [
                 CallbackQueryHandler(
                     conferma_dati_automatici,
-                    pattern="^(dati_ok|dati_manual)$",
+                    pattern="^(dati_ok|dati_manual|dati_riprova)$",
                 )
             ],
 
