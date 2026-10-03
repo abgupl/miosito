@@ -7921,8 +7921,13 @@ async def ricevi_link(
     )
 
     dati = None
+    dati_parziali = None
 
-    # Prima scelta: Creator API, che fornisce anche la foto ufficiale del prodotto.
+    def dati_completi(valore):
+        return bool(valore and valore.get("nome") and valore.get("prezzo"))
+
+    # Prima prova con Creator API. Se restituisce solo dati parziali,
+    # li conserviamo ma continuiamo comunque con 3 tentativi dalla pagina Amazon.
     try:
         dati_creators = await asyncio.to_thread(leggi_prodotto_creators_da_link, link)
     except Exception as errore:
@@ -7930,75 +7935,74 @@ async def ricevi_link(
         dati_creators = None
 
     if dati_creators:
-        dati = dati_creators
-        context.user_data["foto_url_automatica"] = dati_creators.get("immagine")
-        context.user_data["asin"] = dati_creators.get("asin")
+        dati_parziali = dati_creators
+        if dati_creators.get("immagine"):
+            context.user_data["foto_url_automatica"] = dati_creators.get("immagine")
+        if dati_creators.get("asin"):
+            context.user_data["asin"] = dati_creators.get("asin")
+        if dati_completi(dati_creators):
+            dati = dati_creators
 
-    # Se le Creator API non rispondono, prova fino a 3 volte dalla pagina Amazon.
-    # Tra un tentativo e l'altro aspetta un attimo, utile quando Amazon
-    # risponde in modo incompleto o temporaneamente blocca la richiesta.
-    for tentativo in range(1, 4) if not dati else ():
-
-        dati = await asyncio.to_thread(
-            leggi_prodotto_amazon,
-            link,
-        )
-
-        if dati:
-            break
-
-        if tentativo < 3:
-            await messaggio_attesa.edit_text(
-                f"🔎 Tentativo {tentativo}/3 non riuscito.\n"
-                "Riprovo automaticamente..."
+    # Se non abbiamo ancora nome + prezzo, esegue SEMPRE fino a 3 tentativi.
+    # Un risultato parziale non viene considerato riuscito.
+    if not dati_completi(dati):
+        for tentativo in range(1, 4):
+            risultato = await asyncio.to_thread(
+                leggi_prodotto_amazon,
+                link,
             )
-            await asyncio.sleep(2)
+
+            if risultato:
+                dati_parziali = risultato
+                if risultato.get("immagine") and not context.user_data.get("foto_url_automatica"):
+                    context.user_data["foto_url_automatica"] = risultato.get("immagine")
+                if risultato.get("asin") and not context.user_data.get("asin"):
+                    context.user_data["asin"] = risultato.get("asin")
+
+            if dati_completi(risultato):
+                dati = risultato
+                break
+
+            if tentativo < 3:
+                await messaggio_attesa.edit_text(
+                    f"🔎 Tentativo {tentativo}/3 incompleto.\n"
+                    "Riprovo automaticamente..."
+                )
+                await asyncio.sleep(2)
+
+    # Se dopo i 3 tentativi abbiamo solo informazioni parziali,
+    # le conserviamo per l'eventuale inserimento manuale ma mostriamo RIPROVA.
+    if not dati_completi(dati):
+        dati = dati_parziali
 
     if dati and dati.get("immagine") and not context.user_data.get("foto_url_automatica"):
         context.user_data["foto_url_automatica"] = dati.get("immagine")
 
-    if not dati:
+    if not dati_completi(dati):
 
         tastiera_riprova = InlineKeyboardMarkup(
             [
-                [
-                    InlineKeyboardButton(
-                        "🔄 RIPROVA",
-                        callback_data="dati_riprova",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "✏️ INSERISCI MANUALMENTE",
-                        callback_data="dati_manual",
-                    )
-                ],
+                [InlineKeyboardButton("🔄 RIPROVA", callback_data="dati_riprova")],
+                [InlineKeyboardButton("✏️ INSERISCI MANUALMENTE", callback_data="dati_manual")],
             ]
         )
 
+        testo_esito = (
+            "⚠️ Ho trovato solo una parte dei dati dopo 3 tentativi."
+            if dati
+            else "⚠️ Non sono riuscito a leggere automaticamente i dati dopo 3 tentativi."
+        )
         await messaggio_attesa.edit_text(
-            "⚠️ Non sono riuscito a leggere automaticamente i dati "
-            "dopo 3 tentativi.\n\n"
-            "Puoi riprovare: verranno eseguiti altri 3 tentativi. "
-            "In alternativa puoi continuare manualmente.",
+            testo_esito
+            + "\n\nPuoi riprovare: verranno eseguiti altri 3 tentativi. "
+              "In alternativa puoi continuare manualmente.",
             reply_markup=tastiera_riprova,
         )
-
         return DATI_AUTOMATICI
 
     nome = dati.get("nome")
     prezzo = dati.get("prezzo")
     vecchio = dati.get("vecchio_prezzo")
-
-    if not nome or not prezzo:
-
-        await messaggio_attesa.edit_text(
-            "⚠️ Ho trovato solo una parte dei dati.\n\n"
-            "Continuiamo manualmente.\n\n"
-            "📦 Scrivi il nome del prodotto:"
-        )
-
-        return NOME
 
     context.user_data["nome"] = " ".join(str(nome).split()).strip()
     context.user_data["prezzo"] = pulisci_prezzo(prezzo)
