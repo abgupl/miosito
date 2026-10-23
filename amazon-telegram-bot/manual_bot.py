@@ -1434,7 +1434,7 @@ def hashtag_categoria_post(categoria):
     return '#' + pulita if pulita else '#OfferteAmazon'
 
 
-def corpo_pulito_post(nome, prezzo, vecchio='NO', categoria=None):
+def corpo_pulito_post(nome, prezzo, vecchio='NO', categoria=None, coupon=None):
     prezzo = pulisci_prezzo(prezzo)
     precedente = pulisci_prezzo(vecchio) if vecchio and str(vecchio).upper() != 'NO' else 'NO'
     sconto = calcola_sconto(prezzo, precedente) if precedente != 'NO' else None
@@ -1443,7 +1443,10 @@ def corpo_pulito_post(nome, prezzo, vecchio='NO', categoria=None):
         righe.append(f'💥 Sconto: -{sconto}%')
     if precedente != 'NO':
         righe.append(f'❌ Prima: {precedente} €')
-    righe += [f'✅ Ora: {prezzo} €', '', 'Categoria: ' + hashtag_categoria_post(categoria)]
+    righe += [f'✅ Ora: {prezzo} €']
+    if frase_coupon(coupon):
+        righe += ['', frase_coupon(coupon)]
+    righe += ['', 'Categoria: ' + hashtag_categoria_post(categoria)]
     return '\n'.join(righe)
 
 
@@ -1457,6 +1460,8 @@ def html_corpo_pulito(messaggio):
             righe.append('💥 Sconto: <b>' + html.escape(riga[len('💥 Sconto: '):]) + '</b>')
         elif riga.startswith('❌ Prima: '):
             righe.append('❌ Prima: <s>' + html.escape(riga[len('❌ Prima: '):]) + '</s>')
+        elif riga.startswith('✅ Applica il coupon '):
+            righe.append('✅ <i>' + html.escape(riga[2:]) + '</i>')
         elif riga.startswith('✅ Ora: '):
             righe.append('✅ Ora: <b>' + html.escape(riga[len('✅ Ora: '):]) + '</b>')
         else:
@@ -1471,7 +1476,7 @@ def crea_caption_con_link(messaggio, link, messaggio_gia_html=False):
     elif str(messaggio or "").startswith("🔥 OFFERTA AMAZON"):
         corpo = html_corpo_pulito(messaggio)
     else:
-        corpo = html.escape(str(messaggio or ""))
+        corpo = "\n".join("✅ <i>" + html.escape(riga[2:]) + "</i>" if riga.startswith("✅ Applica il coupon ") else html.escape(riga) for riga in str(messaggio or "").split("\n"))
     link_sicuro = html.escape(str(link or ""), quote=True)
     return (
         f"{corpo}\n\n"
@@ -7850,6 +7855,51 @@ async def mio_id(
 # LETTURA AUTOMATICA AMAZON
 # =========================================================
 
+def estrai_coupon_pagina(soup):
+    """Legge solo sezioni coupon esplicite; ignora prezzi e promozioni generiche."""
+    selettori = ('#couponFeature', '#couponText', '#couponTextpctch',
+                 '#couponTextpctch span', '[id^="couponText"]',
+                 '#vpcButton', '.promoPriceBlockMessage')
+    trovati = set()
+    for selettore in selettori:
+        for nodo in soup.select(selettore):
+            # Non considerare promozioni nascoste/disabilitate o già scadute.
+            if nodo.find_parent(attrs={'aria-hidden':'true'}) or nodo.get('aria-hidden') == 'true':
+                continue
+            if nodo.has_attr('hidden') or nodo.select_one('input[disabled]'):
+                continue
+            testo = ' '.join(nodo.stripped_strings).replace('\xa0',' ')
+            basso = testo.lower()
+            if not any(k in basso for k in ('coupon', 'buono')):
+                continue
+            if any(k in basso for k in ('scadut', 'non disponibile', 'fino a', 'fino al', 'prossimo acquisto', 'iscriviti', 'iscrizione', 'acquisto periodico')):
+                continue
+            # Solo importi vicini alla parola coupon/buono, per non confondere soglie minime.
+            espressioni = (
+                r'(?:coupon|buono)(?:\s+(?:di|del|da|sconto|risparmio|un|il))*\s*[:=]?\s*(\d+(?:[.,]\d{1,2})?)\s*(%|€|eur(?:o)?)',
+                r'(\d+(?:[.,]\d{1,2})?)\s*(%|€|eur(?:o)?)\s*(?:di\s+)?(?:sconto\s+)?(?:con\s+(?:un\s+|il\s+)?)?(?:coupon|buono)',
+                r'(?:applica|seleziona|risparmia)\s+(?:il\s+coupon\s+(?:del\s+)?)?(\d+(?:[.,]\d{1,2})?)\s*(%|€|eur(?:o)?)',
+            )
+            for pattern in espressioni:
+                for numero, unita in re.findall(pattern, basso, flags=re.IGNORECASE):
+                    valore = float(numero.replace(',', '.'))
+                    if valore <= 0 or (unita == '%' and valore > 100):
+                        continue
+                    valore_testo = (str(int(valore)) if valore.is_integer() else f'{valore:.2f}'.replace('.', ','))
+                    trovati.add(valore_testo + ('%' if unita == '%' else ' €'))
+    # Importi discordanti: non attribuire al prodotto un coupon incerto.
+    return next(iter(trovati)) if len(trovati) == 1 else None
+
+
+def frase_coupon(coupon):
+    if not coupon:
+        return ''
+    if not re.fullmatch(r'\d+(?:[.,]\d{1,2})?(?:%| €)', str(coupon)):
+        return ''
+    preposizione = 'del' if str(coupon).endswith('%') else 'da'
+    return f'✅ Applica il coupon {preposizione} {coupon} visibile nella pagina Amazon.'
+
+
 def leggi_prodotto_amazon(url):
 
     headers = {
@@ -7990,6 +8040,7 @@ def leggi_prodotto_amazon(url):
             "vecchio_prezzo": vecchio_prezzo,
             "immagine": immagine,
             "categoria": categoria_pagina,
+            "coupon": estrai_coupon_pagina(soup),
         }
 
     except requests.RequestException:
@@ -8060,7 +8111,13 @@ def leggi_prodotto_creators_da_link(link):
     items = get_items([asin])
     if not items:
         return None
-    return estrai_prodotto_creators(items[0])
+    prodotto = estrai_prodotto_creators(items[0])
+    if prodotto:
+        pagina = leggi_prodotto_amazon(link)
+        if pagina:
+            prodotto['coupon'] = pagina.get('coupon')
+            prodotto['categoria'] = prodotto.get('categoria') or pagina.get('categoria')
+    return prodotto
 
 
 # =========================================================
@@ -8218,6 +8275,7 @@ async def ricevi_link(
         return DATI_AUTOMATICI
 
     context.user_data["categoria"] = dati.get("categoria")
+    context.user_data["coupon"] = dati.get("coupon")
     nome = dati.get("nome")
     prezzo = dati.get("prezzo")
     vecchio = dati.get("vecchio_prezzo")
@@ -8579,7 +8637,7 @@ def piano_multiplo(prodotti, minuti, destinazione, salva=False):
             quando = slot_manuale_libero(quando, occupati, minuti, cfg)
             pid = None
             if salva:
-                corpo = crea_messaggio_programmato(prodotto['nome'], prodotto['prezzo'], prodotto['vecchio_prezzo'], 'pulito', prodotto.get('categoria'))
+                corpo = crea_messaggio_programmato(prodotto['nome'], prodotto['prezzo'], prodotto['vecchio_prezzo'], 'pulito', prodotto.get('categoria'), prodotto.get('coupon'))
                 cur = db.execute("""INSERT INTO programmazioni
                     (nome,messaggio,link,prezzo,vecchio_prezzo,template,foto_file_id,telegram_chat_id,invio_previsto,stato,data_creazione,origine)
                     VALUES (?,?,?,?,?,'pulito',?,?,?,'attesa',?,'multiplo')""",
@@ -8733,7 +8791,7 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                 # senza dipendere da file temporanei o URL al momento dell'invio.
                 anteprima = await messaggio.reply_photo(photo=foto, caption=f"📦 Preparato {indice}/{len(links)}: {str(dati['nome'])[:700]}")
                 visti.add(asin)
-                draft['pronti'].append({'nome': ' '.join(str(dati['nome']).split())[:500], 'prezzo': pulisci_prezzo(dati['prezzo']), 'vecchio_prezzo': pulisci_prezzo(dati['vecchio_prezzo']) if dati.get('vecchio_prezzo') else 'NO', 'link': affiliato, 'foto_file_id': anteprima.photo[-1].file_id, 'categoria': dati.get('categoria'), 'asin': asin, 'link_originale': link})
+                draft['pronti'].append({'nome': ' '.join(str(dati['nome']).split())[:500], 'prezzo': pulisci_prezzo(dati['prezzo']), 'vecchio_prezzo': pulisci_prezzo(dati['vecchio_prezzo']) if dati.get('vecchio_prezzo') else 'NO', 'link': affiliato, 'foto_file_id': anteprima.photo[-1].file_id, 'categoria': dati.get('categoria'), 'asin': asin, 'link_originale': link, 'coupon': dati.get('coupon')})
             except Exception as exc:
                 draft['scartati'].append(f"{link} — {str(exc)[:120]}")
         if context.user_data.get('multiplo') is draft:
@@ -9424,6 +9482,7 @@ def crea_messaggio_programmato(
     vecchio,
     template,
     categoria=None,
+    coupon=None,
 ):
 
     vecchio = vecchio or "NO"
@@ -9462,7 +9521,7 @@ def crea_messaggio_programmato(
             "che cambi il prezzo!"
         )
 
-        return testo
+        return testo + ('\n\n' + frase_coupon(coupon) if frase_coupon(coupon) else '')
 
     if template == "tech":
 
@@ -9483,9 +9542,9 @@ def crea_messaggio_programmato(
         if sconto is not None:
             testo += f"📉 -{sconto}%"
 
-        return testo
+        return testo + ('\n\n' + frase_coupon(coupon) if frase_coupon(coupon) else '')
 
-    return corpo_pulito_post(nome, prezzo, vecchio, categoria)
+    return corpo_pulito_post(nome, prezzo, vecchio, categoria, coupon)
 
 
 def aggiorna_messaggio_programmato(
@@ -9499,6 +9558,7 @@ def aggiorna_messaggio_programmato(
     if not post:
         return False
 
+    coupon_salvato = re.search(r"✅ Applica il coupon (?:del|da) (\d+(?:[.,]\d{1,2})?(?:%| €)) visibile", post.get("messaggio", ""))
     categoria_salvata = re.search(r"Categoria:\s*(#[\w]+)", post.get("messaggio", ""))
     messaggio = crea_messaggio_programmato(
         post["nome"],
@@ -9506,6 +9566,7 @@ def aggiorna_messaggio_programmato(
         post["vecchio_prezzo"],
         post["template"],
         categoria_salvata.group(1) if categoria_salvata else None,
+        coupon_salvato.group(1) if coupon_salvato else None,
     )
 
     db = sqlite3.connect(DB_PATH)
@@ -10735,7 +10796,7 @@ def crea_messaggio(context):
             "\n\n⚡ Approfittane prima che cambi il prezzo!"
         )
 
-        return testo
+        return testo + ('\n\n' + frase_coupon(context.user_data.get('coupon')) if frase_coupon(context.user_data.get('coupon')) else '')
 
     # TECH
     if template == "tech":
@@ -10753,10 +10814,10 @@ def crea_messaggio(context):
         if sconto is not None:
             testo += f"📉 -{sconto}%"
 
-        return testo
+        return testo + ('\n\n' + frase_coupon(context.user_data.get('coupon')) if frase_coupon(context.user_data.get('coupon')) else '')
 
     # PULITO
-    return corpo_pulito_post(nome, prezzo, vecchio, context.user_data.get('categoria'))
+    return corpo_pulito_post(nome, prezzo, vecchio, context.user_data.get('categoria'), context.user_data.get('coupon'))
 
 
 
