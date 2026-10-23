@@ -6547,12 +6547,12 @@ def tastiera_offerta_automatica(link, link_post=None, asin=None):
         "text": "🔥 Guarda questa offerta su BestPrice24h!",
     })
     storico = (
-        InlineKeyboardButton("📉 Storico prezzi", url=f"https://keepa.com/#!product/8-{asin}")
+        InlineKeyboardButton("📈 Prezzi", url=f"https://keepa.com/#!product/8-{asin}")
         if re.fullmatch(r"[A-Z0-9]{10}", asin)
-        else InlineKeyboardButton("📉 Storico prezzi", callback_data="offer_price_unavailable")
+        else InlineKeyboardButton("📈 Prezzi", callback_data="offer_price_unavailable")
     )
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📤 Invia agli amici", url=condivisione),
+        [InlineKeyboardButton("👥 Condividi", url=condivisione),
          InlineKeyboardButton("🛒 Apri", url=link)],
         [storico, InlineKeyboardButton("🎵 TikTok", url=TIKTOK_PROFILO_URL)],
     ])
