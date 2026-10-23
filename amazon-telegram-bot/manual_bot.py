@@ -2050,7 +2050,7 @@ async def invia_offerta_programmata(
         origine_riga = db_duplicati.execute(
             "SELECT origine FROM programmazioni WHERE id=?", (programmazione_id,)
         ).fetchone()
-    if origine_riga and origine_riga[0] == 'multiplo':
+    if origine_riga and origine_riga[0] in ('multiplo','repost'):
         asin_multiplo = estrai_asin_da_link(link)
         if prodotto_inviato_ultime_24h(asin_multiplo, destinazione):
             with sqlite3.connect(DB_PATH) as db_duplicati:
@@ -2144,7 +2144,7 @@ async def invia_offerta_programmata(
         origine_riga = db_origine.execute(
             "SELECT origine FROM programmazioni WHERE id=?", (programmazione_id,)
         ).fetchone()
-    if not origine_riga or origine_riga[0] != "multiplo":
+    if not origine_riga or origine_riga[0] not in ("multiplo","repost"):
         if str(destinazione) == str(CASA_CHANNEL_ID):
             await controlla_raccolta_dopo_post_casa(bot)
 
@@ -7584,6 +7584,7 @@ def menu_pubblicazione():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔗 INSERIMENTO DA LINK", callback_data="nuova")],
         [InlineKeyboardButton("📦 INVIO MULTIPLO", callback_data="rapido")],
+        [InlineKeyboardButton("🔁 REPOST", callback_data="repost")],
         [InlineKeyboardButton("🕒 FASCIA ORARIA MANUALE E MULTIPLO", callback_data="mf_menu")],
         [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
     ])
@@ -8041,6 +8042,7 @@ def leggi_prodotto_amazon(url):
             "immagine": immagine,
             "categoria": categoria_pagina,
             "coupon": estrai_coupon_pagina(soup),
+            "disponibile": not bool(re.search(r'non (?:è )?disponibile|attualmente non disponibile|temporaneamente esaurito', (soup.select_one('#availability').get_text(' ',strip=True) if soup.select_one('#availability') else ''),flags=re.IGNORECASE)),
         }
 
     except requests.RequestException:
@@ -8116,6 +8118,7 @@ def leggi_prodotto_creators_da_link(link):
         pagina = leggi_prodotto_amazon(link)
         if pagina:
             prodotto['coupon'] = pagina.get('coupon')
+            prodotto['disponibile'] = pagina.get('disponibile',True)
             prodotto['categoria'] = prodotto.get('categoria') or pagina.get('categoria')
     return prodotto
 
@@ -8591,6 +8594,17 @@ def filtra_duplicati_recenti_multiplo(draft):
             draft['scartati'].append(f"{prodotto.get('link_originale') or prodotto['link']} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
         else:
             validi.append(prodotto)
+    if draft.get('tipo') == 'repost':
+        with sqlite3.connect(DB_PATH, timeout=30) as db:
+            links_in_coda = db.execute("SELECT link FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),_chat_id_per_canale(draft['canale']))).fetchall()
+        asin_in_coda = {estrai_asin_da_link(link) for (link,) in links_in_coda}
+        restanti = []
+        for prodotto in validi:
+            if (prodotto.get('asin') or estrai_asin_da_link(prodotto['link'])) in asin_in_coda:
+                draft['scartati'].append(f"{prodotto.get('link_originale') or prodotto['link']} — prodotto già in Programmati")
+            else:
+                restanti.append(prodotto)
+        validi = restanti
     draft['pronti'] = validi
 
 
@@ -8623,7 +8637,7 @@ def link_affiliato_multiplo(link, asin):
     return "https://www.amazon.it/dp/" + asin + "?" + urlencode({"tag": tag})
 
 
-def piano_multiplo(prodotti, minuti, destinazione, salva=False):
+def piano_multiplo(prodotti, minuti, destinazione, salva=False, origine="multiplo"):
     """Ricalcola e prenota l'intero lotto in un'unica transazione SQLite."""
     cfg = config_fascia_manuale()
     with sqlite3.connect(DB_PATH, timeout=30) as db:
@@ -8643,7 +8657,7 @@ def piano_multiplo(prodotti, minuti, destinazione, salva=False):
                     VALUES (?,?,?,?,?,'pulito',?,?,?,'attesa',?,'multiplo')""",
                     (prodotto['nome'],corpo,prodotto['link'],prodotto['prezzo'],prodotto['vecchio_prezzo'],prodotto.get('foto_file_id'),str(destinazione),quando.isoformat(timespec='seconds'),datetime.now(timezone.utc).isoformat(timespec='seconds')))
                 pid = cur.lastrowid
-                db.execute("UPDATE programmazioni SET intervallo_minuti=? WHERE id=?", (minuti,pid))
+                db.execute("UPDATE programmazioni SET intervallo_minuti=?,origine=? WHERE id=?", (minuti,'repost' if origine == 'repost' else 'multiplo',pid))
             piano.append((pid, quando))
             occupati.append(quando)
             quando += passo
@@ -8674,7 +8688,7 @@ async def avvia_lotto_multiplo(messaggio, context, draft, automatico=False):
         draft.pop('timer_token', None)
         try:
             filtra_duplicati_recenti_multiplo(draft)
-            piano = piano_multiplo(draft['pronti'], draft['minuti'], _chat_id_per_canale(draft['canale']), salva=True)
+            piano = piano_multiplo(draft['pronti'], draft['minuti'], _chat_id_per_canale(draft['canale']), salva=True, origine=draft.get('tipo','multiplo'))
         except Exception:
             draft.pop('conferma_in_corso', None)
             await messaggio.reply_text("⚠️ Salvataggio non riuscito. Il lotto non è stato aggiunto: premi CONFERMA E AVVIA per riprovare.", reply_markup=tastiera_multiplo(draft))
@@ -8684,6 +8698,7 @@ async def avvia_lotto_multiplo(messaggio, context, draft, automatico=False):
              f"📅 {len(piano)} post aggiunti a Programmati — {draft['canale'].upper()}.",
              f"Primo invio: {piano[0][1].astimezone(ROMA_TZ):%d/%m %H:%M}" if piano else "Nessun invio: tutti i prodotti sono stati scartati.",
              f"Intervallo: {draft['minuti']} minuti. Orari già occupati rispettati.",
+             f"Richiesti: {draft['richiesti']} · Validati: {len(piano)}" if draft.get("richiesti") else "",
              "Il primo post libero parte entro circa 30 secondi.",
              f"Duplicati ignorati: {draft['duplicati']}"]
     if draft['scartati']:
@@ -8703,7 +8718,9 @@ async def avvia_lotto_multiplo(messaggio, context, draft, automatico=False):
 async def riepilogo_multiplo(messaggio, draft, context=None):
     filtra_duplicati_recenti_multiplo(draft)
     piano = piano_multiplo(draft['pronti'], draft['minuti'], _chat_id_per_canale(draft['canale']))
-    righe = [f"📦 INVIO MULTIPLO — {draft['canale'].upper()}", f"⏱ Intervallo: {draft['minuti']} minuti", f"✅ Pronti: {len(piano)} · Scartati: {len(draft['scartati'])} · Duplicati: {draft['duplicati']}", ""]
+    righe = [f"{'🔁 REPOST' if draft.get('tipo') == 'repost' else '📦 INVIO MULTIPLO'} — {draft['canale'].upper()}", f"⏱ Intervallo: {draft['minuti']} minuti", f"✅ Pronti: {len(piano)} · Scartati: {len(draft['scartati'])} · Duplicati: {draft['duplicati']}", ""]
+    if draft.get("richiesti"):
+        righe.append(f"Richiesti: {draft['richiesti']} · Preparati: {len(piano)} · Candidati disponibili per il controllo: {draft.get('candidati',0)}")
     for prodotto, (_, quando) in zip(draft['pronti'], piano):
         righe.append(f"{quando.astimezone(ROMA_TZ):%d/%m %H:%M} · {prodotto['nome'][:75]} · {prodotto['prezzo']} €")
     for motivo in draft['scartati']:
@@ -8717,6 +8734,52 @@ async def riepilogo_multiplo(messaggio, draft, context=None):
         await messaggio.reply_text(testo[pos:pos+3500], reply_markup=tastiera_multiplo(draft) if pos+3500 >= len(testo) else None)
     if context is not None and draft["pronti"]:
         arma_avvio_multiplo(messaggio, context, draft)
+
+
+def asin_in_programmati(destinazione):
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        links = db.execute("SELECT link FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),str(destinazione))).fetchall()
+    # La funzione viene chiamata in un thread durante la ricerca dei candidati.
+    return {asin for (link,) in links if (asin := risolvi_asin_da_link(link))}
+
+
+def candidati_repost(canale, quantita):
+    """Ultimi 7 giorni, un solo candidato per ASIN, esclusi recenti e in coda."""
+    destinazione = _chat_id_per_canale(canale)
+    adesso = datetime.now(timezone.utc)
+    limite = adesso - timedelta(days=7)
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        righe = db.execute("SELECT asin,link,pubblicata_il FROM recap_offerte WHERE CAST(telegram_chat_id AS TEXT)=? AND COALESCE(origine,'manuale')<>'raccolta' ORDER BY pubblicata_il DESC,id DESC", (destinazione,)).fetchall()
+    in_coda = asin_in_programmati(destinazione)
+    visti = set()
+    candidati = []
+    for asin, link, data in righe:
+        quando = _data_sqlite(data)
+        if not quando or not limite <= quando.astimezone(timezone.utc) <= adesso:
+            continue
+        asin = asin or risolvi_asin_da_link(link)
+        if not asin or asin in visti:
+            continue
+        visti.add(asin)
+        if asin in in_coda or prodotto_inviato_ultime_24h(asin,destinazione):
+            continue
+        candidati.append('https://www.amazon.it/dp/' + asin)
+    random.shuffle(candidati)
+    # Esamina candidati sostitutivi, ma non ricerca all'infinito.
+    return candidati[:min(300,max(30,quantita*6))]
+
+
+async def repost_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    await update.callback_query.answer()
+    context.user_data.clear()
+    draft = {'tipo':'repost','canale':'tech','minuti':intervallo_multiplo(update.effective_user.id),'pronti':[],'scartati':[],'duplicati':0,'elaborazione':False,'repost_attesa_quantita':True}
+    context.user_data['multiplo'] = draft
+    await update.effective_message.reply_text(
+        "🔁 REPOST — ULTIMI 7 GIORNI\n\nScegli canale e intervallo, poi scrivi quanti prodotti vuoi ripubblicare (1–50).\nEscludo prodotti già inviati nelle ultime 24 ore e già programmati nello stesso canale.\nControllo dati, prezzi, disponibilità e coupon. Dopo il riepilogo: conferma subito oppure avvio automatico tra 2 minuti. Gli invii rispettano la fascia manuale/multiplo.",
+        reply_markup=tastiera_multiplo(draft))
+    return RAPIDO
 
 
 async def rapido_da_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8735,10 +8798,31 @@ async def rapido_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return await rapido_da_comando(update, context)
 
 
+async def prepara_repost(messaggio, context, draft):
+    try:
+        links = await asyncio.to_thread(candidati_repost,draft['canale'],draft['richiesti'])
+        if context.user_data.get('multiplo') is not draft:
+            return
+        draft['candidati'] = len(links)
+        if not links:
+            draft['elaborazione'] = False
+            draft['repost_attesa_quantita'] = True
+            await messaggio.reply_text('ℹ️ Nessun prodotto disponibile per Repost: servono pubblicazioni negli ultimi 7 giorni, più vecchie di 24 ore e non già in coda. Puoi cambiare canale o annullare.',reply_markup=tastiera_multiplo(draft))
+            return
+        await prepara_lotto_multiplo(messaggio,context,draft,links)
+    except Exception as exc:
+        draft['elaborazione'] = False
+        draft['repost_attesa_quantita'] = True
+        await messaggio.reply_text(f'⚠️ Ricerca Repost interrotta: {type(exc).__name__}. Riprova indicando la quantità.')
+
+
 async def prepara_lotto_multiplo(messaggio, context, draft, links):
     visti = set()
     try:
         for indice, link in enumerate(links, 1):
+            if draft.get('richiesti') and len(draft['pronti']) >= draft['richiesti']:
+                break
+
             if context.user_data.get('multiplo') is not draft:
                 return
             await messaggio.edit_text(f"🔎 Prodotto {indice}/{len(links)} — preparazione in corso…")
@@ -8748,6 +8832,7 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                 continue
             dati = None
             errore_finale = 'dati incompleti dopo 6 tentativi'
+            non_disponibile = False
             # I due cicli sono automatici e non richiedono il pulsante Riprova.
             for ciclo in range(2):
                 for tentativo in range(3):
@@ -8762,6 +8847,10 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                                 pass
                         if not risultato or not risultato.get('nome') or not risultato.get('prezzo') or not risultato.get('immagine'):
                             risultato = await asyncio.to_thread(leggi_prodotto_amazon, link)
+                        if risultato and risultato.get('disponibile') is False:
+                            non_disponibile = True
+                            errore_finale = 'prodotto non disponibile'
+                            break
                         if risultato and risultato.get('nome') and numero_da_prezzo(risultato.get('prezzo')) and risultato.get('immagine'):
                             dati = risultato
                             break
@@ -8770,7 +8859,7 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                     if ciclo*3+tentativo < 5:
                         await messaggio.edit_text(f"🔎 Prodotto {indice}/{len(links)} — tentativo {ciclo*3+tentativo+1}/6 incompleto. Riprovo automaticamente…")
                         await asyncio.sleep(2 if ciclo == 0 else 4)
-                if dati:
+                if dati or non_disponibile:
                     break
             if context.user_data.get('multiplo') is not draft:
                 return
@@ -8826,6 +8915,21 @@ async def ricevi_rapido(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await riepilogo_multiplo(update.message, draft, context)
         else:
             await update.message.reply_text(f"✅ Intervallo salvato: {minuti} minuti.", reply_markup=tastiera_multiplo(draft))
+        return RAPIDO
+    if draft.get('repost_attesa_quantita'):
+        testo = update.message.text.strip()
+        if not testo.isdigit() or not 1 <= int(testo) <= 50:
+            await update.message.reply_text('Scrivi quanti prodotti vuoi ripubblicare: un numero da 1 a 50.')
+            return RAPIDO
+        if not (os.environ.get('AMAZON_PARTNER_TAG') or os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip():
+            await update.message.reply_text('⚠️ Imposta AMAZON_PARTNER_TAG su Railway con il tuo tag affiliato prima di avviare Repost.')
+            return RAPIDO
+        quantita = int(testo)
+        draft['elaborazione'] = True
+        draft['richiesti'] = quantita
+        draft.pop('repost_attesa_quantita', None)
+        attesa = await update.message.reply_text(f'🔁 Cerco fino a {quantita} prodotti validi nella cronologia degli ultimi 7 giorni…')
+        context.application.create_task(prepara_repost(attesa,context,draft),update=update)
         return RAPIDO
     if draft.get('pronti'):
         await update.message.reply_text("Conferma o annulla il lotto già preparato prima di inviare altri link.")
@@ -8887,7 +8991,7 @@ async def gestisci_multiplo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if draft['pronti']:
             await riepilogo_multiplo(query.message, draft, context)
         else:
-            await query.message.reply_text(f"✅ Canale: {draft['canale'].upper()}. Incolla i link.", reply_markup=tastiera_multiplo(draft))
+            await query.message.reply_text(f"✅ Canale: {draft['canale'].upper()}. " + ("Scrivi quanti prodotti vuoi ripubblicare (1–50)." if draft.get("tipo") == "repost" else "Incolla i link."), reply_markup=tastiera_multiplo(draft))
     elif azione == 'multi_avvia' and draft['pronti']:
         riuscito = await avvia_lotto_multiplo(query.message, context, draft)
         if riuscito:
@@ -9693,6 +9797,8 @@ async def mostra_programmati(
         messaggio = query.message
     else:
         messaggio = update.message
+
+    context.user_data.pop('multiplo', None)
 
     context.user_data.pop(
         "prog_id",
@@ -12402,6 +12508,8 @@ def main():
     conversazione = ConversationHandler(
 
         entry_points=[
+            CallbackQueryHandler(repost_da_pulsante, pattern='^repost$'),
+
 
             CommandHandler(
                 "nuova",
@@ -12584,9 +12692,7 @@ def main():
         )
     )
 
-    app.add_handler(
-        conversazione
-    )
+    # Registrata sotto, dopo aver unificato gli stati di Programmati.
 
     configurazione_automatica = ConversationHandler(
         entry_points=[
@@ -13017,9 +13123,10 @@ def main():
         allow_reentry=True,
     )
 
-    app.add_handler(
-        gestione_programmati
-    )
+    # Un solo stato per utente: entrando in Programmati si esce da RAPIDO.
+    conversazione.entry_points.extend(gestione_programmati.entry_points)
+    conversazione.states.update(gestione_programmati.states)
+    app.add_handler(conversazione)
 
 
     # Deve stare dopo gestione_programmati: altrimenti intercetta
