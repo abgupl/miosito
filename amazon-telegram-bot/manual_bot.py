@@ -13,6 +13,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from collections import deque
+from urllib.parse import urlparse, parse_qs, urlencode
 
 import requests
 from bs4 import BeautifulSoup
@@ -7371,7 +7372,7 @@ def menu_principale():
 def menu_pubblicazione():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔗 INSERIMENTO DA LINK", callback_data="nuova")],
-        [InlineKeyboardButton("⚡ MODALITÀ RAPIDA", callback_data="rapido")],
+        [InlineKeyboardButton("📦 INVIO MULTIPLO", callback_data="rapido")],
         [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
     ])
 
@@ -8280,111 +8281,250 @@ def pulisci_prezzo(prezzo):
 # MODALITÀ RAPIDA
 # =========================================================
 
-async def rapido_da_comando(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+# Invio multiplo: usa la coda persistente già visibile in Programmati.
+MULTIPLO_LOCK = asyncio.Lock()
 
+
+def intervallo_multiplo(utente, valore=None):
+    with sqlite3.connect(DB_PATH) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS impostazioni_multiplo (utente TEXT PRIMARY KEY, minuti INTEGER NOT NULL)")
+        if valore is not None:
+            db.execute("INSERT OR REPLACE INTO impostazioni_multiplo VALUES (?, ?)", (str(utente), valore))
+        row = db.execute("SELECT minuti FROM impostazioni_multiplo WHERE utente=?", (str(utente),)).fetchone()
+    return row[0] if row else 30
+
+
+def tastiera_multiplo(draft):
+    return InlineKeyboardMarkup([row for row in [
+        [InlineKeyboardButton("✅ Tech" if draft["canale"] == "tech" else "Tech", callback_data="multi_canale_tech"),
+         InlineKeyboardButton("✅ Casa" if draft["canale"] == "casa" else "Casa", callback_data="multi_canale_casa")],
+        [InlineKeyboardButton(f"⏱ Intervallo: {draft['minuti']} min", callback_data="multi_timing")],
+        [InlineKeyboardButton("🚀 CONFERMA E AVVIA", callback_data="multi_avvia")] if draft.get("pronti") and not draft.get("elaborazione") else [],
+        [InlineKeyboardButton("❌ ANNULLA", callback_data="multi_annulla")],
+    ] if row])
+
+
+def link_affiliato_multiplo(link, asin):
+    # Non ereditare mai il tag di un altro inserzionista.
+    tag = (os.environ.get("AMAZON_PARTNER_TAG") or os.environ.get("AMAZON_ASSOCIATE_TAG") or "").strip()
+    if not tag:
+        raise ValueError("Imposta AMAZON_PARTNER_TAG su Railway con il tuo tag affiliato Amazon")
+    if not asin:
+        raise ValueError("ASIN del prodotto non trovato")
+    return "https://www.amazon.it/dp/" + asin + "?" + urlencode({"tag": tag})
+
+
+def piano_multiplo(prodotti, minuti, destinazione, salva=False):
+    """Ricalcola e prenota l'intero lotto in un'unica transazione SQLite."""
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        db.execute("BEGIN IMMEDIATE")
+        righe = db.execute("SELECT invio_previsto FROM programmazioni WHERE stato='attesa' AND (telegram_chat_id=? OR (telegram_chat_id IS NULL AND ?=?))", (str(destinazione), str(destinazione), str(CHANNEL_ID))).fetchall()
+        occupati = [datetime.fromisoformat(r[0]).astimezone(timezone.utc) for r in righe]
+        passo = timedelta(minutes=minuti)
+        quando = datetime.now(timezone.utc).replace(microsecond=0)
+        piano = []
+        for prodotto in prodotti:
+            while True:
+                conflitti = [t for t in occupati if abs((t-quando).total_seconds()) < passo.total_seconds()]
+                if not conflitti:
+                    break
+                quando = max(conflitti) + passo
+            pid = None
+            if salva:
+                corpo = crea_messaggio_programmato(prodotto['nome'], prodotto['prezzo'], prodotto['vecchio_prezzo'], 'pulito')
+                cur = db.execute("""INSERT INTO programmazioni
+                    (nome,messaggio,link,prezzo,vecchio_prezzo,template,foto_file_id,telegram_chat_id,invio_previsto,stato,data_creazione)
+                    VALUES (?,?,?,?,?,'pulito',?,?,?,'attesa',?)""",
+                    (prodotto['nome'],corpo,prodotto['link'],prodotto['prezzo'],prodotto['vecchio_prezzo'],prodotto.get('foto_file_id'),str(destinazione),quando.isoformat(timespec='seconds'),datetime.now(timezone.utc).isoformat(timespec='seconds')))
+                pid = cur.lastrowid
+            piano.append((pid, quando))
+            occupati.append(quando)
+            quando += passo
+    return piano
+
+
+async def riepilogo_multiplo(messaggio, draft):
+    piano = piano_multiplo(draft['pronti'], draft['minuti'], _chat_id_per_canale(draft['canale']))
+    righe = [f"📦 INVIO MULTIPLO — {draft['canale'].upper()}", f"⏱ Intervallo: {draft['minuti']} minuti", f"✅ Pronti: {len(piano)} · Scartati: {len(draft['scartati'])} · Duplicati: {draft['duplicati']}", ""]
+    for prodotto, (_, quando) in zip(draft['pronti'], piano):
+        righe.append(f"{quando.astimezone(ROMA_TZ):%d/%m %H:%M} · {prodotto['nome'][:75]} · {prodotto['prezzo']} €")
+    for motivo in draft['scartati']:
+        righe.append("❌ " + motivo[:140])
+    righe.append("\nOrari italiani. Gli orari saranno ricontrollati alla conferma. Prezzi rilevati durante la preparazione.")
+    # Liste ampie vengono suddivise per rispettare il limite Telegram.
+    testo = "\n".join(righe)
+    for pos in range(0, len(testo), 3500):
+        await messaggio.reply_text(testo[pos:pos+3500], reply_markup=tastiera_multiplo(draft) if pos+3500 >= len(testo) else None)
+
+
+async def rapido_da_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
-
+    if update.callback_query:
+        await update.callback_query.answer()
     context.user_data.clear()
-
-    await update.message.reply_text(
-        "⚡ MODALITÀ RAPIDA\n\n"
-        "Mandami tutto in una sola riga:\n\n"
-        "LINK - NOME - PREZZO - PREZZO PRIMA\n\n"
-        "https://www.amazon.it/dp/XXXX "
-        "- AirPods Pro "
-        "- 199,99 "
-        "- 279,99\n\n"
-        "Se non c'è il prezzo precedente usa NO."
-    )
-
+    draft = {'canale': 'tech', 'minuti': intervallo_multiplo(update.effective_user.id), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
+    context.user_data['multiplo'] = draft
+    await update.effective_message.reply_text("📦 INVIO MULTIPLO\n\nScegli canale e intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi + altri 3 automatici.\nNessun post sarà pubblicato prima della conferma finale.", reply_markup=tastiera_multiplo(draft))
     return RAPIDO
 
 
-async def rapido_da_pulsante(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def rapido_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await rapido_da_comando(update, context)
 
+
+async def prepara_lotto_multiplo(messaggio, context, draft, links):
+    visti = set()
+    try:
+        for indice, link in enumerate(links, 1):
+            if context.user_data.get('multiplo') is not draft:
+                return
+            await messaggio.edit_text(f"🔎 Prodotto {indice}/{len(links)} — preparazione in corso…")
+            dati = None
+            errore_finale = 'dati incompleti dopo 6 tentativi'
+            # I due cicli sono automatici e non richiedono il pulsante Riprova.
+            for ciclo in range(2):
+                for tentativo in range(3):
+                    if context.user_data.get('multiplo') is not draft:
+                        return
+                    try:
+                        risultato = None
+                        if ciclo == 0 and tentativo == 0:
+                            try:
+                                risultato = await asyncio.to_thread(leggi_prodotto_creators_da_link, link)
+                            except Exception:
+                                pass
+                        if not risultato or not risultato.get('nome') or not risultato.get('prezzo') or not risultato.get('immagine'):
+                            risultato = await asyncio.to_thread(leggi_prodotto_amazon, link)
+                        if risultato and risultato.get('nome') and numero_da_prezzo(risultato.get('prezzo')) and risultato.get('immagine'):
+                            dati = risultato
+                            break
+                    except Exception as exc:
+                        print(f"Invio multiplo: recupero fallito ({ciclo*3+tentativo+1}/6): {type(exc).__name__}")
+                    if ciclo*3+tentativo < 5:
+                        await messaggio.edit_text(f"🔎 Prodotto {indice}/{len(links)} — tentativo {ciclo*3+tentativo+1}/6 incompleto. Riprovo automaticamente…")
+                        await asyncio.sleep(2 if ciclo == 0 else 4)
+                if dati:
+                    break
+            if context.user_data.get('multiplo') is not draft:
+                return
+            if not dati:
+                draft['scartati'].append(f"Link {indice}: {errore_finale}")
+                continue
+            try:
+                asin = dati.get('asin') or await asyncio.to_thread(risolvi_asin_da_link, link)
+                if asin in visti:
+                    draft['duplicati'] += 1
+                    continue
+                affiliato = link_affiliato_multiplo(link, asin)
+                foto = await prepara_foto_automatica(dati['immagine'])
+                # Upload nella chat amministratore: salva un file_id persistente,
+                # senza dipendere da file temporanei o URL al momento dell'invio.
+                anteprima = await messaggio.reply_photo(photo=foto, caption=f"📦 Preparato {indice}/{len(links)}: {str(dati['nome'])[:700]}")
+                visti.add(asin)
+                draft['pronti'].append({'nome': ' '.join(str(dati['nome']).split())[:500], 'prezzo': pulisci_prezzo(dati['prezzo']), 'vecchio_prezzo': pulisci_prezzo(dati['vecchio_prezzo']) if dati.get('vecchio_prezzo') else 'NO', 'link': affiliato, 'foto_file_id': anteprima.photo[-1].file_id})
+            except Exception as exc:
+                draft['scartati'].append(f"Link {indice}: {str(exc)[:120]}")
+        if context.user_data.get('multiplo') is draft:
+            draft['elaborazione'] = False
+            await riepilogo_multiplo(messaggio, draft)
+    except Exception as exc:
+        draft['elaborazione'] = False
+        if context.user_data.get('multiplo') is draft:
+            await messaggio.reply_text(f"⚠️ Preparazione interrotta: {type(exc).__name__}. Puoi confermare i prodotti già pronti o annullare.", reply_markup=tastiera_multiplo(draft))
+
+
+async def ricevi_rapido(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
+    draft = context.user_data.get('multiplo')
+    if not draft:
+        return await rapido_da_comando(update, context)
+    if draft.get('elaborazione'):
+        await update.message.reply_text("⏳ Sto preparando il lotto. Attendi il riepilogo oppure usa /annulla.")
+        return RAPIDO
+    if draft.pop('timing_personalizzato', False):
+        try:
+            minuti = int(update.message.text.strip())
+            if not 1 <= minuti <= 1440:
+                raise ValueError
+        except ValueError:
+            draft['timing_personalizzato'] = True
+            await update.message.reply_text("Inserisci un numero intero da 1 a 1440 minuti.")
+            return RAPIDO
+        draft['minuti'] = intervallo_multiplo(update.effective_user.id, minuti)
+        await update.message.reply_text(f"✅ Intervallo salvato: {minuti} minuti.", reply_markup=tastiera_multiplo(draft))
+        return RAPIDO
+    if draft.get('pronti'):
+        await update.message.reply_text("Conferma o annulla il lotto già preparato prima di inviare altri link.")
+        return RAPIDO
+    if not (os.environ.get('AMAZON_PARTNER_TAG') or os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip():
+        await update.message.reply_text("⚠️ Prima imposta AMAZON_PARTNER_TAG nelle variabili Railway con il TUO tag affiliato Amazon, poi reinvia i link.")
+        return RAPIDO
+    links = re.findall(r'https?://[^\s<>]+', update.message.text)
+    links = [x.rstrip('.,;)]') for x in links]
+    validi = []
+    for link in links:
+        host = (urlparse(link).hostname or '').lower()
+        if host in {'amazon.it', 'www.amazon.it', 'amzn.to', 'amzn.eu', 'link.amazon.it', 'a.co'} or host.endswith('.amazon.it'):
+            validi.append(link)
+    if not validi or len(validi) > 50:
+        await update.message.reply_text("Invia da 1 a 50 link Amazon Italia validi, uno per riga.")
+        return RAPIDO
+    unici = list(dict.fromkeys(validi))
+    draft['duplicati'] = len(validi)-len(unici)
+    draft['scartati'] = [f"{len(links)-len(validi)} link non Amazon Italia ignorati"] if len(links) != len(validi) else []
+    draft['elaborazione'] = True
+    attesa = await update.message.reply_text(f"🔎 Preparo {len(unici)} prodotti. Puoi usare /annulla per interrompere.")
+    context.application.create_task(prepara_lotto_multiplo(attesa, context, draft, unici), update=update)
+    return RAPIDO
 
+
+async def gestisci_multiplo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
     query = update.callback_query
-
     await query.answer()
-
-    context.user_data.clear()
-
-    await query.message.reply_text(
-        "⚡ MODALITÀ RAPIDA\n\n"
-        "Invia tutto in una sola riga:\n\n"
-        "LINK - NOME - PREZZO - PREZZO PRIMA\n\n"
-        "https://www.amazon.it/dp/XXXX "
-        "- AirPods Pro "
-        "- 199,99 "
-        "- 279,99\n\n"
-        "Senza prezzo precedente:\n"
-        "https://www.amazon.it/dp/XXXX "
-        "- AirPods Pro "
-        "- 199,99 "
-        "- NO"
-    )
-
-    return RAPIDO
-
-
-async def ricevi_rapido(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not await controlla_autorizzazione(update):
+    draft = context.user_data.get('multiplo')
+    if not draft:
+        await query.message.reply_text("Lotto non più disponibile. Apri nuovamente Invio multiplo.")
         return ConversationHandler.END
-
-    testo = update.message.text.strip()
-
-    parti = [
-        parte.strip()
-        for parte in testo.split(
-            " - ",
-            3,
-        )
-    ]
-
-    if len(parti) != 4:
-
-        await update.message.reply_text(
-            "❌ Formato non corretto.\n\n"
-            "Usa esattamente:\n\n"
-            "LINK - NOME - PREZZO - PREZZO PRIMA"
-        )
-
+    azione = query.data
+    if azione == 'multi_annulla':
+        context.user_data.pop('multiplo', None)
+        await query.edit_message_text("❌ Lotto annullato. Nessun invio aggiunto.")
+        return ConversationHandler.END
+    if draft.get('elaborazione') or draft.get('conferma_in_corso'):
+        await query.message.reply_text("⏳ Attendi il completamento dell'operazione in corso.")
         return RAPIDO
-
-    link, nome, prezzo, vecchio = parti
-
-    if not link_amazon_valido(link):
-
-        await update.message.reply_text(
-            "❌ Il primo campo deve essere un link Amazon."
-        )
-
-        return RAPIDO
-
-    context.user_data["link"] = link
-    context.user_data["nome"] = " ".join(str(nome).split()).strip()
-    context.user_data["prezzo"] = pulisci_prezzo(prezzo)
-
-    if vecchio.upper() == "NO":
-        context.user_data["vecchio_prezzo"] = "NO"
-    else:
-        context.user_data["vecchio_prezzo"] = pulisci_prezzo(vecchio)
-
-    return await prova_foto_automatica_o_chiedi(update, context)
-
+    if azione == 'multi_timing':
+        await query.message.reply_text("⏱ Scegli l'intervallo tra i post:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"{m} min", callback_data=f"multi_min_{m}") for m in (10,20,30)], [InlineKeyboardButton(f"{m} min", callback_data=f"multi_min_{m}") for m in (40,60)], [InlineKeyboardButton("✏️ Personalizzato", callback_data="multi_personalizzato")]]))
+    elif azione == 'multi_personalizzato':
+        draft['timing_personalizzato'] = True
+        await query.message.reply_text("Scrivi l'intervallo desiderato in minuti (1–1440):")
+    elif azione.startswith('multi_min_'):
+        draft['minuti'] = intervallo_multiplo(update.effective_user.id, int(azione.rsplit('_',1)[1]))
+        draft.pop('timing_personalizzato', None)
+        await query.message.reply_text(f"✅ Intervallo: {draft['minuti']} minuti", reply_markup=tastiera_multiplo(draft))
+    elif azione.startswith('multi_canale_'):
+        draft['canale'] = azione.rsplit('_',1)[1]
+        if draft['pronti']:
+            await riepilogo_multiplo(query.message, draft)
+        else:
+            await query.message.reply_text(f"✅ Canale: {draft['canale'].upper()}. Incolla i link.", reply_markup=tastiera_multiplo(draft))
+    elif azione == 'multi_avvia' and draft['pronti']:
+        draft['conferma_in_corso'] = True
+        try:
+            async with MULTIPLO_LOCK:
+                piano = piano_multiplo(draft['pronti'], draft['minuti'], _chat_id_per_canale(draft['canale']), salva=True)
+        except Exception:
+            draft.pop('conferma_in_corso', None)
+            await query.message.reply_text("⚠️ Salvataggio non riuscito. Il lotto non è stato aggiunto: riprova.")
+            return RAPIDO
+        context.user_data.pop('multiplo', None)
+        await query.edit_message_text(f"✅ {len(piano)} post aggiunti a 📅 Programmati.\nPrimo invio: {piano[0][1].astimezone(ROMA_TZ):%d/%m %H:%M}\nIntervallo: {draft['minuti']} minuti.\nGli orari già occupati sono stati rispettati. Il primo post libero parte entro circa 30 secondi.")
+        return ConversationHandler.END
+    return RAPIDO
 
 
 # =========================================================
@@ -11903,6 +12043,7 @@ def main():
                 nuova_da_comando,
             ),
 
+            CommandHandler("multiplo", rapido_da_comando),
             CommandHandler(
                 "rapido",
                 rapido_da_comando,
@@ -11989,6 +12130,7 @@ def main():
             ],
 
             RAPIDO: [
+                CallbackQueryHandler(gestisci_multiplo, pattern=r"^multi_(?:canale_(?:tech|casa)|timing|personalizzato|min_(?:10|20|30|40|60)|avvia|annulla)$"),
                 MessageHandler(
                     filters.TEXT
                     & ~filters.COMMAND,
