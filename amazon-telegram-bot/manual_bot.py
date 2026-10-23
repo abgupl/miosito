@@ -1947,6 +1947,7 @@ def salva_programmazione(
     prezzo,
     invio_previsto_locale,
     telegram_chat_id=CHANNEL_ID,
+    origine="manuale",
 ):
 
     # Salviamo in UTC per evitare problemi
@@ -2019,7 +2020,7 @@ def salva_programmazione(
     ))
 
     programmazione_id = cur.lastrowid
-    cur.execute("UPDATE programmazioni SET intervallo_minuti=? WHERE id=?", (DISTANZA_MINIMA_MINUTI, programmazione_id))
+    cur.execute("UPDATE programmazioni SET intervallo_minuti=?,origine=? WHERE id=?", (DISTANZA_MINIMA_MINUTI,origine, programmazione_id))
 
     db.commit()
     db.close()
@@ -2050,7 +2051,7 @@ async def invia_offerta_programmata(
         origine_riga = db_duplicati.execute(
             "SELECT origine FROM programmazioni WHERE id=?", (programmazione_id,)
         ).fetchone()
-    if origine_riga and origine_riga[0] in ('multiplo','repost'):
+    if origine_riga and origine_riga[0] in ('multiplo','repost','cronologia'):
         asin_multiplo = estrai_asin_da_link(link)
         if prodotto_inviato_ultime_24h(asin_multiplo, destinazione):
             with sqlite3.connect(DB_PATH) as db_duplicati:
@@ -2144,7 +2145,7 @@ async def invia_offerta_programmata(
         origine_riga = db_origine.execute(
             "SELECT origine FROM programmazioni WHERE id=?", (programmazione_id,)
         ).fetchone()
-    if not origine_riga or origine_riga[0] not in ("multiplo","repost"):
+    if not origine_riga or origine_riga[0] not in ("multiplo","repost","cronologia"):
         if str(destinazione) == str(CASA_CHANNEL_ID):
             await controlla_raccolta_dopo_post_casa(bot)
 
@@ -8609,6 +8610,8 @@ def intervallo_multiplo(utente, valore=None):
 
 
 def tastiera_multiplo(draft):
+    if draft.get('tipo') == 'singolo_cronologia':
+        return tastiera_confronto_cronologia(bool(draft.get('pronti')) and not draft.get('elaborazione'))
     return InlineKeyboardMarkup([row for row in [
         [InlineKeyboardButton("✅ Tech" if draft["canale"] == "tech" else "Tech", callback_data="multi_canale_tech"),
          InlineKeyboardButton("✅ Casa" if draft["canale"] == "casa" else "Casa", callback_data="multi_canale_casa")],
@@ -8671,6 +8674,8 @@ async def avvio_multiplo_differito(messaggio, context, draft, token):
 
 
 async def avvia_lotto_multiplo(messaggio, context, draft, automatico=False):
+    if draft.get('tipo') == 'singolo_cronologia':
+        return False
     async with MULTIPLO_LOCK:
         if (context.user_data.get('multiplo') is not draft
                 or draft.get('conferma_in_corso') or not draft.get('pronti')):
@@ -8707,6 +8712,8 @@ async def avvia_lotto_multiplo(messaggio, context, draft, automatico=False):
 
 
 async def riepilogo_multiplo(messaggio, draft, context=None):
+    if draft.get('tipo') == 'singolo_cronologia':
+        return await mostra_confronto_cronologia(messaggio,context,draft)
     filtra_duplicati_recenti_multiplo(draft)
     piano = piano_multiplo(draft['pronti'], draft['minuti'], _chat_id_per_canale(draft['canale']))
     righe = [f"{'🔁 REPOST' if draft.get('tipo') == 'repost' else '📦 INVIO MULTIPLO'} — {draft['canale'].upper()}", f"⏱ Intervallo: {draft['minuti']} minuti", f"✅ Pronti: {len(piano)} · Scartati: {len(draft['scartati'])} · Duplicati: {draft['duplicati']}", ""]
@@ -8807,6 +8814,116 @@ async def prepara_repost(messaggio, context, draft):
         await messaggio.reply_text(f'⚠️ Ricerca Repost interrotta: {type(exc).__name__}. Riprova indicando la quantità.')
 
 
+def offerta_attuale_rilevata(dati):
+    """Non confronta mai il prezzo con quello della pubblicazione storica."""
+    attuale = numero_da_prezzo(dati.get('prezzo'))
+    precedente = numero_da_prezzo(dati.get('vecchio_prezzo'))
+    return bool((attuale is not None and attuale > 0 and precedente is not None and precedente > attuale)
+                or frase_coupon(dati.get('coupon')))
+
+
+def tastiera_confronto_cronologia(pronto=False):
+    bottoni = []
+    if pronto:
+        bottoni += [[InlineKeyboardButton('📤 Pubblica ora',callback_data='hist_pubblica')],
+                    [InlineKeyboardButton('📅 Programma',callback_data='hist_programma')]]
+    bottoni.append([InlineKeyboardButton('❌ Annulla',callback_data='hist_annulla')])
+    return InlineKeyboardMarkup(bottoni)
+
+
+async def mostra_confronto_cronologia(messaggio, context, draft):
+    if context.user_data.get('multiplo') is not draft:
+        return
+    # Il singolo ricontrollo non deve mai armare il timer dei lotti.
+    draft.pop('timer_token',None)
+    if not draft['pronti']:
+        testo='⚠️ Ricontrollo non riuscito. Nessun invio programmato.\n\n'+'\n'.join(draft['scartati'])
+        await messaggio.reply_text(testo[:4000],reply_markup=tastiera_confronto_cronologia())
+        return
+    prodotto = draft['pronti'][0]
+    vecchio = numero_da_prezzo(prodotto.get('vecchio_prezzo'))
+    prezzo_attuale = numero_da_prezzo(prodotto['prezzo'])
+    ultima = numero_da_prezzo(draft.get('prezzo_storico'))
+    def euro(valore):
+        return (f'{valore:.2f}'.replace('.',',')+' €') if valore is not None else 'non disponibile'
+    righe=['🔄 <b>CONFRONTO PREZZI</b>',html.escape(prodotto['nome']),
+           '', '🕒 Prezzo nell’ultima pubblicazione: '+euro(ultima),
+           '🏷 Prezzo precedente/listino rilevato ora: '+euro(vecchio),
+           '💰 Prezzo attuale: <b>'+euro(prezzo_attuale)+'</b>']
+    sconto=calcola_sconto(prodotto['prezzo'],prodotto.get('vecchio_prezzo'))
+    if sconto is not None and sconto > 0:
+        righe.append(f'💥 Sconto attuale: <b>-{sconto}%</b>')
+    else:
+        righe.append('💥 Nessuna riduzione sul prezzo precedente rilevata.')
+    if ultima is not None and prezzo_attuale is not None:
+        differenza=prezzo_attuale-ultima
+        righe.append('📊 Rispetto all’ultimo post: '+('invariato' if abs(differenza)<0.005 else ('+' if differenza>0 else '−')+euro(abs(differenza))))
+    coupon=frase_coupon(prodotto.get('coupon'))
+    righe.append(html.escape(coupon) if coupon else '🎟 Nessun coupon rilevato.')
+    righe += ['', 'ℹ️ Il prezzo attuale è prima dell’eventuale coupon.',
+              'Scegli se pubblicare, programmare o annullare. Nessun avvio automatico.']
+    await messaggio.reply_text('\n'.join(righe),parse_mode='HTML')
+    corpo=crea_messaggio_programmato(prodotto['nome'],prodotto['prezzo'],prodotto['vecchio_prezzo'],'pulito',prodotto.get('categoria'),prodotto.get('coupon'))
+    anteprima=crea_caption_con_link(corpo,prodotto['link'])
+    tastiera=tastiera_confronto_cronologia(True)
+    if prodotto.get('foto_file_id'):
+        try:
+            await messaggio.reply_photo(photo=prodotto['foto_file_id'],caption=anteprima,parse_mode='HTML',reply_markup=tastiera)
+            return
+        except Exception:
+            pass
+    await messaggio.reply_text(anteprima,parse_mode='HTML',reply_markup=tastiera)
+
+
+async def decidi_ricontrollo_cronologia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    q=update.callback_query
+    await q.answer()
+    draft=context.user_data.get('multiplo')
+    if not draft or draft.get('tipo') != 'singolo_cronologia':
+        await q.message.reply_text('Ricontrollo non più disponibile. Apri il prodotto dalla cronologia.')
+        return ConversationHandler.END
+    if q.data == 'hist_annulla':
+        context.user_data.pop('multiplo',None)
+        await q.message.reply_text('❌ Ripubblicazione annullata. Nessun invio aggiunto.')
+        return ConversationHandler.END
+    if draft.get('elaborazione') or not draft['pronti']:
+        await q.message.reply_text('Il prodotto non è ancora pronto per la pubblicazione.')
+        return RAPIDO
+    prodotto=draft['pronti'][0]
+    destinazione=_chat_id_per_canale(draft['canale'])
+    if prodotto_inviato_ultime_24h(prodotto['asin'],destinazione):
+        await q.message.reply_text('⏳ Prodotto già pubblicato nelle ultime 24 ore nello stesso canale. Puoi consultare il confronto, ma al momento non ripubblicarlo.')
+        return RAPIDO
+    if prodotto['asin'] in await asyncio.to_thread(asin_in_programmati,destinazione):
+        await q.message.reply_text('⏳ Il prodotto è già presente in Programmati. Nessun doppione aggiunto.')
+        return RAPIDO
+    corpo=crea_messaggio_programmato(prodotto['nome'],prodotto['prezzo'],prodotto['vecchio_prezzo'],'pulito',prodotto.get('categoria'),prodotto.get('coupon'))
+    if q.data == 'hist_programma':
+        context.user_data.update(prodotto)
+        context.user_data['messaggio']=corpo
+        context.user_data['template']='pulito'
+        context.user_data['telegram_chat_id']=destinazione
+        context.user_data['origine_programmazione']='cronologia'
+        context.user_data.pop('multiplo',None)
+        await q.message.reply_text('📅 Scegli il giorno, poi inserisci l’orario. Si applica la fascia manuale/multiplo.',reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('📅 Oggi',callback_data='prog_giorno_0'),InlineKeyboardButton('📅 Domani',callback_data='prog_giorno_1')],
+            [InlineKeyboardButton('📅 Tra 2 giorni',callback_data='prog_giorno_2')],
+            [InlineKeyboardButton('❌ Annulla',callback_data='annulla')]]))
+        return CONFERMA
+    # Accoda una sola volta, con le normali regole di fascia/spazi e controllo finale 24h.
+    async with MULTIPLO_LOCK:
+        if context.user_data.get('multiplo') is not draft:
+            return ConversationHandler.END
+        ora=datetime.now(ROMA_TZ)+timedelta(minutes=minuti_rimanenti_prima_del_prossimo_invio())
+        pid,quando=salva_programmazione(prodotto['nome'],corpo,prodotto['link'],prodotto['prezzo'],ora,destinazione,origine='cronologia')
+        salva_foto_programmazione(pid,prodotto.get('foto_file_id'))
+        context.user_data.pop('multiplo',None)
+    await q.message.reply_text(f'✅ Ripubblicazione confermata. Invio previsto: {quando:%d/%m/%Y %H:%M}, ora italiana.\nVisibile in Programmati; se lo spazio è libero parte entro circa 30 secondi.')
+    return ConversationHandler.END
+
+
 async def prepara_lotto_multiplo(messaggio, context, draft, links):
     visti = set()
     try:
@@ -8818,7 +8935,7 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                 return
             await messaggio.edit_text(f"🔎 Prodotto {indice}/{len(links)} — preparazione in corso…")
             asin_iniziale = await asyncio.to_thread(risolvi_asin_da_link, link)
-            if prodotto_inviato_ultime_24h(asin_iniziale, _chat_id_per_canale(draft['canale'])):
+            if draft.get('tipo') != 'singolo_cronologia' and prodotto_inviato_ultime_24h(asin_iniziale, _chat_id_per_canale(draft['canale'])):
                 draft['scartati'].append(f"{link} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
                 continue
             dati = None
@@ -8857,9 +8974,12 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
             if not dati:
                 draft['scartati'].append(f"{link} — {errore_finale}")
                 continue
+            if draft.get('tipo') == 'repost' and not offerta_attuale_rilevata(dati):
+                draft['scartati'].append(f"{link} — nessuno sconto attuale né coupon rilevato")
+                continue
             try:
                 asin = dati.get('asin') or asin_iniziale
-                if prodotto_inviato_ultime_24h(asin, _chat_id_per_canale(draft['canale'])):
+                if draft.get('tipo') != 'singolo_cronologia' and prodotto_inviato_ultime_24h(asin, _chat_id_per_canale(draft['canale'])):
                     draft['scartati'].append(f"{link} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
                     continue
                 if asin in visti:
@@ -8876,7 +8996,10 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                 draft['scartati'].append(f"{link} — {str(exc)[:120]}")
         if context.user_data.get('multiplo') is draft:
             draft['elaborazione'] = False
-            await riepilogo_multiplo(messaggio, draft, context)
+            if draft.get('tipo') == 'singolo_cronologia':
+                await mostra_confronto_cronologia(messaggio,context,draft)
+            else:
+                await riepilogo_multiplo(messaggio, draft, context)
     except Exception as exc:
         draft['elaborazione'] = False
         if context.user_data.get('multiplo') is draft:
@@ -9147,6 +9270,7 @@ async def ricevi_ora_programmazione(
         prezzo,
         data_locale,
         context.user_data.get("telegram_chat_id", CHANNEL_ID),
+        origine=context.user_data.get("origine_programmazione","manuale"),
     )
 
     salva_foto_programmazione(
@@ -9475,6 +9599,7 @@ async def conferma_orario_vicino(
         prezzo,
         data_locale,
         context.user_data.get("telegram_chat_id", CHANNEL_ID),
+        origine=context.user_data.get("origine_programmazione","manuale"),
     )
 
     salva_foto_programmazione(
@@ -11799,19 +11924,19 @@ async def ricontrolla_da_cronologia(update: Update, context: ContextTypes.DEFAUL
     await q.answer()
     pid=int(q.data.rsplit('_',1)[1])
     with sqlite3.connect(DB_PATH) as db:
-        row=db.execute('SELECT link,telegram_chat_id,asin FROM recap_offerte WHERE id=?',(pid,)).fetchone()
+        row=db.execute('SELECT link,telegram_chat_id,asin,prezzo,pubblicata_il FROM recap_offerte WHERE id=?',(pid,)).fetchone()
     if not row:
         await q.message.reply_text('❌ Prodotto non trovato.')
         return ConversationHandler.END
     if not (os.environ.get('AMAZON_PARTNER_TAG') or os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip():
         await q.message.reply_text('⚠️ Imposta AMAZON_PARTNER_TAG nelle variabili Railway.')
         return ConversationHandler.END
-    link,chat_id,asin=row
+    link,chat_id,asin,prezzo_storico,data_storica=row
     canale='casa' if str(chat_id)==str(CASA_CHANNEL_ID) else 'tech'
     context.user_data.pop('multiplo',None)
-    draft={'tipo':'repost','canale':canale,'minuti':intervallo_multiplo(update.effective_user.id),'pronti':[],'scartati':[],'duplicati':0,'elaborazione':True,'richiesti':1,'candidati':1}
+    draft={'tipo':'singolo_cronologia','prezzo_storico':prezzo_storico,'data_storica':data_storica,'canale':canale,'minuti':intervallo_multiplo(update.effective_user.id),'pronti':[],'scartati':[],'duplicati':0,'elaborazione':True,'richiesti':1,'candidati':1}
     context.user_data['multiplo']=draft
-    attesa=await q.message.reply_text('🔄 Ricontrollo il prodotto: prezzi, disponibilità e coupon. Si applicano blocco 24 ore, fascia oraria e conferma o avvio dopo 2 minuti.')
+    attesa=await q.message.reply_text('🔄 Ricontrollo il prodotto: prezzi, disponibilità e coupon. Ti mostrerò confronto e anteprima; attenderò la tua decisione, senza avvio automatico.')
     context.application.create_task(prepara_lotto_multiplo(attesa,context,draft,['https://www.amazon.it/dp/'+asin if asin else link]),update=update)
     return RAPIDO
 
@@ -12745,6 +12870,7 @@ def main():
             ],
 
             RAPIDO: [
+                CallbackQueryHandler(decidi_ricontrollo_cronologia,pattern=r'^hist_(pubblica|programma|annulla)$'),
                 CallbackQueryHandler(gestisci_multiplo, pattern=r"^multi_(?:canale_(?:tech|casa)|timing|personalizzato|min_(?:10|20|30|40|60)|avvia|annulla)$"),
                 MessageHandler(
                     filters.TEXT
