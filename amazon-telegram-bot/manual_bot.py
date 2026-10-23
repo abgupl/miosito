@@ -1741,6 +1741,113 @@ async def controlla_recap(app):
 # =========================================================
 
 
+def config_fascia_manuale(chiave=None, valore=None):
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS fascia_manuale (chiave TEXT PRIMARY KEY, valore TEXT NOT NULL)")
+        if chiave is not None:
+            db.execute("INSERT OR REPLACE INTO fascia_manuale VALUES (?,?)", (chiave, str(valore)))
+        valori = dict(db.execute("SELECT chiave,valore FROM fascia_manuale").fetchall())
+    return {'attiva': valori.get('attiva', '1') == '1', 'inizio': valori.get('inizio', '08:30'), 'fine': valori.get('fine', '21:30')}
+
+
+def prossimo_orario_manuale(data, config=None):
+    config = config if config is not None else config_fascia_manuale()
+    locale = data.astimezone(ROMA_TZ)
+    if not config['attiva']:
+        return locale
+    h, m = map(int, config['inizio'].split(':'))
+    inizio = locale.replace(hour=h, minute=m, second=0, microsecond=0)
+    h, m = map(int, config['fine'].split(':'))
+    fine = locale.replace(hour=h, minute=m, second=59, microsecond=999999)
+    if locale < inizio:
+        return inizio
+    if locale > fine:
+        return (inizio + timedelta(days=1)).replace(second=0, microsecond=0)
+    return locale
+
+
+def slot_manuale_libero(data, occupati, minuti, config):
+    passo = timedelta(minutes=max(1, int(minuti)))
+    candidato = prossimo_orario_manuale(data, config)
+    while True:
+        conflitti = [t for t in occupati if abs((t-candidato).total_seconds()) < passo.total_seconds()]
+        if not conflitti:
+            return candidato
+        candidato = prossimo_orario_manuale(max(conflitti) + passo, config)
+
+
+def riallinea_programmati_fascia():
+    """Riposiziona fuori fascia e arretrati, preservando ordine e intervalli."""
+    cfg = config_fascia_manuale()
+    if not cfg['attiva']:
+        return 0
+    ora = datetime.now(timezone.utc).replace(microsecond=0)
+    modificati = 0
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        db.execute('BEGIN IMMEDIATE')
+        righe = db.execute("SELECT id,invio_previsto,telegram_chat_id,intervallo_minuti FROM programmazioni WHERE stato='attesa' ORDER BY invio_previsto,id").fetchall()
+        occupati = {}
+        for pid, data, chat, minuti in righe:
+            precedente = _data_sqlite(data)
+            if precedente is None:
+                continue
+            precedente = precedente.astimezone(timezone.utc)
+            base = max(precedente, ora) if precedente < ora-timedelta(seconds=30) else precedente
+            canale = str(chat or CHANNEL_ID)
+            nuovo = slot_manuale_libero(base, occupati.setdefault(canale, []), minuti or DISTANZA_MINIMA_MINUTI, cfg)
+            occupati[canale].append(nuovo)
+            if nuovo.astimezone(timezone.utc) != precedente:
+                db.execute('UPDATE programmazioni SET invio_previsto=? WHERE id=?', (nuovo.astimezone(timezone.utc).isoformat(timespec='seconds'),pid))
+                modificati += 1
+    return modificati
+
+
+async def menu_fascia_manuale(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    q = update.callback_query
+    await q.answer()
+    cfg = config_fascia_manuale()
+    if q.data == 'mf_toggle':
+        cfg = config_fascia_manuale('attiva', 0 if cfg['attiva'] else 1)
+        riallinea_programmati_fascia()
+    elif q.data in ('mf_inizio','mf_fine'):
+        context.user_data['fascia_campo'] = q.data.replace('mf_', '')
+        await q.message.reply_text('Scrivi l’orario italiano nel formato HH:MM, ad esempio 08:30. La fine deve essere successiva all’inizio. Per uscire: /annulla.')
+        return 'FASCIA_ORARIO'
+    context.user_data.pop('fascia_campo', None)
+    await q.message.reply_text(
+        f"🕒 FASCIA MANUALE E MULTIPLO\n\nStato: {'🟢 ATTIVA' if cfg['attiva'] else '🔴 DISATTIVATA'}\nInizio: {cfg['inizio']}\nFine: {cfg['fine']}\nOra italiana. Fuori fascia gli invii passano al primo spazio consentito. La fascia automatica resta nel suo menu.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('🟢/🔴 Attiva/disattiva',callback_data='mf_toggle')],
+            [InlineKeyboardButton('🌅 Inizio: '+cfg['inizio'],callback_data='mf_inizio'),InlineKeyboardButton('🌙 Fine: '+cfg['fine'],callback_data='mf_fine')],
+            [InlineKeyboardButton('⬅️ Pubblica offerta',callback_data='publish_menu')]
+        ]))
+    return ConversationHandler.END
+
+
+async def ricevi_fascia_manuale(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    valore = update.message.text.strip()
+    campo = context.user_data.get('fascia_campo')
+    cfg = config_fascia_manuale()
+    if campo not in ('inizio','fine'):
+        return ConversationHandler.END
+    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', valore):
+        await update.message.reply_text('❌ Usa HH:MM, da 00:00 a 23:59.')
+        return 'FASCIA_ORARIO'
+    cfg[campo] = valore
+    if cfg['inizio'] >= cfg['fine']:
+        await update.message.reply_text('❌ La fine deve essere successiva all’inizio. Inserisci un altro orario.')
+        return 'FASCIA_ORARIO'
+    config_fascia_manuale(campo, valore)
+    numero = riallinea_programmati_fascia()
+    context.user_data.pop('fascia_campo', None)
+    await update.message.reply_text(f"✅ Fascia salvata: {cfg['inizio']}–{cfg['fine']} (ora italiana).\nPost riposizionati: {numero}.",reply_markup=menu_pubblicazione())
+    return ConversationHandler.END
+
+
 def salva_foto_programmazione(
     programmazione_id,
     foto_file_id,
@@ -1812,6 +1919,9 @@ def inizializza_programmazioni():
             "ADD COLUMN foto_file_id TEXT"
         )
 
+    if "intervallo_minuti" not in colonne:
+        cur.execute("ALTER TABLE programmazioni ADD COLUMN intervallo_minuti INTEGER DEFAULT 30")
+
     if "origine" not in colonne:
         cur.execute("ALTER TABLE programmazioni ADD COLUMN origine TEXT DEFAULT 'manuale'")
 
@@ -1841,8 +1951,14 @@ def salva_programmazione(
         .astimezone(timezone.utc)
     )
 
-    db = sqlite3.connect(DB_PATH)
+    cfg = config_fascia_manuale()
+    db = sqlite3.connect(DB_PATH, timeout=30)
     cur = db.cursor()
+    cur.execute('BEGIN IMMEDIATE')
+    righe = cur.execute("SELECT invio_previsto FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),str(telegram_chat_id or CHANNEL_ID))).fetchall()
+    occupati = [_data_sqlite(r[0]) for r in righe if _data_sqlite(r[0])]
+    invio_previsto_locale = slot_manuale_libero(invio_previsto_locale, occupati, DISTANZA_MINIMA_MINUTI, cfg)
+    invio_previsto_utc = invio_previsto_locale.astimezone(timezone.utc)
 
     vecchio_prezzo = (
         estrai_vecchio_prezzo_da_messaggio(
@@ -1898,6 +2014,7 @@ def salva_programmazione(
     ))
 
     programmazione_id = cur.lastrowid
+    cur.execute("UPDATE programmazioni SET intervallo_minuti=? WHERE id=?", (DISTANZA_MINIMA_MINUTI, programmazione_id))
 
     db.commit()
     db.close()
@@ -1923,6 +2040,20 @@ async def invia_offerta_programmata(
         telegram_chat_id,
     ) = programmazione
     destinazione = telegram_chat_id or CHANNEL_ID
+
+    with sqlite3.connect(DB_PATH) as db_duplicati:
+        origine_riga = db_duplicati.execute(
+            "SELECT origine FROM programmazioni WHERE id=?", (programmazione_id,)
+        ).fetchone()
+    if origine_riga and origine_riga[0] == 'multiplo':
+        asin_multiplo = estrai_asin_da_link(link)
+        if prodotto_inviato_ultime_24h(asin_multiplo, destinazione):
+            with sqlite3.connect(DB_PATH) as db_duplicati:
+                db_duplicati.execute("UPDATE programmazioni SET stato='scartata' WHERE id=?", (programmazione_id,))
+            await _notifica_admin_automazione(
+                bot, f"⏭ Invio multiplo scartato: {nome}\n{link}\nGià pubblicato nelle ultime 24 ore nel canale di destinazione."
+            )
+            return
 
     messaggio_html = messaggio.startswith("__RICERCA_HTML__")
     if messaggio_html:
@@ -2011,8 +2142,6 @@ async def invia_offerta_programmata(
     if not origine_riga or origine_riga[0] != "multiplo":
         if str(destinazione) == str(CASA_CHANNEL_ID):
             await controlla_raccolta_dopo_post_casa(bot)
-        elif str(destinazione) == str(CHANNEL_ID):
-            await controlla_raccolta_dopo_post_tech(bot)
 
 
 
@@ -2021,6 +2150,12 @@ async def controlla_programmazioni(app):
     while True:
 
         try:
+
+            riallinea_programmati_fascia()
+            adesso_locale = datetime.now(ROMA_TZ)
+            if prossimo_orario_manuale(adesso_locale) != adesso_locale:
+                await asyncio.sleep(30)
+                continue
 
             db = sqlite3.connect(DB_PATH)
             cur = db.cursor()
@@ -2051,6 +2186,9 @@ async def controlla_programmazioni(app):
             db.close()
 
             for programmazione in programmazioni:
+                ora_controllo = datetime.now(ROMA_TZ)
+                if prossimo_orario_manuale(ora_controllo) != ora_controllo:
+                    break
 
                 try:
 
@@ -5154,7 +5292,7 @@ def raccolta_tech_pronta(configurazione):
     ultima = db.execute(
         "SELECT pubblicata_il FROM raccolte_tech ORDER BY pubblicata_il DESC LIMIT 1"
     ).fetchone()
-    condizioni = ["telegram_chat_id=?", "COALESCE(origine,'manuale')<>'raccolta'"]
+    condizioni = ["telegram_chat_id=?", "origine='automatico'"]
     parametri = [str(CHANNEL_ID)]
     if ultima:
         condizioni.append("pubblicata_il>?")
@@ -5202,8 +5340,10 @@ async def tenta_pubblicazione_raccolta_tech(bot):
         return True
 
 
-async def controlla_raccolta_dopo_post_tech(bot):
-    """Il fallimento della raccolta non deve annullare il post singolo già inviato."""
+async def controlla_raccolta_dopo_post_tech(bot, origine=None):
+    """Solo una pubblicazione della ricerca automatica può avviare le raccolte."""
+    if origine != "automatico" or not leggi_config_automatica("tech")["attiva"]:
+        return False
     try:
         return await tenta_pubblicazione_raccolta_tech(bot)
     except Exception as errore:
@@ -6387,8 +6527,8 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
     )
     if canale_effettivo == "casa":
         await controlla_raccolta_dopo_post_casa(bot)
-    elif canale_effettivo == "tech":
-        await controlla_raccolta_dopo_post_tech(bot)
+    elif canale_effettivo == "tech" and origine == "automatico":
+        await controlla_raccolta_dopo_post_tech(bot, origine=origine)
     return messaggio_telegram.message_id, foto_telegram, telegram_chat_id
 
 
@@ -7439,6 +7579,7 @@ def menu_pubblicazione():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔗 INSERIMENTO DA LINK", callback_data="nuova")],
         [InlineKeyboardButton("📦 INVIO MULTIPLO", callback_data="rapido")],
+        [InlineKeyboardButton("🕒 FASCIA ORARIA MANUALE E MULTIPLO", callback_data="mf_menu")],
         [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
     ])
 
@@ -8361,6 +8502,40 @@ def pulisci_prezzo(prezzo):
 MULTIPLO_LOCK = asyncio.Lock()
 
 
+def prodotto_inviato_ultime_24h(asin, destinazione):
+    """Confronta l'ASIN, non l'URL/tag. Conta solo pubblicazioni effettive."""
+    if not asin:
+        return False
+    adesso = datetime.now(timezone.utc)
+    limite = adesso - timedelta(hours=24)
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        for tabella, campo_data in (('recap_offerte', 'pubblicata_il'), ('invii_automatici', 'creato_il')):
+            righe = db.execute(
+                f"SELECT {campo_data}, asin, link FROM {tabella} "
+                "WHERE CAST(telegram_chat_id AS TEXT)=? "
+                "AND COALESCE(stato,'pubblicata') IN ('pubblicata','terminata') "
+                "AND (asin=? OR asin IS NULL OR asin='')",
+                (str(destinazione), asin),
+            ).fetchall()
+            for data_testo, asin_storico, link in righe:
+                data = _data_sqlite(data_testo)
+                if data and limite <= data.astimezone(timezone.utc) <= adesso:
+                    if (asin_storico or estrai_asin_da_link(link)) == asin:
+                        return True
+    return False
+
+
+def filtra_duplicati_recenti_multiplo(draft):
+    validi = []
+    for prodotto in draft['pronti']:
+        asin = prodotto.get('asin') or estrai_asin_da_link(prodotto['link'])
+        if prodotto_inviato_ultime_24h(asin, _chat_id_per_canale(draft['canale'])):
+            draft['scartati'].append(f"{prodotto.get('link_originale') or prodotto['link']} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
+        else:
+            validi.append(prodotto)
+    draft['pronti'] = validi
+
+
 def intervallo_multiplo(utente, valore=None):
     with sqlite3.connect(DB_PATH) as db:
         db.execute("CREATE TABLE IF NOT EXISTS impostazioni_multiplo (utente TEXT PRIMARY KEY, minuti INTEGER NOT NULL)")
@@ -8392,6 +8567,7 @@ def link_affiliato_multiplo(link, asin):
 
 def piano_multiplo(prodotti, minuti, destinazione, salva=False):
     """Ricalcola e prenota l'intero lotto in un'unica transazione SQLite."""
+    cfg = config_fascia_manuale()
     with sqlite3.connect(DB_PATH, timeout=30) as db:
         db.execute("BEGIN IMMEDIATE")
         righe = db.execute("SELECT invio_previsto FROM programmazioni WHERE stato='attesa' AND (telegram_chat_id=? OR (telegram_chat_id IS NULL AND ?=?))", (str(destinazione), str(destinazione), str(CHANNEL_ID))).fetchall()
@@ -8400,11 +8576,7 @@ def piano_multiplo(prodotti, minuti, destinazione, salva=False):
         quando = datetime.now(timezone.utc).replace(microsecond=0)
         piano = []
         for prodotto in prodotti:
-            while True:
-                conflitti = [t for t in occupati if abs((t-quando).total_seconds()) < passo.total_seconds()]
-                if not conflitti:
-                    break
-                quando = max(conflitti) + passo
+            quando = slot_manuale_libero(quando, occupati, minuti, cfg)
             pid = None
             if salva:
                 corpo = crea_messaggio_programmato(prodotto['nome'], prodotto['prezzo'], prodotto['vecchio_prezzo'], 'pulito', prodotto.get('categoria'))
@@ -8413,6 +8585,7 @@ def piano_multiplo(prodotti, minuti, destinazione, salva=False):
                     VALUES (?,?,?,?,?,'pulito',?,?,?,'attesa',?,'multiplo')""",
                     (prodotto['nome'],corpo,prodotto['link'],prodotto['prezzo'],prodotto['vecchio_prezzo'],prodotto.get('foto_file_id'),str(destinazione),quando.isoformat(timespec='seconds'),datetime.now(timezone.utc).isoformat(timespec='seconds')))
                 pid = cur.lastrowid
+                db.execute("UPDATE programmazioni SET intervallo_minuti=? WHERE id=?", (minuti,pid))
             piano.append((pid, quando))
             occupati.append(quando)
             quando += passo
@@ -8442,6 +8615,7 @@ async def avvia_lotto_multiplo(messaggio, context, draft, automatico=False):
         draft['conferma_in_corso'] = True
         draft.pop('timer_token', None)
         try:
+            filtra_duplicati_recenti_multiplo(draft)
             piano = piano_multiplo(draft['pronti'], draft['minuti'], _chat_id_per_canale(draft['canale']), salva=True)
         except Exception:
             draft.pop('conferma_in_corso', None)
@@ -8450,7 +8624,7 @@ async def avvia_lotto_multiplo(messaggio, context, draft, automatico=False):
         context.user_data.pop('multiplo', None)
     righe = [f"✅ {'Avvio automatico dopo 2 minuti' if automatico else 'Avvio confermato'}",
              f"📅 {len(piano)} post aggiunti a Programmati — {draft['canale'].upper()}.",
-             f"Primo invio: {piano[0][1].astimezone(ROMA_TZ):%d/%m %H:%M}",
+             f"Primo invio: {piano[0][1].astimezone(ROMA_TZ):%d/%m %H:%M}" if piano else "Nessun invio: tutti i prodotti sono stati scartati.",
              f"Intervallo: {draft['minuti']} minuti. Orari già occupati rispettati.",
              "Il primo post libero parte entro circa 30 secondi.",
              f"Duplicati ignorati: {draft['duplicati']}"]
@@ -8469,6 +8643,7 @@ async def avvia_lotto_multiplo(messaggio, context, draft, automatico=False):
 
 
 async def riepilogo_multiplo(messaggio, draft, context=None):
+    filtra_duplicati_recenti_multiplo(draft)
     piano = piano_multiplo(draft['pronti'], draft['minuti'], _chat_id_per_canale(draft['canale']))
     righe = [f"📦 INVIO MULTIPLO — {draft['canale'].upper()}", f"⏱ Intervallo: {draft['minuti']} minuti", f"✅ Pronti: {len(piano)} · Scartati: {len(draft['scartati'])} · Duplicati: {draft['duplicati']}", ""]
     for prodotto, (_, quando) in zip(draft['pronti'], piano):
@@ -8509,6 +8684,10 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
             if context.user_data.get('multiplo') is not draft:
                 return
             await messaggio.edit_text(f"🔎 Prodotto {indice}/{len(links)} — preparazione in corso…")
+            asin_iniziale = await asyncio.to_thread(risolvi_asin_da_link, link)
+            if prodotto_inviato_ultime_24h(asin_iniziale, _chat_id_per_canale(draft['canale'])):
+                draft['scartati'].append(f"{link} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
+                continue
             dati = None
             errore_finale = 'dati incompleti dopo 6 tentativi'
             # I due cicli sono automatici e non richiedono il pulsante Riprova.
@@ -8541,7 +8720,10 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                 draft['scartati'].append(f"{link} — {errore_finale}")
                 continue
             try:
-                asin = dati.get('asin') or await asyncio.to_thread(risolvi_asin_da_link, link)
+                asin = dati.get('asin') or asin_iniziale
+                if prodotto_inviato_ultime_24h(asin, _chat_id_per_canale(draft['canale'])):
+                    draft['scartati'].append(f"{link} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
+                    continue
                 if asin in visti:
                     draft['duplicati'] += 1
                     continue
@@ -8551,7 +8733,7 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                 # senza dipendere da file temporanei o URL al momento dell'invio.
                 anteprima = await messaggio.reply_photo(photo=foto, caption=f"📦 Preparato {indice}/{len(links)}: {str(dati['nome'])[:700]}")
                 visti.add(asin)
-                draft['pronti'].append({'nome': ' '.join(str(dati['nome']).split())[:500], 'prezzo': pulisci_prezzo(dati['prezzo']), 'vecchio_prezzo': pulisci_prezzo(dati['vecchio_prezzo']) if dati.get('vecchio_prezzo') else 'NO', 'link': affiliato, 'foto_file_id': anteprima.photo[-1].file_id, 'categoria': dati.get('categoria')})
+                draft['pronti'].append({'nome': ' '.join(str(dati['nome']).split())[:500], 'prezzo': pulisci_prezzo(dati['prezzo']), 'vecchio_prezzo': pulisci_prezzo(dati['vecchio_prezzo']) if dati.get('vecchio_prezzo') else 'NO', 'link': affiliato, 'foto_file_id': anteprima.photo[-1].file_id, 'categoria': dati.get('categoria'), 'asin': asin, 'link_originale': link})
             except Exception as exc:
                 draft['scartati'].append(f"{link} — {str(exc)[:120]}")
         if context.user_data.get('multiplo') is draft:
@@ -11051,6 +11233,18 @@ async def conferma(
     # PUBBLICA
     if query.data == "pubblica":
 
+        ora = datetime.now(ROMA_TZ)
+        if prossimo_orario_manuale(ora) != ora:
+            dati = context.user_data
+            if not dati.get('messaggio') or not dati.get('link'):
+                await query.message.reply_text('❌ Dati dell’offerta mancanti.')
+                return CONFERMA
+            pid, quando = salva_programmazione(dati.get('nome'), dati['messaggio'], dati['link'], dati.get('prezzo'), ora, dati.get('telegram_chat_id', CHANNEL_ID))
+            salva_foto_programmazione(pid, dati.get('foto_file_id'))
+            context.user_data.clear()
+            await query.message.reply_text(f"🌙 Fuori fascia: offerta aggiunta a Programmati per {quando:%d/%m/%Y %H:%M} (ora italiana).",reply_markup=menu_pubblicazione())
+            return ConversationHandler.END
+
         minuti_rimanenti = minuti_rimanenti_prima_del_prossimo_invio()
 
         if minuti_rimanenti > 0:
@@ -11801,6 +11995,20 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
 
+    draft = await _dati_reinvio(context)
+    if not draft:
+        await query.message.reply_text("❌ Offerta non trovata.")
+        return
+
+    messaggio = _messaggio_reinvio(draft)
+    ora = datetime.now(ROMA_TZ)
+    if prossimo_orario_manuale(ora) != ora:
+        corpo = ('__RICERCA_HTML__' + messaggio) if draft.get('template') == 'automatico' else messaggio
+        pid, quando = salva_programmazione(draft.get('nome'),corpo,draft['link'],draft.get('prezzo'),ora,CHANNEL_ID)
+        salva_foto_programmazione(pid,draft.get('foto_file_id'))
+        await query.message.reply_text(f"🌙 Fuori fascia: reinvio programmato per {quando:%d/%m/%Y %H:%M} (ora italiana).")
+        return
+
     minuti_rimanenti = minuti_rimanenti_prima_del_prossimo_invio()
     if minuti_rimanenti > 0:
         await query.message.reply_text(
@@ -11809,12 +12017,6 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
         )
         return
 
-    draft = await _dati_reinvio(context)
-    if not draft:
-        await query.message.reply_text("❌ Offerta non trovata.")
-        return
-
-    messaggio = _messaggio_reinvio(draft)
     messaggio_con_link = crea_caption_con_link(
         messaggio,
         draft["link"],
@@ -12419,6 +12621,13 @@ def main():
     app.add_handler(ricerca_archivio)
 
     app.add_handler(CallbackQueryHandler(gestisci_tiktok, pattern=r"^tiktok_(menu|toggle|test|history|times|times_(1130_1930|1230_2030|1300_2100)|discount|discount_(10|20|30|40))$"))
+
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(menu_fascia_manuale, pattern=r'^mf_(menu|toggle|inizio|fine)$')],
+        states={'FASCIA_ORARIO':[MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_fascia_manuale)]},
+        fallbacks=[CommandHandler('annulla',annulla),CallbackQueryHandler(mostra_menu_pubblicazione,pattern='^publish_menu$')],
+        allow_reentry=True,
+    ))
 
     # Nuovi menu principali raggruppati.
     app.add_handler(
