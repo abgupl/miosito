@@ -2154,7 +2154,7 @@ async def invia_offerta_programmata(
         messaggio_gia_html=messaggio_html,
     )
 
-    bottone_offerta = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 APRI", url=link,)]])
+    bottone_offerta = tastiera_offerta_automatica(link)
 
     if foto_file_id:
         messaggio_telegram = await bot.send_photo(
@@ -2171,6 +2171,8 @@ async def invia_offerta_programmata(
             parse_mode="HTML",
             reply_markup=bottone_offerta,
         )
+
+    await aggiorna_pulsanti_offerta(bot, messaggio_telegram, link, chat_id=destinazione)
 
     foto_monitoraggio = foto_file_id
     if getattr(messaggio_telegram, "photo", None):
@@ -5650,9 +5652,7 @@ async def testa_ricerca_automatica(update: Update, context: ContextTypes.DEFAULT
             f"👉 <a href=\"{html.escape(prodotto['link'], quote=True)}\">Scopri l’offerta su Amazon</a>\n\n"
             "Anteprima non pubblicata"
         )
-        tastiera = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🛒 APRI", url=prodotto["link"]),
-        ]])
+        tastiera = tastiera_offerta_automatica(prodotto["link"], asin=prodotto.get("asin"))
         foto = await prepara_foto_automatica(prodotto["immagine"])
         await query.message.reply_photo(
             photo=foto,
@@ -5940,7 +5940,7 @@ async def mostra_prodotto_ricerca_offerte(query, context, indice):
     tastiera = InlineKeyboardMarkup([
         [InlineKeyboardButton("📤 PUBBLICA ORA", callback_data=f"os_publish_{indice}")],
         [InlineKeyboardButton("🕒 PROGRAMMA", callback_data=f"os_program_{indice}")],
-        [InlineKeyboardButton("🛒 APRI SU AMAZON", url=prodotto["link"])],
+        *tastiera_offerta_automatica(prodotto["link"], asin=prodotto.get("asin")).inline_keyboard,
         [InlineKeyboardButton("⬅️ TORNA ALLA LISTA", callback_data="os_back")],
     ])
     foto = await prepara_foto_automatica(prodotto["immagine"])
@@ -6510,10 +6510,84 @@ def crea_corpo_offerta_automatica(prodotto, categoria=None):
     return corpo_pulito_post(prodotto['nome'],prodotto['prezzo'],prodotto.get('vecchio_prezzo'),categoria or prodotto.get('categoria'),prodotto.get('coupon'))
 
 
-def tastiera_offerta_automatica(link):
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🛒 APRI", url=link),
-    ]])
+TIKTOK_PROFILO_URL = "https://www.tiktok.com/@amazontechdeal5"
+
+
+def link_post_telegram(messaggio=None, chat_id=None, message_id=None):
+    """Usa il canale realmente restituito da Telegram, anche per ID numerici."""
+    if messaggio is not None:
+        try:
+            collegamento = messaggio.link
+            if isinstance(collegamento, str) and collegamento.startswith("https://t.me/"):
+                return collegamento
+        except (AttributeError, TypeError, ValueError):
+            pass
+        chat = getattr(messaggio, "chat", None)
+        username = getattr(chat, "username", None)
+        chat_id = (
+            "@" + username if isinstance(username, str) and username
+            else getattr(messaggio, "chat_id", None) or chat_id
+        )
+        message_id = getattr(messaggio, "message_id", None) or message_id
+    if not message_id:
+        return None
+    identita = str(chat_id or "")
+    if identita.startswith("@"):
+        return f"https://t.me/{identita[1:]}/{message_id}"
+    if identita.startswith("-100") and identita[4:].isdigit():
+        return f"https://t.me/c/{identita[4:]}/{message_id}"
+    return None
+
+
+def tastiera_offerta_automatica(link, link_post=None, asin=None):
+    """Tastiera unica 2x2 per tutti i percorsi di pubblicazione delle offerte."""
+    asin = str(asin or estrai_asin_da_link(link) or "").upper()
+    condivisione = "https://t.me/share/url?" + urlencode({
+        "url": link_post or link,
+        "text": "🔥 Guarda questa offerta su BestPrice24h!",
+    })
+    storico = (
+        InlineKeyboardButton("📉 Storico prezzi", url=f"https://keepa.com/#!product/8-{asin}")
+        if re.fullmatch(r"[A-Z0-9]{10}", asin)
+        else InlineKeyboardButton("📉 Storico prezzi", callback_data="offer_price_unavailable")
+    )
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📤 Invia agli amici", url=condivisione),
+         InlineKeyboardButton("🛒 Apri", url=link)],
+        [storico, InlineKeyboardButton("🎵 TikTok", url=TIKTOK_PROFILO_URL)],
+    ])
+
+
+async def aggiorna_pulsanti_offerta(bot, messaggio, link, asin=None, chat_id=None):
+    """Dopo l'invio si conosce l'ID del post da condividere. Non reinvia il post."""
+    try:
+        asin = asin or estrai_asin_da_link(link)
+        if not asin:
+            asin = await asyncio.wait_for(
+                asyncio.to_thread(risolvi_asin_da_link, link), timeout=5
+            )
+    except Exception:
+        asin = None
+    try:
+        destinazione = getattr(messaggio, "chat_id", None) or chat_id
+        await bot.edit_message_reply_markup(
+            chat_id=destinazione,
+            message_id=messaggio.message_id,
+            reply_markup=tastiera_offerta_automatica(
+                link, link_post=link_post_telegram(messaggio, chat_id=chat_id), asin=asin
+            ),
+        )
+    except Exception as errore:
+        # Il post è già pubblicato: un errore della tastiera non deve duplicarlo.
+        print(f"Aggiornamento pulsanti offerta non riuscito: {type(errore).__name__}: {errore}")
+
+
+async def storico_prezzi_non_disponibile(update, context):
+    await update.callback_query.answer(
+        "Non è stato possibile identificare il prodotto per Keepa. "
+        "Apri l'offerta Amazon e cerca il suo ASIN su Keepa.",
+        show_alert=True,
+    )
 
 
 async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="automatico"):
@@ -6541,7 +6615,7 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
         prodotto["link"],
         messaggio_gia_html=True,
     )
-    tastiera = tastiera_offerta_automatica(prodotto["link"])
+    tastiera = tastiera_offerta_automatica(prodotto["link"], asin=prodotto.get("asin"))
     foto = await prepara_foto_automatica(prodotto["immagine"])
     canale_effettivo = (
         canale if canale in {"tech", "casa"}
@@ -6565,6 +6639,10 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
         caption=messaggio,
         parse_mode="HTML",
         reply_markup=tastiera,
+    )
+    await aggiorna_pulsanti_offerta(
+        bot, messaggio_telegram, prodotto["link"], asin=prodotto.get("asin"),
+        chat_id=telegram_chat_id,
     )
     ultime_offerte.appendleft({
         "nome": nome,
@@ -6934,7 +7012,11 @@ async def _aggiorna_post_offerta_attiva(
         message_id=message_id,
         caption=didascalia,
         parse_mode="HTML",
-        reply_markup=tastiera_offerta_automatica(prodotto["link"]),
+        reply_markup=tastiera_offerta_automatica(
+            prodotto["link"],
+            link_post=link_post_telegram(chat_id=telegram_chat_id or CHANNEL_ID, message_id=message_id),
+            asin=prodotto.get("asin"),
+        ),
     )
     _salva_aggiornamento_offerta(invio_id, prodotto, corpo_messaggio)
 
@@ -10032,12 +10114,7 @@ async def invia_scheda_programmato(
 
     tastiera = InlineKeyboardMarkup(
         [
-            [
-                InlineKeyboardButton(
-                    "🛒 APRI",
-                    url=post["link"],
-                )
-            ],
+            *tastiera_offerta_automatica(post["link"]).inline_keyboard,
             [
                 InlineKeyboardButton(
                     "✏️ MODIFICA",
@@ -11462,7 +11539,7 @@ async def conferma(
 
         messaggio_con_link = crea_caption_con_link(messaggio, link)
 
-        bottone_offerta = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 APRI", url=link,)]])
+        bottone_offerta = tastiera_offerta_automatica(link, asin=context.user_data.get("asin"))
 
         foto_file_id = context.user_data.get(
             "foto_file_id"
@@ -11483,6 +11560,11 @@ async def conferma(
                 parse_mode="HTML",
                 reply_markup=bottone_offerta,
             )
+
+        await aggiorna_pulsanti_offerta(
+            context.bot, messaggio_telegram, link,
+            asin=context.user_data.get("asin"), chat_id=CHANNEL_ID,
+        )
 
         foto_monitoraggio = foto_file_id
         if getattr(messaggio_telegram, "photo", None):
@@ -11786,7 +11868,10 @@ async def mostra_scheda_archivio(update: Update, context: ContextTypes.DEFAULT_T
            +crea_caption_con_link(corpo_pulito_post(dati_salvati['nome'],dati_salvati['prezzo'],dati_salvati.get('vecchio_prezzo'),dati_salvati.get('categoria'),dati_salvati.get('coupon')),r['link']))
     pagina=context.user_data.get('archivio_pagina',0)
     bottoni=InlineKeyboardMarkup([
-        [InlineKeyboardButton('🛒 Apri su Amazon',url=r['link'])],
+        *tastiera_offerta_automatica(
+            r['link'], asin=r.get('asin'),
+            link_post=link_post_telegram(chat_id=r.get('telegram_chat_id'), message_id=r.get('telegram_message_id')),
+        ).inline_keyboard,
         [InlineKeyboardButton('🔄 Ricontrolla e ripubblica',callback_data=f'archive_recheck_{pid}')],
         [InlineKeyboardButton('📜 Pubblicazioni precedenti',callback_data=f'archive_previous_{pid}_0')],
         [InlineKeyboardButton('⬅️ Torna alla lista',callback_data=f'archive_page_{pagina}')],
@@ -12132,6 +12217,7 @@ async def mostra_anteprima_reinvio(messaggio, context):
         [
             InlineKeyboardButton("✏️ MODIFICA", callback_data="reinvia_modifica"),
         ],
+        *tastiera_offerta_automatica(draft["link"], asin=draft.get("asin")).inline_keyboard,
         [
             InlineKeyboardButton("⬅️ TORNA ALLO STORICO", callback_data="reinvia_pagina_0"),
         ],
@@ -12363,9 +12449,7 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
         draft["link"],
         messaggio_gia_html=draft.get("template") == "automatico",
     )
-    bottoni = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🛒 APRI", url=draft["link"]),
-    ]])
+    bottoni = tastiera_offerta_automatica(draft["link"], asin=draft.get("asin"))
 
     if draft.get("foto_file_id"):
         messaggio_telegram = await context.bot.send_photo(
@@ -12382,6 +12466,11 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
             parse_mode="HTML",
             reply_markup=bottoni,
         )
+
+    await aggiorna_pulsanti_offerta(
+        context.bot, messaggio_telegram, draft["link"],
+        asin=draft.get("asin"), chat_id=CHANNEL_ID,
+    )
 
     foto_monitoraggio = draft.get("foto_file_id")
     if getattr(messaggio_telegram, "photo", None):
@@ -12632,12 +12721,21 @@ OROSCOPO_SEGNI = (
 )
 OROSCOPO_DIDASCALIA = (
     "☕ Un caffè con le stelle ✨\n\n"
-    "Prenditi una pausa, concediti un sorriso e scopri il pensiero "
-    "di oggi per il tuo pomeriggio.\n\n"
-    "👇 Tocca il tuo segno zodiacale!\n\n"
-    "Un piccolo gioco per la tua pausa."
+    "📅 {data} — L’oroscopo di oggi\n\n"
+    "Tra un impegno e l’altro, concediti una pausa: un sorso di caffè, "
+    "un sorriso e un pensiero dedicato al tuo segno. 💫\n\n"
+    "👇 Tocca il tuo segno e scopri cosa ti suggeriscono le stelle!"
 )
 OROSCOPO_LOCK = asyncio.Lock()
+
+
+def crea_didascalia_oroscopo(giorno):
+    data = datetime.strptime(giorno, "%Y-%m-%d").date()
+    settimana = ("Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica")
+    mesi = ("gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+            "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre")
+    etichetta = f"{settimana[data.weekday()]} {data.day} {mesi[data.month - 1]}"
+    return OROSCOPO_DIDASCALIA.format(data=etichetta)
 
 
 def inizializza_oroscopi():
@@ -12655,7 +12753,7 @@ def inizializza_oroscopi():
                 PRIMARY KEY(giorno, canale));
         """)
         defaults = {"attivo": False, "ora": "13:30", "canali": ["tech"],
-                    "foto": "", "didascalia": OROSCOPO_DIDASCALIA,
+                    "foto": "",
                     "promemoria": "", "esaurimento": ""}
         db.executemany("INSERT OR IGNORE INTO oroscopo_config VALUES (?, ?)",
                        [(k, json.dumps(v, ensure_ascii=False)) for k, v in defaults.items()])
@@ -12763,7 +12861,7 @@ async def invia_anteprima_oroscopo(bot, chat_id, giorno):
                    (snapshot, giorno, json.dumps(testi, ensure_ascii=False)))
     # Lo snapshot resta immutabile anche se si modificano i testi futuri.
     return await bot.send_photo(chat_id=chat_id, photo=config["foto"],
-                                caption=config["didascalia"],
+                                caption=crea_didascalia_oroscopo(giorno),
                                 reply_markup=tastiera_segni_oroscopo(snapshot))
 
 
@@ -12896,13 +12994,16 @@ async def azione_oroscopo(dato, msg, context):
         context.user_data.pop("oroscopo_import", None)
         await msg.reply_text(f"💾 Salvate {len(giornate)} giornate. Puoi provarle con Anteprima.")
         await mostra_pannello_oroscopo(msg, context)
-    elif dato in {"oro_foto", "oro_ora", "oro_didascalia"}:
+    elif dato in {"oro_foto", "oro_ora"}:
         campo = dato[4:]
         context.user_data["oroscopo_modalita"] = campo
         istruzioni = {"foto": "🖼 Invia qui la foto della rubrica come immagine Telegram. Verrà riutilizzata ogni giorno.",
-                      "ora": "🕒 Scrivi l’orario HH:MM, ad esempio 13:30. Si usa sempre l’ora italiana.",
-                      "didascalia": "✏️ Invia la nuova didascalia, massimo 1024 caratteri. Usa testo semplice."}
+                      "ora": "🕒 Scrivi l’orario HH:MM, ad esempio 13:30. Si usa sempre l’ora italiana."}
         await msg.reply_text(istruzioni[campo], reply_markup=oroscopo_indietro())
+    elif dato == "oro_didascalia":
+        # Compatibilità con il vecchio pulsante eventualmente ancora in chat.
+        await msg.reply_text("La didascalia è automatica e include giorno della settimana e data.",
+                             reply_markup=oroscopo_indietro())
     elif dato == "oro_impostazioni":
         await msg.reply_text(
             f"⚙️ Impostazioni rubrica\nOrario: {cfg['ora']} (Italia)\n"
@@ -12912,7 +13013,6 @@ async def azione_oroscopo(dato, msg, context):
                  InlineKeyboardButton("🏠 Casa", callback_data="oro_canali:casa"),
                  InlineKeyboardButton("📢 Entrambi", callback_data="oro_canali:entrambi")],
                 [InlineKeyboardButton("🕒 Cambia orario", callback_data="oro_ora")],
-                [InlineKeyboardButton("✏️ Didascalia", callback_data="oro_didascalia")],
                 [InlineKeyboardButton("⬅️ Rubrica", callback_data="oro_menu")]]))
     elif dato.startswith("oro_canali:"):
         valore = dato.split(":")[1]
@@ -12968,11 +13068,6 @@ async def ricevi_input_oroscopo(msg, context, modalita):
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", valore):
             raise ValueError("Usa il formato HH:MM, ad esempio 13:30.")
         imposta_oroscopo("ora", valore)
-    elif modalita == "didascalia":
-        valore = (msg.text or "").strip()
-        if not valore or lunghezza_telegram(valore) > 1024:
-            raise ValueError("La didascalia deve contenere da 1 a 1024 caratteri.")
-        imposta_oroscopo("didascalia", valore)
     elif modalita == "importa":
         if msg.document:
             if not (msg.document.file_name or "").lower().endswith(".txt"):
@@ -13106,6 +13201,10 @@ def main():
 
     # Intercetta solo la rubrica; gli altri flussi mantengono i propri handler.
     app.add_handler(TypeHandler(Update, gestisci_oroscopi), group=-1)
+
+    app.add_handler(CallbackQueryHandler(
+        storico_prezzi_non_disponibile, pattern="^offer_price_unavailable$"
+    ))
 
     conversazione = ConversationHandler(
 
