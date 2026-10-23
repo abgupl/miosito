@@ -7573,7 +7573,7 @@ def menu_principale():
             [InlineKeyboardButton("🔎 CERCA OFFERTE", callback_data="offer_search")],
             [InlineKeyboardButton("🤖 INVIO AUTOMATICO", callback_data="auto_channels")],
             [InlineKeyboardButton("📅 POST PROGRAMMATI", callback_data="programmati")],
-            [InlineKeyboardButton("📚 STORICO E REINVIO", callback_data="history_menu")],
+            [InlineKeyboardButton("📚 CRONOLOGIA", callback_data="history_menu")],
             [InlineKeyboardButton("🎵 AUTOMAZIONE TIKTOK", callback_data="tiktok_menu")],
             [InlineKeyboardButton("⚙️ IMPOSTAZIONI", callback_data="settings_menu")],
         ]
@@ -7614,16 +7614,7 @@ def menu_storico():
 
 
 async def mostra_menu_storico(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await controlla_autorizzazione(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "📚 STORICO E REINVIO\n\n"
-        "Consulta l'archivio completo, le ultime pubblicazioni oppure scegli un post "
-        "da pubblicare nuovamente.",
-        reply_markup=menu_storico(),
-    )
+    return await mostra_archivio(update, context)
 
 
 def menu_impostazioni():
@@ -11581,94 +11572,248 @@ def _data_archivio(valore):
         return "data non disponibile"
 
 
+def preferenza_pagina_cronologia(utente, valore=None):
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS preferenze_cronologia(utente TEXT PRIMARY KEY,per_pagina INTEGER NOT NULL)")
+        if valore in (5,10,50,100):
+            db.execute("INSERT OR REPLACE INTO preferenze_cronologia VALUES (?,?)",(str(utente),valore))
+        riga = db.execute("SELECT per_pagina FROM preferenze_cronologia WHERE utente=?",(str(utente),)).fetchone()
+    return riga[0] if riga and riga[0] in (5,10,50,100) else 5
+
+
+def righe_cronologia(filtro='tutti', periodo='7', ricerca=''):
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        db.row_factory = sqlite3.Row
+        righe = [dict(r) for r in db.execute("SELECT id,nome,link,prezzo,vecchio_prezzo,pubblicata_il,asin,telegram_chat_id,stato,foto_file_id,origine FROM recap_offerte ORDER BY id DESC").fetchall()]
+    ora = datetime.now(ROMA_TZ)
+    limite = ora.replace(hour=0,minute=0,second=0,microsecond=0) if periodo == 'oggi' else ora-timedelta(days=int(periodo)) if periodo in ('7','30') else None
+    # Sort by parsed timestamps to support both old UTC and Italian-time records.
+    righe.sort(key=lambda r:(_data_sqlite(r['pubblicata_il']) or datetime.min.replace(tzinfo=timezone.utc),r['id']),reverse=True)
+    unici = []
+    visti = set()
+    for riga in righe:
+        data = _data_sqlite(riga['pubblicata_il'])
+        if not data or (limite and data < limite):
+            continue
+        canale = 'casa' if str(riga['telegram_chat_id']) == str(CASA_CHANNEL_ID) else 'tech'
+        if filtro in ('tech','casa') and canale != filtro:
+            continue
+        asin = riga['asin'] or estrai_asin_da_link(riga['link'])
+        identita = (canale,asin or str(riga['link']).split('?')[0] or str(riga['nome']).casefold())
+        if identita in visti:
+            continue
+        visti.add(identita)
+        if ricerca and ricerca.casefold() not in str(riga['nome']).casefold():
+            continue
+        riga['canale'] = canale
+        unici.append(riga)
+    return unici
+
+
+async def pulisci_pannelli_cronologia(query, context):
+    pannelli = context.user_data.pop('cronologia_pannelli',[])
+    for chat_id, message_id in pannelli:
+        if chat_id == query.message.chat_id and message_id == query.message.message_id:
+            continue
+        try:
+            await context.bot.delete_message(chat_id=chat_id,message_id=message_id)
+        except Exception:
+            pass
+
+
+async def render_cronologia(query, testo, tastiera, foto=None):
+    if foto:
+        try:
+            nuovo = await query.message.reply_photo(photo=foto,caption=testo,parse_mode='HTML',reply_markup=tastiera)
+        except Exception:
+            nuovo = await query.message.reply_text(testo,parse_mode='HTML',reply_markup=tastiera)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        return nuovo
+    if getattr(query.message,'photo',None):
+        nuovo = await query.message.reply_text(testo,parse_mode='HTML',reply_markup=tastiera)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        return nuovo
+    try:
+        return await query.edit_message_text(testo,parse_mode='HTML',reply_markup=tastiera)
+    except Exception as exc:
+        if 'message is not modified' in str(exc).lower():
+            return query.message
+        raise
+
+
 async def mostra_archivio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return
-    query = update.callback_query
-    await query.answer()
-    azione = query.data
-    if azione == "archive_all":
-        context.user_data["archivio_filtro"] = "tutti"
-        context.user_data.pop("archivio_ricerca", None)
-        pagina = 0
-    elif azione.startswith("archive_filter_"):
-        context.user_data["archivio_filtro"] = azione.replace("archive_filter_", "", 1)
-        pagina = 0
-    else:
-        try:
-            pagina = int(azione.rsplit("_", 1)[1])
-        except (ValueError, IndexError):
-            pagina = 0
-    filtro = context.user_data.get("archivio_filtro", "tutti")
-    ricerca = context.user_data.get("archivio_ricerca", "")
-    totale = conta_archivio(filtro, ricerca)
-    totale_pagine = max(1, (totale + ARCHIVIO_PER_PAGINA - 1) // ARCHIVIO_PER_PAGINA)
-    pagina = max(0, min(pagina, totale_pagine - 1))
-    context.user_data["archivio_pagina"] = pagina
-    righe = leggi_archivio(pagina, filtro, ricerca)
-    testo = [f"🗂 ARCHIVIO PRODOTTI — {totale} TOTALI"]
+    q = update.callback_query
+    await q.answer()
+    azione = q.data
+    pagina = 0
+    if azione.startswith('archive_filter_'):
+        filtro = azione.replace('archive_filter_','',1)
+        context.user_data['archivio_filtro'] = filtro if filtro in ('tech','casa') else 'tutti'
+    elif azione.startswith('archive_period_'):
+        context.user_data['archivio_periodo'] = azione.replace('archive_period_','',1)
+    elif azione.startswith('archive_size_') and azione != 'archive_size_menu':
+        preferenza_pagina_cronologia(update.effective_user.id,int(azione.rsplit('_',1)[1]))
+    elif azione == 'archive_clear_search':
+        context.user_data.pop('archivio_ricerca',None)
+    elif azione.startswith('archive_page_'):
+        pagina = int(azione.rsplit('_',1)[1])
+    filtro = context.user_data.get('archivio_filtro','tutti')
+    if filtro not in ('tech','casa'):
+        filtro = 'tutti'
+    periodo = context.user_data.get('archivio_periodo','7')
+    if periodo not in ('oggi','7','30','tutto'):
+        periodo = '7'
+    ricerca = context.user_data.get('archivio_ricerca','')
+    per_pagina = preferenza_pagina_cronologia(update.effective_user.id)
+    righe = righe_cronologia(filtro,periodo,ricerca)
+    totale_pagine = max(1,(len(righe)+per_pagina-1)//per_pagina)
+    pagina = min(max(0,pagina),totale_pagine-1)
+    context.user_data['archivio_pagina'] = pagina
+    visibili = righe[pagina*per_pagina:(pagina+1)*per_pagina]
+    periodo_testo = {'oggi':'Oggi','7':'Ultimi 7 giorni','30':'Ultimi 30 giorni','tutto':'Tutto lo storico'}[periodo]
+    testo = f"📚 <b>CRONOLOGIA — {filtro.upper()}</b>\n{periodo_testo} · {len(righe)} prodotti\nPagina {pagina+1}/{totale_pagine} · {per_pagina} per pagina\n\nPrezzi all’ultima pubblicazione, non verificati adesso.\nTocca un prodotto per aprire la scheda."
     if ricerca:
-        testo.append(f"Ricerca: {ricerca}")
-    tastiera = []
-    for offerta_id, nome, _, prezzo, data, _, chat_id, origine, sconto, stato in righe:
-        canale = "CASA" if str(chat_id) == str(CASA_CHANNEL_ID) else "TECH"
-        icona = "⛔" if stato == "terminata" else "✅"
-        breve = accorcia_nome_articolo(nome)
-        if len(breve) > 58:
-            breve = breve[:55].rsplit(" ", 1)[0] + "…"
-        testo.append(
-            f"\n#{offerta_id} {icona} {breve}\n"
-            f"-{int(sconto or 0)}% · {prezzo} · {canale} · {origine} · {_data_archivio(data)}"
-        )
-        tastiera.append([InlineKeyboardButton(
-            f"#{offerta_id} · {breve[:34]}", callback_data=f"archive_view_{offerta_id}"
-        )])
-    if not righe:
-        testo.append("\nNessun prodotto corrisponde ai filtri.")
-    nav = []
-    if pagina > 0:
-        nav.append(InlineKeyboardButton("⬅️", callback_data=f"archive_page_{pagina - 1}"))
-    nav.append(InlineKeyboardButton(f"📄 {pagina + 1}/{totale_pagine}", callback_data="archive_nop"))
-    if pagina < totale_pagine - 1:
-        nav.append(InlineKeyboardButton("➡️", callback_data=f"archive_page_{pagina + 1}"))
-    tastiera.append(nav)
-    tastiera.extend([
-        [InlineKeyboardButton("📱 TECH", callback_data="archive_filter_tech"),
-         InlineKeyboardButton("🏠 CASA", callback_data="archive_filter_casa")],
-        [InlineKeyboardButton("🤖 AUTOMATICI", callback_data="archive_filter_automatico"),
-         InlineKeyboardButton("✍️ MANUALI", callback_data="archive_filter_manuale")],
-        [InlineKeyboardButton("🔎 CERCA PER NOME", callback_data="archive_search")],
-        [InlineKeyboardButton("🗂 MOSTRA TUTTI", callback_data="archive_all")],
-        [InlineKeyboardButton("⬅️ TORNA ALLO STORICO", callback_data="history_menu")],
-    ])
-    await query.edit_message_text(
-        "\n".join(testo)[:4000], reply_markup=InlineKeyboardMarkup(tastiera)
-    )
+        testo += '\n🔎 ' + html.escape(ricerca)
+    if not visibili:
+        testo += '\n\nNessun prodotto trovato.'
+    controlli = [
+        [InlineKeyboardButton(('✅ ' if filtro==x else '')+label,callback_data='archive_filter_'+x) for x,label in [('tech','📱 Tech'),('casa','🏠 Casa'),('tutti','📋 Tutti')]],
+        [InlineKeyboardButton('🔎 Cerca prodotto',callback_data='archive_search'),InlineKeyboardButton('📆 Periodo',callback_data='archive_period_menu')],
+        [InlineKeyboardButton(f'🔢 Prodotti per pagina: {per_pagina}',callback_data='archive_size_menu')],
+    ]
+    if ricerca:
+        controlli.append([InlineKeyboardButton('✖️ Cancella ricerca',callback_data='archive_clear_search')])
+    nav=[]
+    if pagina>0:
+        nav.append(InlineKeyboardButton('⬅️ Precedente',callback_data=f'archive_page_{pagina-1}'))
+    if pagina+1<totale_pagine:
+        nav.append(InlineKeyboardButton('Successiva ➡️',callback_data=f'archive_page_{pagina+1}'))
+    if nav:
+        controlli.append(nav)
+    controlli.append([InlineKeyboardButton('⬅️ Menu principale',callback_data='menu_admin')])
+    bottoni=[]
+    for r in visibili:
+        breve=accorcia_nome_articolo(r['nome'])[:38]
+        data=_data_sqlite(r['pubblicata_il']).astimezone(ROMA_TZ)
+        prezzo=str(r['prezzo'] or '—').replace('€','').strip()
+        bottoni.append([InlineKeyboardButton(f"📦 {breve} · {prezzo} € · {data:%d/%m %H:%M}",callback_data=f"archive_view_{r['id']}")])
+    await pulisci_pannelli_cronologia(q,context)
+    # 100 products remain one page, split into 2 panels of 50 to avoid oversized keyboards.
+    primo=await render_cronologia(q,testo,InlineKeyboardMarkup(bottoni[:50]+controlli))
+    pannelli=[(primo.chat_id,primo.message_id)]
+    if len(bottoni)>50:
+        secondo=await primo.reply_text('📚 Cronologia — prodotti 51–100 della stessa pagina',reply_markup=InlineKeyboardMarkup(bottoni[50:]))
+        pannelli.append((secondo.chat_id,secondo.message_id))
+    context.user_data['cronologia_pannelli']=pannelli
+
+
+async def opzioni_cronologia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    q=update.callback_query
+    await q.answer()
+    if q.data=='archive_size_menu':
+        testo='🔢 <b>Numero di prodotti da mostrare per pagina</b>\nLa scelta resta salvata. Con 100 prodotti la pagina è divisa in due blocchi da 50.'
+        bottoni=[[InlineKeyboardButton(str(n),callback_data=f'archive_size_{n}') for n in (5,10,50,100)]]
+    else:
+        testo='📆 <b>Periodo della cronologia</b>\nLo storico completo resta conservato.'
+        bottoni=[[InlineKeyboardButton(label,callback_data='archive_period_'+valore) for valore,label in [('oggi','Oggi'),('7','7 giorni'),('30','30 giorni'),('tutto','Tutto')]]]
+    bottoni.append([InlineKeyboardButton('⬅️ Cronologia',callback_data='archive_page_0')])
+    await pulisci_pannelli_cronologia(q,context)
+    await render_cronologia(q,testo,InlineKeyboardMarkup(bottoni))
 
 
 async def mostra_scheda_archivio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return
-    query = update.callback_query
-    await query.answer()
-    offerta_id = int(query.data.rsplit("_", 1)[1])
-    riga = leggi_offerta_da_reinviare(offerta_id)
-    if not riga:
-        return await query.message.reply_text("❌ Prodotto non trovato.")
-    _, nome, link, prezzo, vecchio, data, *_ = riga
-    pagina = context.user_data.get("archivio_pagina", 0)
-    await query.edit_message_text(
-        f"📦 {html.escape(nome)}\n\n"
-        f"Prezzo: {html.escape(str(prezzo))}\n"
-        f"Prima: {html.escape(str(vecchio))}\n"
-        f"Pubblicato: {_data_archivio(data)}",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛒 APRI SU AMAZON", url=link)],
-            [InlineKeyboardButton("🔁 INVIA DI NUOVO", callback_data=f"reinvia_scegli_{offerta_id}_{offerta_id}")],
-            [InlineKeyboardButton("⬅️ TORNA ALL'ARCHIVIO", callback_data=f"archive_page_{pagina}")],
-        ]),
-    )
+    q=update.callback_query
+    await q.answer()
+    pid=int(q.data.rsplit('_',1)[1])
+    with sqlite3.connect(DB_PATH) as db:
+        db.row_factory=sqlite3.Row
+        row=db.execute('SELECT * FROM recap_offerte WHERE id=?',(pid,)).fetchone()
+    if not row:
+        await q.message.reply_text('❌ Prodotto non trovato.')
+        return
+    r=dict(row)
+    canale='Casa' if str(r.get('telegram_chat_id'))==str(CASA_CHANNEL_ID) else 'Tech'
+    prezzo=html.escape(str(r.get('prezzo') or '—').replace('€','').strip())
+    testo=f"📦 <b>{html.escape(str(r['nome'])[:600])}</b>\n\n📢 {canale}\n💰 Ultimo prezzo pubblicato: {prezzo} €\n🕒 Pubblicato: {_data_archivio(r['pubblicata_il'])}\n\nIl prezzo salvato non è verificato adesso."
+    vecchio = str(r.get('vecchio_prezzo') or 'NO')
+    if vecchio.upper() != 'NO':
+        testo += '\n🏷 Prezzo precedente salvato: ' + html.escape(vecchio.replace('€','').strip()) + ' €'
+    pagina=context.user_data.get('archivio_pagina',0)
+    bottoni=InlineKeyboardMarkup([
+        [InlineKeyboardButton('🛒 Apri su Amazon',url=r['link'])],
+        [InlineKeyboardButton('🔄 Ricontrolla e ripubblica',callback_data=f'archive_recheck_{pid}')],
+        [InlineKeyboardButton('📜 Pubblicazioni precedenti',callback_data=f'archive_previous_{pid}_0')],
+        [InlineKeyboardButton('⬅️ Torna alla lista',callback_data=f'archive_page_{pagina}')],
+    ])
+    await pulisci_pannelli_cronologia(q,context)
+    await render_cronologia(q,testo,bottoni,foto=r.get('foto_file_id'))
+
+
+async def precedenti_cronologia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    q=update.callback_query
+    await q.answer()
+    _,_,pid,pagina=q.data.split('_')
+    pid,pagina=int(pid),int(pagina)
+    with sqlite3.connect(DB_PATH) as db:
+        db.row_factory=sqlite3.Row
+        prodotto=db.execute('SELECT asin,link,telegram_chat_id FROM recap_offerte WHERE id=?',(pid,)).fetchone()
+        if not prodotto:
+            await q.message.reply_text('❌ Prodotto non trovato.')
+            return
+        asin=prodotto['asin'] or estrai_asin_da_link(prodotto['link'])
+        righe=db.execute("SELECT pubblicata_il,prezzo FROM recap_offerte WHERE CAST(telegram_chat_id AS TEXT)=? AND ((?<>' ' AND asin=?) OR link=?) ORDER BY id DESC",(str(prodotto['telegram_chat_id']),asin or ' ',asin,prodotto['link'])).fetchall()
+    per_pagina=15
+    totale=max(1,(len(righe)+per_pagina-1)//per_pagina)
+    pagina=min(max(0,pagina),totale-1)
+    testo='📜 <b>PUBBLICAZIONI DEL PRODOTTO</b>\n\n'+'\n'.join(html.escape(f"{_data_archivio(r['pubblicata_il'])} · {str(r['prezzo']).replace('€','').strip()} €") for r in righe[pagina*per_pagina:(pagina+1)*per_pagina])
+    bottoni=[]
+    nav=[]
+    if pagina:
+        nav.append(InlineKeyboardButton('⬅️',callback_data=f'archive_previous_{pid}_{pagina-1}'))
+    if pagina+1<totale:
+        nav.append(InlineKeyboardButton('➡️',callback_data=f'archive_previous_{pid}_{pagina+1}'))
+    if nav:
+        bottoni.append(nav)
+    bottoni.append([InlineKeyboardButton('⬅️ Prodotto',callback_data=f'archive_view_{pid}')])
+    await render_cronologia(q,testo,InlineKeyboardMarkup(bottoni))
+
+
+async def ricontrolla_da_cronologia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    q=update.callback_query
+    await q.answer()
+    pid=int(q.data.rsplit('_',1)[1])
+    with sqlite3.connect(DB_PATH) as db:
+        row=db.execute('SELECT link,telegram_chat_id,asin FROM recap_offerte WHERE id=?',(pid,)).fetchone()
+    if not row:
+        await q.message.reply_text('❌ Prodotto non trovato.')
+        return ConversationHandler.END
+    if not (os.environ.get('AMAZON_PARTNER_TAG') or os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip():
+        await q.message.reply_text('⚠️ Imposta AMAZON_PARTNER_TAG nelle variabili Railway.')
+        return ConversationHandler.END
+    link,chat_id,asin=row
+    canale='casa' if str(chat_id)==str(CASA_CHANNEL_ID) else 'tech'
+    context.user_data.pop('multiplo',None)
+    draft={'tipo':'repost','canale':canale,'minuti':intervallo_multiplo(update.effective_user.id),'pronti':[],'scartati':[],'duplicati':0,'elaborazione':True,'richiesti':1,'candidati':1}
+    context.user_data['multiplo']=draft
+    attesa=await q.message.reply_text('🔄 Ricontrollo il prodotto: prezzi, disponibilità e coupon. Si applicano blocco 24 ore, fascia oraria e conferma o avvio dopo 2 minuti.')
+    context.application.create_task(prepara_lotto_multiplo(attesa,context,draft,['https://www.amazon.it/dp/'+asin if asin else link]),update=update)
+    return RAPIDO
 
 
 async def richiedi_ricerca_archivio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -11689,14 +11834,9 @@ async def ricevi_ricerca_archivio(update: Update, context: ContextTypes.DEFAULT_
     if len(ricerca) < 2:
         await update.message.reply_text("❌ Scrivi almeno 2 caratteri.")
         return ARCHIVIO_RICERCA
-    context.user_data["archivio_ricerca"] = ricerca
-    context.user_data["archivio_filtro"] = "tutti"
-    await update.message.reply_text(
-        f"✅ Ricerca impostata: {ricerca}",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🗂 MOSTRA RISULTATI", callback_data="archive_page_0")
-        ]]),
-    )
+    context.user_data['archivio_ricerca']=ricerca
+    # Create a normal callback target that opens the already-filtered results.
+    await update.message.reply_text(f'🔎 Ricerca: {ricerca}',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('📚 Risultati',callback_data='archive_page_0')]]))
     return ConversationHandler.END
 
 async def ultime(
@@ -12508,6 +12648,8 @@ def main():
     conversazione = ConversationHandler(
 
         entry_points=[
+            CallbackQueryHandler(ricontrolla_da_cronologia, pattern=r'^archive_recheck_[0-9]+$'),
+
             CallbackQueryHandler(repost_da_pulsante, pattern='^repost$'),
 
 
@@ -12940,7 +13082,7 @@ def main():
     app.add_handler(
         CallbackQueryHandler(
             mostra_archivio,
-            pattern=r"^(archive_all|archive_page_[0-9]+|archive_filter_(tech|casa|automatico|manuale))$",
+            pattern=r"^(archive_all|archive_page_[0-9]+|archive_filter_(tech|casa|tutti|automatico|manuale)|archive_period_(oggi|7|30|tutto)|archive_size_(5|10|50|100)|archive_clear_search)$",
         )
     )
 
@@ -12948,6 +13090,8 @@ def main():
         CallbackQueryHandler(mostra_scheda_archivio, pattern=r"^archive_view_[0-9]+$")
     )
 
+    app.add_handler(CallbackQueryHandler(opzioni_cronologia,pattern=r'^archive_(size|period)_menu$'))
+    app.add_handler(CallbackQueryHandler(precedenti_cronologia,pattern=r'^archive_previous_[0-9]+_[0-9]+$'))
     app.add_handler(CallbackQueryHandler(reinvia_nop, pattern="^archive_nop$"))
 
     app.add_handler(
