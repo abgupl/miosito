@@ -1424,9 +1424,54 @@ async def testa_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]]))
 
 
+def hashtag_categoria_post(categoria):
+    valore = str(categoria or '').strip()
+    if valore.lower() in AUTO_HASHTAG:
+        return AUTO_HASHTAG[valore.lower()]
+    if not valore or valore.lower() in {'manuale', 'tutte'}:
+        return '#OfferteAmazon'
+    pulita = re.sub(r'[^\w]', '', valore.lstrip('#'), flags=re.UNICODE)[:60]
+    return '#' + pulita if pulita else '#OfferteAmazon'
+
+
+def corpo_pulito_post(nome, prezzo, vecchio='NO', categoria=None):
+    prezzo = pulisci_prezzo(prezzo)
+    precedente = pulisci_prezzo(vecchio) if vecchio and str(vecchio).upper() != 'NO' else 'NO'
+    sconto = calcola_sconto(prezzo, precedente) if precedente != 'NO' else None
+    righe = ['🔥 OFFERTA AMAZON', '', '🛒 ' + str(nome), '']
+    if sconto is not None and sconto > 0:
+        righe.append(f'💥 Sconto: -{sconto}%')
+    if precedente != 'NO':
+        righe.append(f'❌ Prima: {precedente} €')
+    righe += [f'✅ Ora: {prezzo} €', '', 'Categoria: ' + hashtag_categoria_post(categoria)]
+    return '\n'.join(righe)
+
+
+def html_corpo_pulito(messaggio):
+    # Escapa sempre il contenuto del prodotto prima di applicare i tag Telegram.
+    righe = []
+    for riga in str(messaggio).splitlines():
+        if riga == '🔥 OFFERTA AMAZON':
+            righe.append('<b>🔥 OFFERTA AMAZON</b>')
+        elif riga.startswith('💥 Sconto: '):
+            righe.append('💥 Sconto: <b>' + html.escape(riga[len('💥 Sconto: '):]) + '</b>')
+        elif riga.startswith('❌ Prima: '):
+            righe.append('❌ Prima: <s>' + html.escape(riga[len('❌ Prima: '):]) + '</s>')
+        elif riga.startswith('✅ Ora: '):
+            righe.append('✅ Ora: <b>' + html.escape(riga[len('✅ Ora: '):]) + '</b>')
+        else:
+            righe.append(html.escape(riga))
+    return '\n'.join(righe)
+
+
 def crea_caption_con_link(messaggio, link, messaggio_gia_html=False):
     """Crea una didascalia uniforme senza mostrare l'URL completo."""
-    corpo = messaggio if messaggio_gia_html else html.escape(str(messaggio or ""))
+    if messaggio_gia_html:
+        corpo = messaggio
+    elif str(messaggio or "").startswith("🔥 OFFERTA AMAZON"):
+        corpo = html_corpo_pulito(messaggio)
+    else:
+        corpo = html.escape(str(messaggio or ""))
     link_sicuro = html.escape(str(link or ""), quote=True)
     return (
         f"{corpo}\n\n"
@@ -4128,9 +4173,20 @@ def estrai_prodotto_creators(item):
             "venditore": venditore,
             "marchio": marchio,
             "deal_end_time": deal_end_time,
+            "categoria": categoria_da_item_creators(item),
         }
     except (AttributeError, IndexError, TypeError, ValueError):
         return None
+
+
+def categoria_da_item_creators(item):
+    info = getattr(item, 'browse_node_info', None)
+    nodi = getattr(info, 'browse_nodes', None) or []
+    for nodo in nodi:
+        nome = getattr(nodo, 'display_name', None) or getattr(nodo, 'context_free_name', None)
+        if nome:
+            return str(nome)
+    return None
 
 
 def riga_venditore_categoria(prodotto, categoria):
@@ -7779,11 +7835,20 @@ def leggi_prodotto_amazon(url):
         if not titolo and not prezzo:
             return None
 
+        categorie_pagina = [el.get_text(" ", strip=True) for el in soup.select(
+            "#wayfinding-breadcrumbs_feature_div a, #wayfinding-breadcrumbs_container a"
+        ) if el.get_text(" ", strip=True)]
+        categoria_pagina = categorie_pagina[-1] if categorie_pagina else None
+        for voce in reversed(categorie_pagina):
+            if any(parola in voce.lower() for parola in ('smartphone', 'cellulari')):
+                categoria_pagina = 'smartphone'
+                break
         return {
             "nome": titolo,
             "prezzo": prezzo,
             "vecchio_prezzo": vecchio_prezzo,
             "immagine": immagine,
+            "categoria": categoria_pagina,
         }
 
     except requests.RequestException:
@@ -8011,6 +8076,7 @@ async def ricevi_link(
         )
         return DATI_AUTOMATICI
 
+    context.user_data["categoria"] = dati.get("categoria")
     nome = dati.get("nome")
     prezzo = dati.get("prezzo")
     vecchio = dati.get("vecchio_prezzo")
@@ -8341,7 +8407,7 @@ def piano_multiplo(prodotti, minuti, destinazione, salva=False):
                 quando = max(conflitti) + passo
             pid = None
             if salva:
-                corpo = crea_messaggio_programmato(prodotto['nome'], prodotto['prezzo'], prodotto['vecchio_prezzo'], 'pulito')
+                corpo = crea_messaggio_programmato(prodotto['nome'], prodotto['prezzo'], prodotto['vecchio_prezzo'], 'pulito', prodotto.get('categoria'))
                 cur = db.execute("""INSERT INTO programmazioni
                     (nome,messaggio,link,prezzo,vecchio_prezzo,template,foto_file_id,telegram_chat_id,invio_previsto,stato,data_creazione,origine)
                     VALUES (?,?,?,?,?,'pulito',?,?,?,'attesa',?,'multiplo')""",
@@ -8485,7 +8551,7 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                 # senza dipendere da file temporanei o URL al momento dell'invio.
                 anteprima = await messaggio.reply_photo(photo=foto, caption=f"📦 Preparato {indice}/{len(links)}: {str(dati['nome'])[:700]}")
                 visti.add(asin)
-                draft['pronti'].append({'nome': ' '.join(str(dati['nome']).split())[:500], 'prezzo': pulisci_prezzo(dati['prezzo']), 'vecchio_prezzo': pulisci_prezzo(dati['vecchio_prezzo']) if dati.get('vecchio_prezzo') else 'NO', 'link': affiliato, 'foto_file_id': anteprima.photo[-1].file_id})
+                draft['pronti'].append({'nome': ' '.join(str(dati['nome']).split())[:500], 'prezzo': pulisci_prezzo(dati['prezzo']), 'vecchio_prezzo': pulisci_prezzo(dati['vecchio_prezzo']) if dati.get('vecchio_prezzo') else 'NO', 'link': affiliato, 'foto_file_id': anteprima.photo[-1].file_id, 'categoria': dati.get('categoria')})
             except Exception as exc:
                 draft['scartati'].append(f"{link} — {str(exc)[:120]}")
         if context.user_data.get('multiplo') is draft:
@@ -9175,6 +9241,7 @@ def crea_messaggio_programmato(
     prezzo,
     vecchio,
     template,
+    categoria=None,
 ):
 
     vecchio = vecchio or "NO"
@@ -9236,24 +9303,7 @@ def crea_messaggio_programmato(
 
         return testo
 
-    testo = (
-        "🔥 OFFERTA AMAZON\n\n"
-        f"📦 {nome}\n\n"
-    )
-
-    if str(vecchio).upper() != "NO":
-        testo += (
-            f"❌ Prima: {vecchio} €\n"
-        )
-
-    testo += f"✅ Ora: {prezzo} €\n"
-
-    if sconto is not None:
-        testo += (
-            f"\n🔥 Sconto: {sconto}%"
-        )
-
-    return testo
+    return corpo_pulito_post(nome, prezzo, vecchio, categoria)
 
 
 def aggiorna_messaggio_programmato(
@@ -9267,11 +9317,13 @@ def aggiorna_messaggio_programmato(
     if not post:
         return False
 
+    categoria_salvata = re.search(r"Categoria:\s*(#[\w]+)", post.get("messaggio", ""))
     messaggio = crea_messaggio_programmato(
         post["nome"],
         post["prezzo"],
         post["vecchio_prezzo"],
         post["template"],
+        categoria_salvata.group(1) if categoria_salvata else None,
     )
 
     db = sqlite3.connect(DB_PATH)
@@ -10522,20 +10574,7 @@ def crea_messaggio(context):
         return testo
 
     # PULITO
-    testo = (
-        "🔥 OFFERTA AMAZON\n\n"
-        f"📦 {nome}\n\n"
-    )
-
-    if vecchio.upper() != "NO":
-        testo += f"❌ Prima: {vecchio} €\n"
-
-    testo += f"✅ Ora: {prezzo} €\n"
-
-    if sconto is not None:
-        testo += f"\n🔥 Sconto: {sconto}%"
-
-    return testo
+    return corpo_pulito_post(nome, prezzo, vecchio, context.user_data.get('categoria'))
 
 
 
