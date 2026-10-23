@@ -12,6 +12,7 @@ from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+from decimal import Decimal, ROUND_HALF_UP
 from collections import deque
 from urllib.parse import urlparse, parse_qs, urlencode
 
@@ -596,6 +597,7 @@ def inizializza_recap():
         "sconto": "INTEGER DEFAULT 0",
         "telegram_message_id": "INTEGER",
         "stato": "TEXT DEFAULT 'pubblicata'",
+        "prezzo_finale_pubblicato": "TEXT",
     }
     cur.execute("PRAGMA table_info(recap_offerte)")
     colonne_recap = {riga[1] for riga in cur.fetchall()}
@@ -672,6 +674,12 @@ def salva_offerta_recap(
         telegram_message_id,
         stato or "pubblicata",
     ))
+
+    dati_template=dati_template_da_corpo(messaggio)
+    if dati_template:
+        _,_,finale,_,sconto_finale=importi_template(dati_template)
+        if finale is not None:
+            cur.execute('UPDATE recap_offerte SET prezzo_finale_pubblicato=?,sconto=? WHERE id=?',(str(finale).replace('.',','),sconto_finale or 0,cur.lastrowid))
 
     db.commit()
     db.close()
@@ -1469,14 +1477,86 @@ def html_corpo_pulito(messaggio):
     return '\n'.join(righe)
 
 
+def dati_template_da_corpo(messaggio, nome=None, prezzo=None, vecchio=None, categoria=None):
+    """Adatta i vecchi corpi senza cambiare i prezzi base conservati nel database."""
+    originale=str(messaggio or '').replace('__RICERCA_HTML__','',1)
+    testo=BeautifulSoup(originale,'html.parser').get_text() if originale.lstrip().startswith('<') else originale
+    righe=[r.strip() for r in testo.splitlines() if r.strip()]
+    titoli=('🔥 OFFERTA AMAZON','🚨 SUPER OFFERTA AMAZON','⚡ TECH DEAL','🚨 ERRORE PREZZO',
+            '🏷 OFFERTA AMAZON','🔥 SUPER OFFERTA AMAZON','🚨 SCONTO EXTRA AMAZON','🎟 OFFERTA CON COUPON')
+    if not nome and (not righe or not righe[0].startswith(titoli)):
+        return None
+    if not nome:
+        nome=re.sub(r'^[🛒📦📱🔥]\s*','',righe[1]) if len(righe)>1 else ''
+    ora=re.search(r'(?:✅|💰)?\s*(?:ora(?P<coupon> con coupon)?|offerta)\s*:\s*([^\n]+)',testo,re.IGNORECASE)
+    prima=re.search(r'(?:prima|listino)\s*:\s*([^\n]+)',testo,re.IGNORECASE)
+    cat=re.search(r'Categoria:\s*(#[\w]+)',testo,re.IGNORECASE)
+    coupon=re.search(r'Applica il coupon (?:del|da) (\d+(?:[.,]\d{1,2})?(?:%| €)) visibile',testo,re.IGNORECASE)
+    return {'nome':str(nome or ''), 'prezzo':prezzo if prezzo is not None else ora.group(2).strip() if ora else None,
+            'vecchio_prezzo':vecchio if vecchio is not None else prima.group(1).strip() if prima else None,
+            'categoria':categoria if categoria and categoria != 'manuale' else cat.group(1) if cat else None,
+            'coupon':coupon.group(1) if coupon else None, 'gia_finale':bool(ora and ora.group('coupon')), 'solo_coupon':bool(righe and righe[0].startswith('🎟'))}
+
+
+def importi_template(dati):
+    base_num=numero_da_prezzo(dati.get('prezzo'))
+    prima_num=numero_da_prezzo(dati.get('vecchio_prezzo'))
+    base=Decimal(str(base_num)).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP) if base_num is not None else None
+    prima=Decimal(str(prima_num)).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP) if prima_num is not None else None
+    finale=base
+    coupon=dati.get('coupon')
+    valido=False
+    if base is not None and base >= 0 and coupon and frase_coupon(coupon):
+        valore=Decimal(coupon.replace('€','').replace('%','').replace(',','.').strip())
+        if coupon.endswith('%') and 0 < valore <= 100:
+            finale=base if dati.get('gia_finale') else (base*(Decimal('1')-valore/Decimal('100'))).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)
+            valido=True
+        elif coupon.endswith(' €') and valore>0 and (dati.get('gia_finale') or valore<=base):
+            finale=base if dati.get('gia_finale') else base-valore
+            valido=True
+    sconto=None
+    if prima is not None and prima>0 and finale is not None and prima>finale:
+        sconto=int(((Decimal('1')-finale/prima)*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+    return base,prima,finale,coupon if valido else None,sconto
+
+
+def euro_template(valore):
+    return f'{valore:.2f}'.replace('.',',')+' €'
+
+
+def render_template_generale(dati):
+    base,prima,finale,coupon,sconto=importi_template(dati)
+    coupon_solo=bool(coupon and (dati.get('solo_coupon') or ((prima is None or prima<=base) and not dati.get('gia_finale'))))
+    titolo=('🎟 OFFERTA CON COUPON' if coupon_solo else '🚨 SCONTO EXTRA AMAZON' if (sconto or 0)>=70
+            else '🔥 SUPER OFFERTA AMAZON' if (sconto or 0)>=30 else '🏷 OFFERTA AMAZON')
+    nome=' '.join(str(dati['nome']).split())
+    if len(nome)>300:
+        nome=nome[:297].rsplit(' ',1)[0]+'…'
+    righe=['<b>'+titolo+'</b>','', '🛒 '+html.escape(nome), '']
+    if sconto is not None and sconto>0:
+        etichetta='Sconto totale con coupon' if coupon else 'Sconto'
+        righe.append(f'💥 {etichetta}: <b>-{sconto}%</b>')
+    if prima is not None and finale is not None and prima>finale:
+        righe.append('❌ Prima: <s>'+euro_template(prima)+'</s>')
+    if finale is not None:
+        righe.append(('✅ Ora con coupon: ' if coupon else '✅ Ora: ')+'<b>'+euro_template(finale)+'</b>')
+    else:
+        righe.append('✅ Prezzo: non disponibile')
+    if coupon:
+        righe += ['', '✅ <i>'+html.escape(frase_coupon(coupon)[2:])+'</i>']
+    righe += ['', 'Categoria: '+html.escape(hashtag_categoria_post(dati.get('categoria')))]
+    return '\n'.join(righe)
+
+
 def crea_caption_con_link(messaggio, link, messaggio_gia_html=False):
     """Crea una didascalia uniforme senza mostrare l'URL completo."""
-    if messaggio_gia_html:
-        corpo = messaggio
-    elif str(messaggio or "").startswith("🔥 OFFERTA AMAZON"):
-        corpo = html_corpo_pulito(messaggio)
+    dati=dati_template_da_corpo(messaggio)
+    if dati is not None:
+        corpo=render_template_generale(dati)
+    elif messaggio_gia_html:
+        corpo=messaggio
     else:
-        corpo = "\n".join("✅ <i>" + html.escape(riga[2:]) + "</i>" if riga.startswith("✅ Applica il coupon ") else html.escape(riga) for riga in str(messaggio or "").split("\n"))
+        corpo=html.escape(str(messaggio or ''))
     link_sicuro = html.escape(str(link or ""), quote=True)
     return (
         f"{corpo}\n\n"
@@ -1553,6 +1633,8 @@ def estrai_vecchio_prezzo_da_messaggio(messaggio):
     if not messaggio:
         return "NO"
 
+    messaggio=BeautifulSoup(str(messaggio),'html.parser').get_text() if str(messaggio).lstrip().startswith('<') else messaggio
+
     match = re.search(
         r"(?:Prima|Listino):\s*([^\n€]+)",
         messaggio,
@@ -1569,7 +1651,7 @@ def estrai_vecchio_prezzo_da_messaggio(messaggio):
 def estrai_sconto_da_messaggio(messaggio):
     """Legge percentuali sia dai template manuali sia da quelli HTML."""
     testo = re.sub(r"<[^>]+>", "", str(messaggio or ""))
-    match = re.search(r"(?:sconto\s*:?[ ]*|📉\s*)-?(\d{1,3})%", testo, re.IGNORECASE)
+    match = re.search(r"(?:sconto(?: totale con coupon)?\s*:?[ ]*|📉\s*)-?(\d{1,3})%", testo, re.IGNORECASE)
     return int(match.group(1)) if match else 0
 
 
@@ -5850,17 +5932,7 @@ async def mostra_prodotto_ricerca_offerte(query, context, indice):
         f"(+{prodotto['bonus_priorita']})"
         if prodotto.get("bonus_priorita") else ""
     )
-    testo = (
-        f"👁 <b>ANTEPRIMA — {tipo}</b>\n\n"
-        f"🛒 {html.escape(prodotto['nome'])}\n\n"
-        f"💥 Sconto: <b>-{prodotto['sconto']}%</b>{prima}\n"
-        f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
-        f"{riga_venditore_categoria(prodotto, prodotto['categoria'])}\n\n"
-        f"Marchio: {html.escape(prodotto.get('marchio') or 'non disponibile')}\n"
-        f"Qualità: {configurazione['qualita_prodotti'].capitalize()}"
-        f"{dettaglio}{dettaglio_priorita}\n\n"
-        f"👉 <a href=\"{html.escape(prodotto['link'], quote=True)}\">Scopri l’offerta su Amazon</a>"
-    )
+    testo = '👁 <b>ANTEPRIMA</b>\n\n' + crea_caption_con_link(crea_corpo_offerta_automatica(prodotto),prodotto['link'])
     tastiera = InlineKeyboardMarkup([
         [InlineKeyboardButton("📤 PUBBLICA ORA", callback_data=f"os_publish_{indice}")],
         [InlineKeyboardButton("🕒 PROGRAMMA", callback_data=f"os_program_{indice}")],
@@ -5965,19 +6037,7 @@ async def gestisci_ricerca_offerte(update: Update, context: ContextTypes.DEFAULT
 
 
 def _messaggio_programmato_da_prodotto(prodotto):
-    tipo = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
-    prima = (
-        f"\n❌ Prima: <s>{html.escape(prodotto['vecchio_prezzo'])}</s>"
-        if prodotto.get("vecchio_prezzo") else ""
-    )
-    return (
-        "__RICERCA_HTML__"
-        f"<b>{tipo}</b>\n\n"
-        f"🛒 {html.escape(prodotto['nome'])}\n\n"
-        f"💥 Sconto: <b>-{prodotto['sconto']}%</b>{prima}\n"
-        f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
-        f"{riga_venditore_categoria(prodotto, prodotto['categoria'])}"
-    )
+    return '__RICERCA_HTML__' + crea_corpo_offerta_automatica(prodotto)
 
 
 async def prepara_programmazione_ricerca_offerte(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6443,22 +6503,7 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale, canale="t
 
 
 def crea_corpo_offerta_automatica(prodotto, categoria=None):
-    """Crea il testo riutilizzato sia alla pubblicazione sia negli aggiornamenti."""
-    prima = (
-        f"\n❌ Prima: <s>{html.escape(prodotto['vecchio_prezzo'])}</s>"
-        if prodotto["vecchio_prezzo"] else ""
-    )
-    tipo_offerta = "🚨 ERRORE PREZZO" if prodotto["sconto"] > 40 else "🔥 OFFERTA AMAZON"
-    categoria = categoria or prodotto.get("categoria")
-    riga_venditore = riga_venditore_categoria(prodotto, categoria)
-    return (
-        f"<b>{tipo_offerta}</b>\n\n"
-        f"🛒 {html.escape(prodotto['nome'])}\n\n"
-        f"💥 Sconto: <b>-{prodotto['sconto']}%</b>"
-        f"{prima}\n"
-        f"✅ Ora: <b>{html.escape(prodotto['prezzo'])}</b>\n\n"
-        f"{riga_venditore}"
-    )
+    return corpo_pulito_post(prodotto['nome'],prodotto['prezzo'],prodotto.get('vecchio_prezzo'),categoria or prodotto.get('categoria'),prodotto.get('coupon'))
 
 
 def tastiera_offerta_automatica(link):
@@ -6475,6 +6520,16 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
         base = prodotto.get("vecchio_valore")
         if base is not None:
             vecchio_numero = _prezzo_italiano(base)
+
+    try:
+        pagina_coupon=await asyncio.to_thread(leggi_prodotto_amazon,prodotto['link'])
+        if pagina_coupon and pagina_coupon.get('coupon'):
+            prezzo_pagina=numero_da_prezzo(pagina_coupon.get('prezzo'))
+            prezzo_api=numero_da_prezzo(prodotto.get('prezzo'))
+            if prezzo_pagina is not None and prezzo_api is not None and abs(prezzo_pagina-prezzo_api)<0.005:
+                prodotto['coupon']=pagina_coupon['coupon']
+    except Exception as exc:
+        print(f'Coupon automatico non verificabile: {type(exc).__name__}')
 
     corpo_messaggio = crea_corpo_offerta_automatica(prodotto)
     messaggio = crea_caption_con_link(
@@ -7865,7 +7920,7 @@ def estrai_coupon_pagina(soup):
             basso = testo.lower()
             if not any(k in basso for k in ('coupon', 'buono')):
                 continue
-            if any(k in basso for k in ('scadut', 'non disponibile', 'fino a', 'fino al', 'prossimo acquisto', 'iscriviti', 'iscrizione', 'acquisto periodico')):
+            if any(k in basso for k in ('scadut', 'non disponibile', 'fino a', 'fino al', 'prossimo acquisto', 'iscriviti', 'iscrizione', 'acquisto periodico', 'minimo', 'minima', 'almeno', 'solo per', 'se acquisti', 'prima consegna', 'clienti selezionati')):
                 continue
             # Solo importi vicini alla parola coupon/buono, per non confondere soglie minime.
             espressioni = (
@@ -8842,7 +8897,9 @@ async def mostra_confronto_cronologia(messaggio, context, draft):
         return
     prodotto = draft['pronti'][0]
     vecchio = numero_da_prezzo(prodotto.get('vecchio_prezzo'))
-    prezzo_attuale = numero_da_prezzo(prodotto['prezzo'])
+    prezzo_esposto = numero_da_prezzo(prodotto['prezzo'])
+    _,_,prezzo_finale,coupon_calcolabile,sconto_totale = importi_template(prodotto)
+    prezzo_attuale = float(prezzo_finale) if prezzo_finale is not None else prezzo_esposto
     ultima = numero_da_prezzo(draft.get('prezzo_storico'))
     def euro(valore):
         return (f'{valore:.2f}'.replace('.',',')+' €') if valore is not None else 'non disponibile'
@@ -8850,7 +8907,9 @@ async def mostra_confronto_cronologia(messaggio, context, draft):
            '', '🕒 Prezzo nell’ultima pubblicazione: '+euro(ultima),
            '🏷 Prezzo precedente/listino rilevato ora: '+euro(vecchio),
            '💰 Prezzo attuale: <b>'+euro(prezzo_attuale)+'</b>']
-    sconto=calcola_sconto(prodotto['prezzo'],prodotto.get('vecchio_prezzo'))
+    if coupon_calcolabile:
+        righe.append('🏷 Prezzo esposto prima del coupon: '+euro(prezzo_esposto))
+    sconto=sconto_totale
     if sconto is not None and sconto > 0:
         righe.append(f'💥 Sconto attuale: <b>-{sconto}%</b>')
     else:
@@ -8860,7 +8919,7 @@ async def mostra_confronto_cronologia(messaggio, context, draft):
         righe.append('📊 Rispetto all’ultimo post: '+('invariato' if abs(differenza)<0.005 else ('+' if differenza>0 else '−')+euro(abs(differenza))))
     coupon=frase_coupon(prodotto.get('coupon'))
     righe.append(html.escape(coupon) if coupon else '🎟 Nessun coupon rilevato.')
-    righe += ['', 'ℹ️ Il prezzo attuale è prima dell’eventuale coupon.',
+    righe += ['', 'ℹ️ Il prezzo attuale include il coupon quando calcolabile; attivalo nella pagina Amazon.',
               'Scegli se pubblicare, programmare o annullare. Nessun avvio automatico.']
     await messaggio.reply_text('\n'.join(righe),parse_mode='HTML')
     corpo=crea_messaggio_programmato(prodotto['nome'],prodotto['prezzo'],prodotto['vecchio_prezzo'],'pulito',prodotto.get('categoria'),prodotto.get('coupon'))
@@ -9696,75 +9755,9 @@ def leggi_programmato(programmazione_id):
     }
 
 
-def crea_messaggio_programmato(
-    nome,
-    prezzo,
-    vecchio,
-    template,
-    categoria=None,
-    coupon=None,
-):
-
-    vecchio = vecchio or "NO"
-    template = template or "pulito"
-
-    sconto = None
-
-    if str(vecchio).upper() != "NO":
-
-        sconto = calcola_sconto(
-            prezzo,
-            vecchio,
-        )
-
-    if template == "aggressivo":
-
-        testo = (
-            "🚨 SUPER OFFERTA AMAZON 🚨\n\n"
-            f"🔥 {nome}\n\n"
-        )
-
-        if str(vecchio).upper() != "NO":
-            testo += (
-                f"❌ Prima: {vecchio} €\n"
-            )
-
-        testo += f"✅ ORA: {prezzo} €\n"
-
-        if sconto is not None:
-            testo += (
-                f"\n💥 SCONTO {sconto}%"
-            )
-
-        testo += (
-            "\n\n⚡ Approfittane prima "
-            "che cambi il prezzo!"
-        )
-
-        return testo + ('\n\n' + frase_coupon(coupon) if frase_coupon(coupon) else '')
-
-    if template == "tech":
-
-        testo = (
-            "⚡ TECH DEAL\n\n"
-            f"📱 {nome}\n\n"
-        )
-
-        if str(vecchio).upper() != "NO":
-            testo += (
-                f"🏷️ Listino: {vecchio} €\n"
-            )
-
-        testo += (
-            f"💰 Offerta: {prezzo} €\n"
-        )
-
-        if sconto is not None:
-            testo += f"📉 -{sconto}%"
-
-        return testo + ('\n\n' + frase_coupon(coupon) if frase_coupon(coupon) else '')
-
-    return corpo_pulito_post(nome, prezzo, vecchio, categoria, coupon)
+def crea_messaggio_programmato(nome, prezzo, vecchio, template, categoria=None, coupon=None):
+    # Il parametro storico template resta compatibile con database e vecchi callback.
+    return corpo_pulito_post(nome,prezzo,vecchio,categoria,coupon)
 
 
 def aggiorna_messaggio_programmato(
@@ -10979,68 +10972,8 @@ def calcola_sconto(
 # =========================================================
 
 def crea_messaggio(context):
-
-    nome = context.user_data["nome"]
-    prezzo = context.user_data["prezzo"]
-    vecchio = context.user_data["vecchio_prezzo"]
-
-    template = context.user_data.get(
-        "template",
-        "pulito",
-    )
-
-    sconto = None
-
-    if vecchio.upper() != "NO":
-
-        sconto = calcola_sconto(
-            prezzo,
-            vecchio,
-        )
-
-    # AGGRESSIVO
-    if template == "aggressivo":
-
-        testo = (
-            "🚨 SUPER OFFERTA AMAZON 🚨\n\n"
-            f"🔥 {nome}\n\n"
-        )
-
-        if vecchio.upper() != "NO":
-            testo += f"❌ Prima: {vecchio} €\n"
-
-        testo += f"✅ ORA: {prezzo} €\n"
-
-        if sconto is not None:
-            testo += f"\n💥 SCONTO {sconto}%"
-
-        testo += (
-            "\n\n⚡ Approfittane prima che cambi il prezzo!"
-        )
-
-        return testo + ('\n\n' + frase_coupon(context.user_data.get('coupon')) if frase_coupon(context.user_data.get('coupon')) else '')
-
-    # TECH
-    if template == "tech":
-
-        testo = (
-            "⚡ TECH DEAL\n\n"
-            f"📱 {nome}\n\n"
-        )
-
-        if vecchio.upper() != "NO":
-            testo += f"🏷️ Listino: {vecchio} €\n"
-
-        testo += f"💰 Offerta: {prezzo} €\n"
-
-        if sconto is not None:
-            testo += f"📉 -{sconto}%"
-
-        return testo + ('\n\n' + frase_coupon(context.user_data.get('coupon')) if frase_coupon(context.user_data.get('coupon')) else '')
-
-    # PULITO
-    return corpo_pulito_post(nome, prezzo, vecchio, context.user_data.get('categoria'), context.user_data.get('coupon'))
-
+    dati=context.user_data
+    return corpo_pulito_post(dati['nome'],dati['prezzo'],dati.get('vecchio_prezzo','NO'),dati.get('categoria'),dati.get('coupon'))
 
 
 async def prova_foto_automatica_o_chiedi(update, context):
@@ -11215,7 +11148,7 @@ async def mostra_anteprima(
             ],
             [
                 InlineKeyboardButton(
-                    "🎨 CAMBIA TEMPLATE",
+                    "🎨 FORMATO AUTOMATICO",
                     callback_data="cambia_template",
                 )
             ],
@@ -11463,35 +11396,7 @@ async def conferma(
 
     # CAMBIA TEMPLATE
     if query.data == "cambia_template":
-
-        tastiera = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "✨ PULITO",
-                        callback_data="tpl_pulito",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "🚨 AGGRESSIVO",
-                        callback_data="tpl_aggressivo",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⚡ TECH",
-                        callback_data="tpl_tech",
-                    )
-                ],
-            ]
-        )
-
-        await query.message.reply_text(
-            "🎨 Scegli il template:",
-            reply_markup=tastiera,
-        )
-
+        await query.message.reply_text('🎨 Il formato è unico e automatico: Offerta sotto il 30%, Super offerta dal 30% al 69%, Sconto extra dal 70%. Coupon e categoria vengono inclusi quando disponibili.')
         return CONFERMA
 
     # TEMPLATE SELEZIONATO
@@ -11709,7 +11614,7 @@ def preferenza_pagina_cronologia(utente, valore=None):
 def righe_cronologia(filtro='tutti', periodo='7', ricerca=''):
     with sqlite3.connect(DB_PATH, timeout=30) as db:
         db.row_factory = sqlite3.Row
-        righe = [dict(r) for r in db.execute("SELECT id,nome,link,prezzo,vecchio_prezzo,pubblicata_il,asin,telegram_chat_id,stato,foto_file_id,origine FROM recap_offerte ORDER BY id DESC").fetchall()]
+        righe = [dict(r) for r in db.execute("SELECT id,nome,link,COALESCE(prezzo_finale_pubblicato,prezzo) AS prezzo,vecchio_prezzo,pubblicata_il,asin,telegram_chat_id,stato,foto_file_id,origine FROM recap_offerte ORDER BY id DESC").fetchall()]
     ora = datetime.now(ROMA_TZ)
     limite = ora.replace(hour=0,minute=0,second=0,microsecond=0) if periodo == 'oggi' else ora-timedelta(days=int(periodo)) if periodo in ('7','30') else None
     # Sort by parsed timestamps to support both old UTC and Italian-time records.
@@ -11870,11 +11775,10 @@ async def mostra_scheda_archivio(update: Update, context: ContextTypes.DEFAULT_T
         return
     r=dict(row)
     canale='Casa' if str(r.get('telegram_chat_id'))==str(CASA_CHANNEL_ID) else 'Tech'
-    prezzo=html.escape(str(r.get('prezzo') or '—').replace('€','').strip())
-    testo=f"📦 <b>{html.escape(str(r['nome'])[:600])}</b>\n\n📢 {canale}\n💰 Ultimo prezzo pubblicato: {prezzo} €\n🕒 Pubblicato: {_data_archivio(r['pubblicata_il'])}\n\nIl prezzo salvato non è verificato adesso."
-    vecchio = str(r.get('vecchio_prezzo') or 'NO')
-    if vecchio.upper() != 'NO':
-        testo += '\n🏷 Prezzo precedente salvato: ' + html.escape(vecchio.replace('€','').strip()) + ' €'
+    dati_salvati=dati_template_da_corpo(r.get('messaggio'),nome=r['nome'],prezzo=r.get('prezzo'),vecchio=r.get('vecchio_prezzo'),categoria=r.get('categoria'))
+    # The stored body has the exposed base price; displayed history may have a separate final price.
+    testo=(f"📚 Anteprima ricostruita — {canale}\nPubblicato: {_data_archivio(r['pubblicata_il'])}\nDati salvati, non ricontrollati adesso.\n\n"
+           +crea_caption_con_link(corpo_pulito_post(dati_salvati['nome'],dati_salvati['prezzo'],dati_salvati.get('vecchio_prezzo'),dati_salvati.get('categoria'),dati_salvati.get('coupon')),r['link']))
     pagina=context.user_data.get('archivio_pagina',0)
     bottoni=InlineKeyboardMarkup([
         [InlineKeyboardButton('🛒 Apri su Amazon',url=r['link'])],
@@ -11900,7 +11804,7 @@ async def precedenti_cronologia(update: Update, context: ContextTypes.DEFAULT_TY
             await q.message.reply_text('❌ Prodotto non trovato.')
             return
         asin=prodotto['asin'] or estrai_asin_da_link(prodotto['link'])
-        righe=db.execute("SELECT pubblicata_il,prezzo FROM recap_offerte WHERE CAST(telegram_chat_id AS TEXT)=? AND ((?<>' ' AND asin=?) OR link=?) ORDER BY id DESC",(str(prodotto['telegram_chat_id']),asin or ' ',asin,prodotto['link'])).fetchall()
+        righe=db.execute("SELECT pubblicata_il,COALESCE(prezzo_finale_pubblicato,prezzo) AS prezzo FROM recap_offerte WHERE CAST(telegram_chat_id AS TEXT)=? AND ((?<>' ' AND asin=?) OR link=?) ORDER BY id DESC",(str(prodotto['telegram_chat_id']),asin or ' ',asin,prodotto['link'])).fetchall()
     per_pagina=15
     totale=max(1,(len(righe)+per_pagina-1)//per_pagina)
     pagina=min(max(0,pagina),totale-1)
@@ -11924,7 +11828,7 @@ async def ricontrolla_da_cronologia(update: Update, context: ContextTypes.DEFAUL
     await q.answer()
     pid=int(q.data.rsplit('_',1)[1])
     with sqlite3.connect(DB_PATH) as db:
-        row=db.execute('SELECT link,telegram_chat_id,asin,prezzo,pubblicata_il FROM recap_offerte WHERE id=?',(pid,)).fetchone()
+        row=db.execute('SELECT link,telegram_chat_id,asin,COALESCE(prezzo_finale_pubblicato,prezzo),pubblicata_il FROM recap_offerte WHERE id=?',(pid,)).fetchone()
     if not row:
         await q.message.reply_text('❌ Prodotto non trovato.')
         return ConversationHandler.END
@@ -12638,51 +12542,12 @@ async def ricevi_ora_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # TEMPLATE DAL MENU ADMIN
 # =========================================================
 
-async def template_menu(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def template_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await controlla_autorizzazione(update):
         return
-
-    query = update.callback_query
-
-    await query.answer()
-
-    tastiera = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "✨ PULITO",
-                    callback_data="menu_tpl_pulito",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🚨 AGGRESSIVO",
-                    callback_data="menu_tpl_aggressivo",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⚡ TECH",
-                    callback_data="menu_tpl_tech",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ TORNA ALLE IMPOSTAZIONI",
-                    callback_data="settings_menu",
-                )
-            ],
-        ]
-    )
-
-    await query.message.reply_text(
-        "🎨 Scegli il template predefinito:",
-        reply_markup=tastiera,
-    )
+    q=update.callback_query
+    await q.answer()
+    await q.message.reply_text('🎨 FORMATO GENERALE AUTOMATICO\n\n🏷 Offerta: meno del 30%\n🔥 Super offerta: dal 30% al 69%\n🚨 Sconto extra: dal 70%\n🎟 Solo coupon: quando manca una riduzione sul prezzo esposto.\n\nPrezzo finale con coupon quando calcolabile, istruzione per attivarlo e categoria sempre presenti. La categoria sconosciuta usa #OfferteAmazon.',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Impostazioni',callback_data='settings_menu')]]))
 
 
 async def scegli_template_menu(
