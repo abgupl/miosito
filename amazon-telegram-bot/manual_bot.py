@@ -3,12 +3,13 @@ import asyncio
 import sqlite3
 import html
 import json
+import csv
 import re
 import random
 import threading
 import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -9202,7 +9203,7 @@ async def ricevi_rapido(update: Update, context: ContextTypes.DEFAULT_TYPE):
     validi = []
     for link in links:
         host = (urlparse(link).hostname or '').lower()
-        if host in {'amazon.it', 'www.amazon.it', 'amzn.to', 'amzn.eu', 'link.amazon.it', 'a.co'} or host.endswith('.amazon.it'):
+        if host in {'amazon.it', 'www.amazon.it', 'amzn.to', 'amzn.eu', 'link.amazon', 'link.amazon.it', 'a.co'} or host.endswith('.amazon.it'):
             validi.append(link)
     if not validi or len(validi) > 50:
         await update.message.reply_text("Invia da 1 a 50 link Amazon Italia validi, uno per riga.")
@@ -12751,8 +12752,30 @@ def inizializza_oroscopi():
                 giorno TEXT NOT NULL, canale TEXT NOT NULL, stato TEXT NOT NULL,
                 message_id INTEGER, errore TEXT,
                 PRIMARY KEY(giorno, canale));
+            CREATE TABLE IF NOT EXISTS oroscopo_uscite (
+                giorno TEXT NOT NULL, canale TEXT NOT NULL, stato TEXT NOT NULL,
+                message_id INTEGER, errore TEXT, slot INTEGER NOT NULL,
+                PRIMARY KEY(giorno, canale, slot));
+            CREATE TABLE IF NOT EXISTS oroscopo_clic (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                callback_id TEXT NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL, username TEXT, nome TEXT NOT NULL,
+                segno INTEGER NOT NULL, giorno TEXT NOT NULL,
+                slot INTEGER NOT NULL, canale TEXT, clic_il TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_oroscopo_clic_data ON oroscopo_clic(clic_il);
+            CREATE INDEX IF NOT EXISTS idx_oroscopo_clic_utente ON oroscopo_clic(user_id);
         """)
+        # Conserva gli invii della versione precedente come prima uscita.
+        db.execute("""INSERT OR IGNORE INTO oroscopo_uscite
+            (giorno,canale,stato,message_id,errore,slot)
+            SELECT giorno,canale,stato,message_id,errore,1 FROM oroscopo_invii""")
+        colonne = {r[1] for r in db.execute("PRAGMA table_info(oroscopo_snapshot)")}
+        for nome, definizione in (("slot", "INTEGER NOT NULL DEFAULT 0"),
+                                  ("anteprima", "INTEGER NOT NULL DEFAULT 1")):
+            if nome not in colonne:
+                db.execute(f"ALTER TABLE oroscopo_snapshot ADD COLUMN {nome} {definizione}")
         defaults = {"attivo": False, "ora": "13:30", "canali": ["tech"],
+                    "ora2": "18:30", "secondo_attivo": False,
                     "foto": "",
                     "promemoria": "", "esaurimento": ""}
         db.executemany("INSERT OR IGNORE INTO oroscopo_config VALUES (?, ?)",
@@ -12768,6 +12791,18 @@ def imposta_oroscopo(chiave, valore):
     with sqlite3.connect(DB_PATH, timeout=30) as db:
         db.execute("INSERT OR REPLACE INTO oroscopo_config VALUES (?, ?)",
                    (chiave, json.dumps(valore, ensure_ascii=False)))
+
+
+def orari_oroscopo(cfg):
+    orari = [(1, cfg["ora"])]
+    if cfg.get("secondo_attivo", False):
+        orari.append((2, cfg.get("ora2", "18:30")))
+    return orari
+
+
+def valida_orari_oroscopo(primo, secondo):
+    if secondo <= primo:
+        raise ValueError("Il secondo orario deve essere successivo al primo, nello stesso giorno.")
 
 
 def giorni_oroscopo():
@@ -12837,7 +12872,7 @@ def salva_oroscopi(giornate):
     with sqlite3.connect(DB_PATH, timeout=30) as db:
         db.execute("BEGIN IMMEDIATE")
         for giorno in giornate:
-            if db.execute("SELECT 1 FROM oroscopo_invii WHERE giorno=?", (giorno,)).fetchone():
+            if db.execute("SELECT 1 FROM oroscopo_uscite WHERE giorno=?", (giorno,)).fetchone():
                 raise ValueError(f"{giorno}: giornata già inviata o in verifica; non sovrascrivibile.")
         db.executemany("INSERT OR REPLACE INTO oroscopo_giorni VALUES (?, ?)",
                        [(g, json.dumps(t, ensure_ascii=False)) for g, t in giornate.items()])
@@ -12849,7 +12884,7 @@ def tastiera_segni_oroscopo(snapshot_id):
     return InlineKeyboardMarkup([pulsanti[i:i + 3] for i in range(0, 12, 3)])
 
 
-async def invia_anteprima_oroscopo(bot, chat_id, giorno):
+async def invia_anteprima_oroscopo(bot, chat_id, giorno, slot=0, anteprima=True):
     config, testi = configurazione_oroscopo(), testi_oroscopo(giorno)
     if not testi:
         raise ValueError("Nessun testo caricato per questa giornata.")
@@ -12857,8 +12892,8 @@ async def invia_anteprima_oroscopo(bot, chat_id, giorno):
         raise ValueError("Prima carica la grafica con 🖼 Imposta foto.")
     snapshot = os.urandom(8).hex()
     with sqlite3.connect(DB_PATH, timeout=30) as db:
-        db.execute("INSERT INTO oroscopo_snapshot VALUES (?, ?, ?)",
-                   (snapshot, giorno, json.dumps(testi, ensure_ascii=False)))
+        db.execute("INSERT INTO oroscopo_snapshot(id,giorno,testi,slot,anteprima) VALUES (?, ?, ?, ?, ?)",
+                   (snapshot, giorno, json.dumps(testi, ensure_ascii=False), slot, int(anteprima)))
     # Lo snapshot resta immutabile anche se si modificano i testi futuri.
     return await bot.send_photo(chat_id=chat_id, photo=config["foto"],
                                 caption=crea_didascalia_oroscopo(giorno),
@@ -12870,11 +12905,12 @@ async def mostra_pannello_oroscopo(messaggio, context):
     oggi = datetime.now(ROMA_TZ).date().isoformat()
     future = [g[0] for g in giorni_oroscopo() if g[0] >= oggi]
     with sqlite3.connect(DB_PATH, timeout=30) as db:
-        invii = dict(db.execute("SELECT stato, count(*) FROM oroscopo_invii GROUP BY stato"))
+        invii = dict(db.execute("SELECT stato, count(*) FROM oroscopo_uscite GROUP BY stato"))
     stato = "ATTIVA" if cfg["attivo"] else "SOSPESA"
     riepilogo = (
         f"☕ UN CAFFÈ CON LE STELLE — {stato}\n\n"
-        f"🕒 Orario: {cfg['ora']} (Italia)\n"
+        f"🕒 Primo invio: {cfg['ora']} (Italia)\n"
+        f"🕕 Secondo invio: {cfg['ora2']} — {'ON' if cfg['secondo_attivo'] else 'OFF'}\n"
         f"📢 Canali: {', '.join(c.upper() for c in cfg['canali'])}\n"
         f"🖼 Foto: {'caricata' if cfg['foto'] else 'da caricare'}\n"
         f"📅 Giornate da oggi: {len(future)}\n"
@@ -12889,6 +12925,7 @@ async def mostra_pannello_oroscopo(messaggio, context):
          InlineKeyboardButton("👁 Anteprima", callback_data="oro_anteprima")],
         [InlineKeyboardButton("🖼 Imposta foto", callback_data="oro_foto")],
         [InlineKeyboardButton("⚙️ Impostazioni rubrica", callback_data="oro_impostazioni")],
+        [InlineKeyboardButton("📊 Statistiche", callback_data="oro_stats:oggi")],
         [InlineKeyboardButton("⏸ Sospendi" if cfg["attivo"] else "▶️ Attiva", callback_data="oro_attiva")],
         [InlineKeyboardButton("⬅️ Menu principale", callback_data="menu_admin")],
     ]))
@@ -12898,11 +12935,148 @@ def oroscopo_indietro():
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Rubrica", callback_data="oro_menu")]])
 
 
+def registra_clic_oroscopo(query, snapshot, segno):
+    utente = getattr(query, "from_user", None)
+    if utente is None or not getattr(query, "id", None):
+        return
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        dati = db.execute("SELECT giorno,slot,anteprima FROM oroscopo_snapshot WHERE id=?",
+                          (snapshot,)).fetchone()
+        if not dati:
+            return
+        giorno, slot, anteprima = dati
+        messaggio = getattr(query, "message", None)
+        canale = str(getattr(messaggio, "chat_id", "") or "")
+        if anteprima:
+            # Vecchi post: il loro snapshot non aveva ancora il tipo di uscita.
+            pubblicato = db.execute(
+                "SELECT slot FROM oroscopo_uscite WHERE giorno=? AND canale=? AND message_id=?",
+                (giorno, canale, getattr(messaggio, "message_id", None))).fetchone()
+            if not pubblicato:
+                return  # Le anteprime private non entrano nelle statistiche.
+            slot = pubblicato[0]
+        nome = " ".join(str(getattr(utente, "full_name", "") or "Utente").split())[:200]
+        username = getattr(utente, "username", None)
+        db.execute("""INSERT OR IGNORE INTO oroscopo_clic
+            (callback_id,user_id,username,nome,segno,giorno,slot,canale,clic_il)
+            VALUES (?,?,?,?,?,?,?,?,?)""", (
+                str(query.id), int(utente.id), username, nome, segno, giorno, slot, canale,
+                datetime.now(timezone.utc).isoformat(timespec="seconds")))
+
+
+def filtro_statistiche_oroscopo(periodo):
+    if periodo not in {"oggi", "7", "30", "tutto"}:
+        raise ValueError("Periodo statistiche non valido.")
+    if periodo == "tutto":
+        return "1=1", [], "Tutto il periodo"
+    giorni = 1 if periodo == "oggi" else int(periodo)
+    inizio = datetime.now(ROMA_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    inizio -= timedelta(days=giorni - 1)
+    return "clic_il>=?", [inizio.astimezone(timezone.utc).isoformat(timespec="seconds")], (
+        "Oggi" if periodo == "oggi" else f"Ultimi {giorni} giorni")
+
+
+def tastiera_statistiche_oroscopo(periodo):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(titolo, callback_data=f"oro_stats:{valore}")
+         for valore, titolo in (("oggi", "Oggi"), ("7", "7 giorni"), ("30", "30 giorni"), ("tutto", "Tutto"))],
+        [InlineKeyboardButton("👥 Elenco utenti", callback_data=f"oro_utenti:{periodo}:0"),
+         InlineKeyboardButton("📥 Esporta CSV", callback_data=f"oro_export:{periodo}")],
+        [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"oro_stats:{periodo}"),
+         InlineKeyboardButton("⬅️ Rubrica", callback_data="oro_menu")],
+    ])
+
+
+async def mostra_statistiche_oroscopo(msg, periodo):
+    dove, valori, etichetta = filtro_statistiche_oroscopo(periodo)
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        totale, utenti = db.execute(
+            f"SELECT count(*),count(DISTINCT user_id) FROM oroscopo_clic WHERE {dove}", valori).fetchone()
+        segni = db.execute(f"SELECT segno,count(*) FROM oroscopo_clic WHERE {dove} "
+                           "GROUP BY segno ORDER BY count(*) DESC,segno", valori).fetchall()
+        uscite = db.execute(f"SELECT slot,count(*),count(DISTINCT user_id) FROM oroscopo_clic WHERE {dove} "
+                            "GROUP BY slot ORDER BY slot", valori).fetchall()
+    righe = [f"📊 STATISTICHE OROSCOPO — {etichetta}",
+             f"\n👆 Clic totali: {totale}", f"👥 Persone uniche: {utenti}", "\n📣 Confronto pubblicazioni:"]
+    for slot, clic, persone in uscite:
+        nome = f"Invio {slot}" if slot in {1, 2} else "Post precedenti"
+        righe.append(f"{nome}: {clic} clic · {persone} persone")
+    if not uscite:
+        righe.append("Nessun clic registrato nel periodo.")
+    righe.append("\n🔮 Segni più selezionati:")
+    for indice, quantita in segni:
+        simbolo, nome = OROSCOPO_SEGNI[indice]
+        righe.append(f"{simbolo} {nome}: {quantita}")
+    righe.append("\nLe anteprime private sono escluse. I clic ripetuti contano; le persone sono deduplicate per ID Telegram.")
+    await msg.reply_text("\n".join(righe), reply_markup=tastiera_statistiche_oroscopo(periodo))
+
+
+async def mostra_utenti_oroscopo(msg, periodo, pagina=0):
+    dove, valori, etichetta = filtro_statistiche_oroscopo(periodo)
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        totale = db.execute(f"SELECT count(DISTINCT user_id) FROM oroscopo_clic WHERE {dove}", valori).fetchone()[0]
+        pagina = min(pagina, max(0, (totale - 1) // 8))
+        righe = db.execute(f"""WITH utenti AS (
+            SELECT user_id,count(*) AS clic,max(id) AS ultimo FROM oroscopo_clic
+            WHERE {dove} GROUP BY user_id)
+            SELECT c.user_id,c.username,c.nome,c.segno,c.giorno,c.slot,c.clic_il,u.clic
+            FROM utenti u JOIN oroscopo_clic c ON c.id=u.ultimo
+            ORDER BY c.id DESC LIMIT 8 OFFSET ?""", [*valori, pagina * 8]).fetchall()
+    testo = [f"👥 UTENTI OROSCOPO — {etichetta}", f"Persone: {totale} · Pagina {pagina + 1}"]
+    for uid, username, nome, segno, giorno, slot, quando, clic in righe:
+        identita = f"@{username}" if username else f"{nome} (senza username)"
+        data = datetime.fromisoformat(quando).astimezone(ROMA_TZ).strftime("%d/%m/%Y %H:%M")
+        simbolo, nome_segno = OROSCOPO_SEGNI[segno]
+        testo.append(f"\n{identita[:100]} · ID {uid}\n"
+                     f"{clic} clic · Ultimo: {simbolo} {nome_segno}, {data}\n"
+                     f"Oroscopo {giorno} · Invio {slot}")
+    if not righe:
+        testo.append("\nNessun utente nel periodo selezionato.")
+    bottoni, navigazione = [], []
+    if pagina:
+        navigazione.append(InlineKeyboardButton("⬅️", callback_data=f"oro_utenti:{periodo}:{pagina - 1}"))
+    if totale > (pagina + 1) * 8:
+        navigazione.append(InlineKeyboardButton("➡️", callback_data=f"oro_utenti:{periodo}:{pagina + 1}"))
+    if navigazione:
+        bottoni.append(navigazione)
+    bottoni.append([InlineKeyboardButton("📥 Esporta tutti i clic", callback_data=f"oro_export:{periodo}")])
+    bottoni.append([InlineKeyboardButton("⬅️ Statistiche", callback_data=f"oro_stats:{periodo}")])
+    await msg.reply_text("\n".join(testo), reply_markup=InlineKeyboardMarkup(bottoni))
+
+
+def crea_csv_clic_oroscopo(periodo):
+    dove, valori, _ = filtro_statistiche_oroscopo(periodo)
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        righe = db.execute(f"""SELECT user_id,username,nome,segno,giorno,slot,canale,clic_il
+            FROM oroscopo_clic WHERE {dove} ORDER BY clic_il,id""", valori).fetchall()
+    testo = StringIO(newline="")
+    writer = csv.writer(testo, delimiter=";")
+    writer.writerow(["ID Telegram", "Username", "Nome", "Segno premuto", "Data oroscopo",
+                     "Invio", "Chat del clic", "Data e ora clic (Italia)"])
+    def sicuro(valore):
+        valore = str(valore or "")
+        return "'" + valore if valore.lstrip().startswith(("=", "+", "-", "@")) else valore
+    for uid, username, nome, segno, giorno, slot, canale, quando in righe:
+        data = datetime.fromisoformat(quando).astimezone(ROMA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        writer.writerow([uid, sicuro(username), sicuro(nome), OROSCOPO_SEGNI[segno][1],
+                         giorno, slot, sicuro(canale), data])
+    return testo.getvalue().encode("utf-8-sig"), len(righe)
+
+
+async def esporta_clic_oroscopo(msg, periodo):
+    dati, quantita = crea_csv_clic_oroscopo(periodo)
+    file = BytesIO(dati)
+    file.name = f"clic_oroscopo_{periodo}_{datetime.now(ROMA_TZ):%Y%m%d}.csv"
+    await msg.reply_document(document=file, filename=file.name,
+                             caption=f"📊 Report oroscopo: {quantita} clic. Orari italiani; anteprime escluse.")
+
+
 async def gestisci_oroscopi(update, context):
     """Gruppo -1: blocca gli altri handler solo per aggiornamenti della rubrica."""
     query, msg = update.callback_query, update.effective_message
     dato = query.data if query else ""
     if query and dato.startswith("oro_segno:"):
+        row = None
         try:
             _, snapshot, indice = dato.split(":")
             i = int(indice)
@@ -12917,6 +13091,12 @@ async def gestisci_oroscopi(update, context):
         except (ValueError, KeyError, TypeError):
             popup = "Questo oroscopo non è disponibile."
         await query.answer(popup, show_alert=True)
+        if row and popup != "Questo oroscopo non è disponibile.":
+            try:
+                registra_clic_oroscopo(query, snapshot, i)
+            except Exception as errore:
+                # La raccolta statistiche non deve impedire di leggere il segno.
+                print(f"Errore registrazione clic oroscopo: {type(errore).__name__}")
         raise ApplicationHandlerStop
     modalita = context.user_data.get("oroscopo_modalita")
     if query and not dato.startswith("oro_"):
@@ -12994,11 +13174,14 @@ async def azione_oroscopo(dato, msg, context):
         context.user_data.pop("oroscopo_import", None)
         await msg.reply_text(f"💾 Salvate {len(giornate)} giornate. Puoi provarle con Anteprima.")
         await mostra_pannello_oroscopo(msg, context)
-    elif dato in {"oro_foto", "oro_ora"}:
+    elif dato in {"oro_foto", "oro_ora", "oro_ora1", "oro_ora2"}:
         campo = dato[4:]
+        if campo == "ora1":
+            campo = "ora"
         context.user_data["oroscopo_modalita"] = campo
         istruzioni = {"foto": "🖼 Invia qui la foto della rubrica come immagine Telegram. Verrà riutilizzata ogni giorno.",
-                      "ora": "🕒 Scrivi l’orario HH:MM, ad esempio 13:30. Si usa sempre l’ora italiana."}
+                      "ora": "🕒 Scrivi il primo orario HH:MM, ad esempio 13:30 (ora italiana).",
+                      "ora2": "🕕 Scrivi il secondo orario HH:MM, successivo al primo. Salvandolo attivi il secondo invio."}
         await msg.reply_text(istruzioni[campo], reply_markup=oroscopo_indietro())
     elif dato == "oro_didascalia":
         # Compatibilità con il vecchio pulsante eventualmente ancora in chat.
@@ -13006,14 +13189,31 @@ async def azione_oroscopo(dato, msg, context):
                              reply_markup=oroscopo_indietro())
     elif dato == "oro_impostazioni":
         await msg.reply_text(
-            f"⚙️ Impostazioni rubrica\nOrario: {cfg['ora']} (Italia)\n"
+            f"⚙️ Impostazioni rubrica\nPrimo invio: {cfg['ora']} (Italia)\n"
+            f"Secondo invio: {cfg['ora2']} — {'ON' if cfg['secondo_attivo'] else 'OFF'}\n"
+            "I due post usano gli stessi testi della giornata.\n"
             f"Canali: {', '.join(cfg['canali'])}\n\nScegli dove pubblicare:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📱 Tech", callback_data="oro_canali:tech"),
                  InlineKeyboardButton("🏠 Casa", callback_data="oro_canali:casa"),
                  InlineKeyboardButton("📢 Entrambi", callback_data="oro_canali:entrambi")],
-                [InlineKeyboardButton("🕒 Cambia orario", callback_data="oro_ora")],
+                [InlineKeyboardButton("🕒 Primo orario", callback_data="oro_ora"),
+                 InlineKeyboardButton("🕕 Secondo orario", callback_data="oro_ora2")],
+                [InlineKeyboardButton("🔔 Secondo invio: " + ("ON" if cfg['secondo_attivo'] else "OFF"),
+                                      callback_data="oro_secondo_toggle")],
                 [InlineKeyboardButton("⬅️ Rubrica", callback_data="oro_menu")]]))
+    elif dato == "oro_secondo_toggle":
+        if not cfg["secondo_attivo"]:
+            valida_orari_oroscopo(cfg["ora"], cfg["ora2"])
+        imposta_oroscopo("secondo_attivo", not cfg["secondo_attivo"])
+        await azione_oroscopo("oro_impostazioni", msg, context)
+    elif dato.startswith("oro_stats:"):
+        await mostra_statistiche_oroscopo(msg, dato.split(":")[1])
+    elif dato.startswith("oro_utenti:"):
+        _, periodo, pagina = dato.split(":")
+        await mostra_utenti_oroscopo(msg, periodo, max(0, int(pagina)))
+    elif dato.startswith("oro_export:"):
+        await esporta_clic_oroscopo(msg, dato.split(":")[1])
     elif dato.startswith("oro_canali:"):
         valore = dato.split(":")[1]
         if valore not in {"tech", "casa", "entrambi"}:
@@ -13034,7 +13234,7 @@ async def azione_oroscopo(dato, msg, context):
         pagina = max(0, int(dato.split(":")[1])) if ":" in dato else 0
         bottoni = []
         with sqlite3.connect(DB_PATH, timeout=30) as db:
-            inviate = {r[0] for r in db.execute("SELECT DISTINCT giorno FROM oroscopo_invii")}
+            inviate = {r[0] for r in db.execute("SELECT DISTINCT giorno FROM oroscopo_uscite")}
         for (giorno,) in righe[pagina * 7:pagina * 7 + 7]:
             row = [InlineKeyboardButton(f"{'✅' if giorno in inviate else '👁'} {giorno}",
                                         callback_data=f"oro_preview:{giorno}")]
@@ -13063,11 +13263,19 @@ async def ricevi_input_oroscopo(msg, context, modalita):
         if not msg.photo:
             raise ValueError("Invia una foto come immagine, non come documento.")
         imposta_oroscopo("foto", msg.photo[-1].file_id)
-    elif modalita == "ora":
+    elif modalita in {"ora", "ora2"}:
         valore = (msg.text or "").strip()
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", valore):
             raise ValueError("Usa il formato HH:MM, ad esempio 13:30.")
-        imposta_oroscopo("ora", valore)
+        cfg = configurazione_oroscopo()
+        if modalita == "ora2":
+            valida_orari_oroscopo(cfg["ora"], valore)
+            imposta_oroscopo("ora2", valore)
+            imposta_oroscopo("secondo_attivo", True)
+        else:
+            if cfg["secondo_attivo"]:
+                valida_orari_oroscopo(valore, cfg["ora2"])
+            imposta_oroscopo("ora", valore)
     elif modalita == "importa":
         if msg.document:
             if not (msg.document.file_name or "").lower().endswith(".txt"):
@@ -13109,12 +13317,13 @@ async def verifica_scadenza_oroscopi(bot, adesso, cfg):
     if not date:
         return
     ultimo = max(date)
-    scadenza = datetime.fromisoformat(f"{ultimo}T{cfg['ora']}").replace(tzinfo=ROMA_TZ)
-    chiave = f"{ultimo} {cfg['ora']}"
+    ultimo_orario = orari_oroscopo(cfg)[-1][1]
+    scadenza = datetime.fromisoformat(f"{ultimo}T{ultimo_orario}").replace(tzinfo=ROMA_TZ)
+    chiave = f"{ultimo} {ultimo_orario}"
     scadenza_utc, adesso_utc = scadenza.astimezone(timezone.utc), adesso.astimezone(timezone.utc)
     if scadenza_utc - timedelta(hours=24) <= adesso_utc <= scadenza_utc and cfg["promemoria"] != chiave and ADMIN_ID:
         await bot.send_message(chat_id=ADMIN_ID, text=(
-            f"⚠️ Un caffè con le stelle: ultima giornata disponibile {ultimo} alle {cfg['ora']}.\n"
+            f"⚠️ Un caffè con le stelle: ultimo post disponibile {ultimo} alle {ultimo_orario}.\n"
             "Chiedimi il prossimo file con i 12 segni per 30 giorni e caricalo nel bot."))
         imposta_oroscopo("promemoria", chiave)
     if adesso > scadenza + timedelta(minutes=1) and adesso.date().isoformat() > ultimo:
@@ -13136,9 +13345,12 @@ async def pubblica_oroscopo_giornaliero(app, adesso=None):
         if not configurazione_oroscopo()["attivo"]:
             return
         giorno = adesso.date().isoformat()
-        previsto = datetime.fromisoformat(f"{giorno}T{cfg['ora']}").replace(tzinfo=ROMA_TZ)
-        if adesso < previsto:
+        scaduti = [(slot, ora) for slot, ora in orari_oroscopo(cfg)
+                   if adesso >= datetime.fromisoformat(f"{giorno}T{ora}").replace(tzinfo=ROMA_TZ)]
+        if not scaduti:
             return
+        # Al riavvio usa l'ultimo orario raggiunto: niente due post arretrati insieme.
+        slot, ora_slot = scaduti[-1]
         if not testi_oroscopo(giorno):
             # Nessun riuso di vecchi testi; notifica il buco una sola volta al giorno.
             if cfg.get("giorno_mancante") != giorno and ADMIN_ID:
@@ -13154,22 +13366,22 @@ async def pubblica_oroscopo_giornaliero(app, adesso=None):
             # Prenotazione persistente prima dell'invio: un riavvio non ripubblica.
             with sqlite3.connect(DB_PATH, timeout=30) as db:
                 risultato = db.execute(
-                    "INSERT OR IGNORE INTO oroscopo_invii(giorno,canale,stato) VALUES (?,?,'in_invio')",
-                    (giorno, str(destinazione)))
+                    "INSERT OR IGNORE INTO oroscopo_uscite(giorno,canale,stato,slot) VALUES (?,?,'in_invio',?)",
+                    (giorno, str(destinazione), slot))
                 if risultato.rowcount == 0:
                     continue
             try:
-                post = await invia_anteprima_oroscopo(app.bot, destinazione, giorno)
+                post = await invia_anteprima_oroscopo(app.bot, destinazione, giorno, slot=slot, anteprima=False)
                 with sqlite3.connect(DB_PATH, timeout=30) as db:
-                    db.execute("UPDATE oroscopo_invii SET stato='inviato', message_id=? WHERE giorno=? AND canale=?",
-                               (post.message_id, giorno, str(destinazione)))
+                    db.execute("UPDATE oroscopo_uscite SET stato='inviato', message_id=? WHERE giorno=? AND canale=? AND slot=?",
+                               (post.message_id, giorno, str(destinazione), slot))
             except Exception as errore:
                 with sqlite3.connect(DB_PATH, timeout=30) as db:
-                    db.execute("UPDATE oroscopo_invii SET stato='da_verificare', errore=? WHERE giorno=? AND canale=?",
-                               (str(errore)[:500], giorno, str(destinazione)))
+                    db.execute("UPDATE oroscopo_uscite SET stato='da_verificare', errore=? WHERE giorno=? AND canale=? AND slot=?",
+                               (str(errore)[:500], giorno, str(destinazione), slot))
                 if ADMIN_ID:
                     await app.bot.send_message(chat_id=ADMIN_ID, text=(
-                        f"⚠️ Invio oroscopo {giorno} ({canale.upper()}) da verificare. "
+                        f"⚠️ Invio {slot} oroscopo {giorno}, ore {ora_slot} ({canale.upper()}) da verificare. "
                         "Controlla il canale: nessun nuovo tentativo automatico, per evitare doppioni."))
 
 
@@ -13893,3 +14105,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
