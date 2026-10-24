@@ -1659,29 +1659,75 @@ def estrai_sconto_da_messaggio(messaggio):
 
 
 def offerte_recap_di_oggi(telegram_chat_id):
-
+    """Recupera i post del canale con categoria e sconto per la TOP 5."""
     oggi = datetime.now(ROMA_TZ).date().isoformat()
+    with sqlite3.connect(DB_PATH) as db:
+        db.row_factory = sqlite3.Row
+        righe = db.execute("""
+            SELECT id, nome, link, prezzo, vecchio_prezzo, pubblicata_il,
+                   asin, categoria, sconto, prezzo_finale_pubblicato, messaggio
+            FROM recap_offerte
+            WHERE substr(pubblicata_il, 1, 10) = ?
+              AND telegram_chat_id = ?
+              AND COALESCE(stato, 'pubblicata') = 'pubblicata'
+            ORDER BY pubblicata_il DESC, id DESC
+        """, (oggi, str(telegram_chat_id))).fetchall()
+    return [dict(riga) for riga in righe]
 
-    db = sqlite3.connect(DB_PATH)
-    cur = db.cursor()
 
-    cur.execute("""
-        SELECT
-            nome,
-            link,
-            prezzo,
-            vecchio_prezzo,
-            pubblicata_il
-        FROM recap_offerte
-        WHERE substr(pubblicata_il, 1, 10) = ?
-          AND telegram_chat_id = ?
-        ORDER BY pubblicata_il DESC
-    """, (oggi, str(telegram_chat_id)))
+def seleziona_top_recap(offerte, limite=5):
+    """Prima il miglior sconto per categoria, poi completa per sconto."""
+    def percentuale(offerta):
+        try:
+            valore = int(offerta.get('sconto') or 0)
+        except (TypeError, ValueError):
+            valore = 0
+        if valore <= 0:
+            valore = estrai_sconto_da_messaggio(offerta.get('messaggio'))
+        return max(0, min(100, valore))
 
-    risultati = cur.fetchall()
-    db.close()
+    uniche = {}
+    for offerta in offerte:
+        chiave = (str(offerta.get('asin') or '').strip().upper()
+                  or str(offerta.get('link') or '').split('?', 1)[0].rstrip('/').lower())
+        if not chiave:
+            chiave = f"riga:{offerta['id']}"
+        if chiave not in uniche or percentuale(offerta) > percentuale(uniche[chiave]):
+            uniche[chiave] = offerta
+    ordinate = sorted(uniche.values(), key=lambda r: (percentuale(r), r['id']), reverse=True)
+    scelte, categorie = [], set()
+    for offerta in ordinate:
+        categoria = str(offerta.get('categoria') or 'altro').strip().lower()
+        if categoria not in categorie:
+            scelte.append(offerta)
+            categorie.add(categoria)
+            if len(scelte) == limite:
+                return scelte
+    selezionati = {r['id'] for r in scelte}
+    for offerta in ordinate:
+        if len(scelte) == limite:
+            break
+        if offerta['id'] not in selezionati:
+            scelte.append(offerta)
+    return scelte
 
-    return risultati
+
+def link_oroscopo_recap(giorno, canale, telegram_chat_id):
+    """Secondo oroscopo se pubblicato, altrimenti il primo disponibile."""
+    with sqlite3.connect(DB_PATH) as db:
+        try:
+            riga = db.execute("""
+                SELECT message_id FROM oroscopo_uscite
+                WHERE giorno=? AND canale=? AND stato='inviato'
+                  AND message_id IS NOT NULL
+                ORDER BY slot DESC LIMIT 1
+            """, (giorno, str(telegram_chat_id))).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    if not riga:
+        return None
+    base = TECH_CHANNEL_URL if canale == 'tech' else CASA_CHANNEL_URL
+    return f"{base.rstrip('/')}/{int(riga[0])}"
 
 
 def recap_gia_inviato(oggi, canale):
@@ -1719,76 +1765,66 @@ def segna_recap_inviato(oggi, canale):
 
 
 def crea_righe_recap(offerte):
-
+    medaglie = ('🥇', '🥈', '🥉', '4️⃣', '5️⃣')
     righe = []
-
-    for numero, (nome, link, prezzo, vecchio, _) in enumerate(offerte, start=1):
-
-        nome_breve = accorcia_nome_articolo(nome)
-        nome_html = html.escape(str(nome_breve))
-        link_html = html.escape(str(link), quote=True)
-        prezzo_testo = str(prezzo or "—").strip()
-        if prezzo_testo != "—" and "€" not in prezzo_testo:
-            prezzo_testo += " €"
-        prezzo_html = html.escape(prezzo_testo)
-
-        if vecchio and str(vecchio).upper() != "NO":
-            vecchio_testo = str(vecchio).strip()
-            if "€" not in vecchio_testo:
-                vecchio_testo += " €"
-            vecchio_html = html.escape(vecchio_testo)
-        else:
-            vecchio_html = "—"
-
+    for indice, offerta in enumerate(offerte):
+        nome_html = html.escape(str(accorcia_nome_articolo(offerta['nome'])))
+        link_html = html.escape(str(offerta['link']), quote=True)
+        prezzo = offerta.get('prezzo_finale_pubblicato') or offerta.get('prezzo') or '—'
+        prezzo = str(prezzo).strip()
+        if prezzo != '—' and '€' not in prezzo:
+            prezzo += ' €'
+        vecchio = str(offerta.get('vecchio_prezzo') or '—').strip()
+        if vecchio.upper() == 'NO':
+            vecchio = '—'
+        elif vecchio != '—' and '€' not in vecchio:
+            vecchio += ' €'
+        try:
+            sconto = int(offerta.get('sconto') or 0)
+        except (ValueError, TypeError):
+            sconto = 0
+        if sconto <= 0:
+            sconto = estrai_sconto_da_messaggio(offerta.get('messaggio'))
+        etichetta = f' — Sconto {sconto}%' if sconto > 0 else ''
         righe.append(
-            f'#<b>{numero}</b> <a href="{link_html}">{nome_html}</a>\n'
-            f'❌ Prima: <s>{vecchio_html}</s>\n'
-            f'✅ Ora: <b>{prezzo_html}</b>'
+            f'{medaglie[indice] if indice < len(medaglie) else str(indice + 1) + "."} '
+            f'<b>{nome_html}{etichetta}</b>\n'
+            f'❌ Prima: <s>{html.escape(vecchio)}</s>\n'
+            f'✅ Ora: <b>{html.escape(prezzo)}</b>\n'
+            f'🔗 <a href="{link_html}">Vedi offerta</a>'
         )
-
     return righe
 
 
 async def invia_recap_giornaliero(bot, canale, telegram_chat_id):
-
     offerte = offerte_recap_di_oggi(telegram_chat_id)
-
     if not offerte:
         return False
-
-    righe = crea_righe_recap(offerte)
-
-    intestazione = (
-        f"🔥 <b>RECAP {canale.upper()} DI OGGI</b>\n\n"
+    top = seleziona_top_recap(offerte, limite=5)
+    righe = crea_righe_recap(top)
+    oggi = datetime.now(ROMA_TZ).date().isoformat()
+    testo = (
+        f'🌙 <b>BESTPRICE24H {canale.upper()} | IL MEGLIO DI OGGI</b>\n\n'
+        f'📦 <b>{len(offerte)} offerte pubblicate oggi!</b>\n\n'
+        f'🏆 <b>LE {len(top)} MIGLIORI OFFERTE</b>\n\n'
+        + '\n\n'.join(righe)
+        + '\n\n☕ <b>HAI GIÀ LETTO IL TUO OROSCOPO DI OGGI?</b>\n'
+          '✨ Scopri cosa ti riservano le stelle!\n\n'
+          '⚠️ Prezzi e disponibilità possono variare.'
     )
-
-    messaggi = []
-    corrente = intestazione
-
-    for riga in righe:
-
-        candidato = corrente + riga + "\n\n"
-
-        if (
-            len(candidato) > 3900
-            and corrente != intestazione
-        ):
-            messaggi.append(corrente.rstrip())
-            corrente = intestazione + riga + "\n\n"
-        else:
-            corrente = candidato
-
-    if corrente.strip():
-        messaggi.append(corrente.rstrip())
-
-    for testo in messaggi:
-        await bot.send_message(
-            chat_id=telegram_chat_id,
-            text=testo,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
+    url_oroscopo = link_oroscopo_recap(oggi, canale, telegram_chat_id)
+    tastiera = (InlineKeyboardMarkup([[InlineKeyboardButton(
+        '🔮 Scopri il tuo oroscopo', url=url_oroscopo
+    )]]) if url_oroscopo else None)
+    if not url_oroscopo:
+        testo = testo.replace(
+            '☕ <b>HAI GIÀ LETTO IL TUO OROSCOPO DI OGGI?</b>\n'
+            '✨ Scopri cosa ti riservano le stelle!\n\n', ''
         )
-
+    await bot.send_message(
+        chat_id=telegram_chat_id, text=testo, parse_mode='HTML',
+        disable_web_page_preview=True, reply_markup=tastiera,
+    )
     return True
 
 
@@ -12730,13 +12766,18 @@ OROSCOPO_DIDASCALIA = (
 OROSCOPO_LOCK = asyncio.Lock()
 
 
-def crea_didascalia_oroscopo(giorno):
+def crea_didascalia_oroscopo(giorno, slot=0):
     data = datetime.strptime(giorno, "%Y-%m-%d").date()
     settimana = ("Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica")
     mesi = ("gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
             "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre")
     etichetta = f"{settimana[data.weekday()]} {data.day} {mesi[data.month - 1]}"
-    return OROSCOPO_DIDASCALIA.format(data=etichetta)
+    didascalia = OROSCOPO_DIDASCALIA.format(data=etichetta)
+    if slot == 1:
+        return "☀️ Prima Pausa Caffè\n\n" + didascalia
+    if slot == 2:
+        return "🌙 Seconda Pausa Caffè\n\n" + didascalia
+    return didascalia
 
 
 def inizializza_oroscopi():
@@ -12896,7 +12937,7 @@ async def invia_anteprima_oroscopo(bot, chat_id, giorno, slot=0, anteprima=True)
                    (snapshot, giorno, json.dumps(testi, ensure_ascii=False), slot, int(anteprima)))
     # Lo snapshot resta immutabile anche se si modificano i testi futuri.
     return await bot.send_photo(chat_id=chat_id, photo=config["foto"],
-                                caption=crea_didascalia_oroscopo(giorno),
+                                caption=crea_didascalia_oroscopo(giorno, slot=slot),
                                 reply_markup=tastiera_segni_oroscopo(snapshot))
 
 
