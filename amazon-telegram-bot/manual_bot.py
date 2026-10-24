@@ -1892,10 +1892,89 @@ def prossimo_orario_manuale(data, config=None):
     return locale
 
 
+# Pausa Caffè: finestre previste + invii effettivi, separate per canale.
+PAUSA_CAFFE_MINUTI = 30
+
+
+def finestre_pausa_caffe(canale, giorno):
+    """Finestre effettive persistenti + finestre future della configurazione corrente.
+
+    Cambiare gli orari non elimina una pausa gia' avviata; una pubblicazione
+    registrata non genera una seconda finestra soltanto perche' cambia l'orario.
+    """
+    cfg = configurazione_oroscopo()
+    nome = 'casa' if str(canale) == str(CASA_CHANNEL_ID) else 'tech'
+    giorno_iso = giorno.isoformat() if hasattr(giorno, 'isoformat') else str(giorno)
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        pubblicazioni = db.execute(
+            'SELECT slot,pubblicato_il FROM pausa_caffe_pubblicazioni WHERE giorno=? AND canale=?',
+            (giorno_iso, str(canale))).fetchall()
+        stati = dict(db.execute(
+            'SELECT slot,stato FROM oroscopo_uscite WHERE giorno=? AND canale=?',
+            (giorno_iso, str(canale))).fetchall())
+    finestre = []
+    registrati = set()
+    for slot, pubblicato_il in pubblicazioni:
+        try:
+            inizio = datetime.fromisoformat(pubblicato_il).astimezone(ROMA_TZ)
+        except (ValueError, TypeError):
+            continue
+        registrati.add(slot)
+        finestre.append((inizio, inizio + timedelta(minutes=PAUSA_CAFFE_MINUTI)))
+    if cfg.get('attivo') and nome in cfg.get('canali', []):
+        for slot, ora in orari_oroscopo(cfg):
+            if slot in registrati or stati.get(slot) in ('inviato', 'da_verificare', 'in_invio'):
+                continue
+            previsto = datetime.fromisoformat(f'{giorno_iso}T{ora}').replace(tzinfo=ROMA_TZ)
+            finestre.append((previsto, previsto + timedelta(minutes=PAUSA_CAFFE_MINUTI)))
+    return sorted(finestre, key=lambda item: item[0])
+
+
+def prossimo_fuori_pausa(data, canale):
+    locale = data.astimezone(ROMA_TZ)
+    for _ in range(8):
+        finestre = []
+        for offset in (-1, 0, 1):
+            finestre.extend(finestre_pausa_caffe(canale, (locale + timedelta(days=offset)).date()))
+        conflitti = [fine for inizio, fine in finestre if inizio <= locale < fine]
+        if not conflitti:
+            return locale
+        locale = max(conflitti)
+    return locale
+
+
+async def attendi_finestra_offerte(canale):
+    """Rilegge la configurazione prima di ogni invio programmato/automatico."""
+    while True:
+        adesso = datetime.now(ROMA_TZ)
+        ripresa = prossimo_fuori_pausa(adesso, canale)
+        ripresa = prossimo_orario_manuale(ripresa)
+        if ripresa <= adesso:
+            return
+        await asyncio.sleep(min(30, max(1, (ripresa - adesso).total_seconds())))
+
+
+def inizializza_pause_caffe():
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        db.execute('''CREATE TABLE IF NOT EXISTS pausa_caffe_pubblicazioni (
+            giorno TEXT NOT NULL, canale TEXT NOT NULL, slot INTEGER NOT NULL,
+            pubblicato_il TEXT NOT NULL, PRIMARY KEY(giorno, canale, slot))''')
+
+
+def descrizione_pause_programmate(canale, giorni):
+    eventi = []
+    for giorno in sorted(set(giorni)):
+        for indice, (inizio, fine) in enumerate(finestre_pausa_caffe(canale, giorno)):
+            titolo = '☀️ Prima Pausa Caffè' if indice == 0 else '🌙 Seconda Pausa Caffè'
+            eventi.append((inizio, f'{inizio:%d/%m • %H:%M}\n{titolo}\n⏸ Pausa offerte fino alle {fine:%H:%M}'))
+    return eventi
+
+
 def slot_manuale_libero(data, occupati, minuti, config):
     passo = timedelta(minutes=max(1, int(minuti)))
     candidato = prossimo_orario_manuale(data, config)
     while True:
+        candidato = prossimo_orario_manuale(prossimo_fuori_pausa(candidato, config.get('_canale', CHANNEL_ID)), config)
         conflitti = [t for t in occupati if abs((t-candidato).total_seconds()) < passo.total_seconds()]
         if not conflitti:
             return candidato
@@ -1905,8 +1984,6 @@ def slot_manuale_libero(data, occupati, minuti, config):
 def riallinea_programmati_fascia():
     """Riposiziona fuori fascia e arretrati, preservando ordine e intervalli."""
     cfg = config_fascia_manuale()
-    if not cfg['attiva']:
-        return 0
     ora = datetime.now(timezone.utc).replace(microsecond=0)
     modificati = 0
     with sqlite3.connect(DB_PATH, timeout=30) as db:
@@ -1920,7 +1997,7 @@ def riallinea_programmati_fascia():
             precedente = precedente.astimezone(timezone.utc)
             base = max(precedente, ora) if precedente < ora-timedelta(seconds=30) else precedente
             canale = str(chat or CHANNEL_ID)
-            nuovo = slot_manuale_libero(base, occupati.setdefault(canale, []), minuti or DISTANZA_MINIMA_MINUTI, cfg)
+            nuovo = slot_manuale_libero(base, occupati.setdefault(canale, []), minuti or DISTANZA_MINIMA_MINUTI, dict(cfg, _canale=canale))
             occupati[canale].append(nuovo)
             if nuovo.astimezone(timezone.utc) != precedente:
                 db.execute('UPDATE programmazioni SET invio_previsto=? WHERE id=?', (nuovo.astimezone(timezone.utc).isoformat(timespec='seconds'),pid))
@@ -2193,6 +2270,8 @@ async def invia_offerta_programmata(
 
     bottone_offerta = tastiera_offerta_automatica(link)
 
+    # Ricontrolla la pausa anche se la coda e' stata preparata ore prima.
+    await attendi_finestra_offerte(destinazione)
     if foto_file_id:
         messaggio_telegram = await bot.send_photo(
             chat_id=destinazione,
@@ -2318,6 +2397,9 @@ async def controlla_programmazioni(app):
                 ora_controllo = datetime.now(ROMA_TZ)
                 if prossimo_orario_manuale(ora_controllo) != ora_controllo:
                     break
+                if prossimo_fuori_pausa(ora_controllo, programmazione[6]) > ora_controllo:
+                    riallinea_programmati_fascia()
+                    continue
 
                 try:
 
@@ -6670,6 +6752,8 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
             f"ASIN {prodotto.get('asin')} già pubblicato o in pubblicazione "
             f"nel canale {canale_effettivo.upper()}."
         )
+    # Ultima verifica degli orari aggiornati prima di inviare l'offerta.
+    await attendi_finestra_offerte(telegram_chat_id)
     messaggio_telegram = await bot.send_photo(
         chat_id=telegram_chat_id,
         photo=foto,
@@ -6744,6 +6828,16 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canal
             )
             return
 
+        # Uno slot automatico in pausa resta prenotato e attende la ripresa.
+        while True:
+            adesso_pausa = datetime.now(ROMA_TZ)
+            ripresa = prossimo_fuori_pausa(adesso_pausa, CASA_CHANNEL_ID if canale == 'casa' else CHANNEL_ID)
+            if ripresa <= adesso_pausa:
+                break
+            if ripresa.hour > 21 or (ripresa.hour == 21 and ripresa.minute > 30):
+                _aggiorna_slot_automatico(data_slot, slot_ora_db, 'rinviata_pausa')
+                return
+            await asyncio.sleep(max(1, (ripresa - adesso_pausa).total_seconds()))
         message_id, foto_file_id, telegram_chat_id = await pubblica_offerta_automatica(
             app.bot, prodotto, canale
         )
@@ -8821,7 +8915,7 @@ def piano_multiplo(prodotti, minuti, destinazione, salva=False, origine="multipl
         quando = datetime.now(timezone.utc).replace(microsecond=0)
         piano = []
         for prodotto in prodotti:
-            quando = slot_manuale_libero(quando, occupati, minuti, cfg)
+            quando = slot_manuale_libero(quando, occupati, minuti, dict(cfg, _canale=str(destinazione)))
             pid = None
             if salva:
                 corpo = crea_messaggio_programmato(prodotto['nome'], prodotto['prezzo'], prodotto['vecchio_prezzo'], 'pulito', prodotto.get('categoria'), prodotto.get('coupon'))
@@ -8874,7 +8968,7 @@ async def avvia_lotto_multiplo(messaggio, context, draft, automatico=False):
              f"Primo invio: {piano[0][1].astimezone(ROMA_TZ):%d/%m %H:%M}" if piano else "Nessun invio: tutti i prodotti sono stati scartati.",
              f"Intervallo: {draft['minuti']} minuti. Orari già occupati rispettati.",
              f"Richiesti: {draft['richiesti']} · Validati: {len(piano)}" if draft.get("richiesti") else "",
-             "Il primo post libero parte entro circa 30 secondi.",
+             "Il primo post partirà al primo orario libero, rispettando le Pause Caffè.",
              f"Duplicati ignorati: {draft['duplicati']}"]
     if draft['scartati']:
         righe += ["", "❌ LINK SCARTATI / ERRORI:"] + list(draft['scartati'])
@@ -8898,6 +8992,13 @@ async def riepilogo_multiplo(messaggio, draft, context=None):
     righe = [f"{'🔁 REPOST' if draft.get('tipo') == 'repost' else '📦 INVIO MULTIPLO'} — {draft['canale'].upper()}", f"⏱ Intervallo: {draft['minuti']} minuti", f"✅ Pronti: {len(piano)} · Scartati: {len(draft['scartati'])} · Duplicati: {draft['duplicati']}", ""]
     if draft.get("richiesti"):
         righe.append(f"Richiesti: {draft['richiesti']} · Preparati: {len(piano)} · Candidati disponibili per il controllo: {draft.get('candidati',0)}")
+    if piano:
+        giorni_piano = {quando.astimezone(ROMA_TZ).date() for _, quando in piano}
+        eventi = descrizione_pause_programmate(_chat_id_per_canale(draft['canale']), giorni_piano)
+        if eventi:
+            righe.append('☕ Pause Caffè considerate nella programmazione:')
+            righe.extend(testo.replace('\n', ' · ') for _, testo in eventi)
+            righe.append('')
     for prodotto, (_, quando) in zip(draft['pronti'], piano):
         righe.append(f"{quando.astimezone(ROMA_TZ):%d/%m %H:%M} · {prodotto['nome'][:75]} · {prodotto['prezzo']} €")
     for motivo in draft['scartati']:
@@ -9928,6 +10029,7 @@ async def invia_lista_programmati(
     messaggio,
 ):
 
+    riallinea_programmati_fascia()
     db = sqlite3.connect(DB_PATH)
     cur = db.cursor()
 
@@ -9947,7 +10049,16 @@ async def invia_lista_programmati(
 
     db.close()
 
-    if not righe_db:
+    giorni_lista = {datetime.now(ROMA_TZ).date()}
+    for _, _, _, previsto in righe_db:
+        dt = data_programmata_locale(previsto)
+        if dt:
+            giorni_lista.add(dt.date())
+    eventi_caffe = []
+    for canale in (CHANNEL_ID, CASA_CHANNEL_ID):
+        eventi_caffe.extend(descrizione_pause_programmate(canale, giorni_lista))
+    # Elenco cronologico con indicazione del canale per i post speciali.
+    if not righe_db and not eventi_caffe:
 
         await messaggio.reply_text(
             "📅 POST PROGRAMMATI\n\n"
@@ -9970,6 +10081,7 @@ async def invia_lista_programmati(
         "📅 POST PROGRAMMATI\n"
     ]
 
+    elementi = []
     for (
         programmazione_id,
         nome,
@@ -9988,15 +10100,19 @@ async def invia_lista_programmati(
         else:
             quando = invio_previsto
 
-        righe.append(
-            f"#{programmazione_id} • {quando}\n"
-            f"📦 {nome} — {prezzo} €\n"
-        )
+        elementi.append((data_locale or datetime.now(ROMA_TZ),
+            f"#{programmazione_id} • {quando}\n📦 {nome} — {prezzo} €\n"))
+    for canale in (CHANNEL_ID, CASA_CHANNEL_ID):
+        nome_canale = 'CASA' if str(canale) == str(CASA_CHANNEL_ID) else 'TECH'
+        for inizio, descrizione in descrizione_pause_programmate(canale, giorni_lista):
+            elementi.append((inizio, f"{descrizione} · {nome_canale}\n"))
+    righe.extend(testo for _, testo in sorted(elementi, key=lambda r: r[0]))
 
-    righe.append(
+    if righe_db:
+        righe.append(
         "\n🔢 Scrivi il numero # del post "
         "che vuoi gestire.\n\n"
-    )
+        )
 
     await messaggio.reply_text(
         "\n".join(righe),
@@ -13414,6 +13530,8 @@ async def pubblica_oroscopo_giornaliero(app, adesso=None):
             try:
                 post = await invia_anteprima_oroscopo(app.bot, destinazione, giorno, slot=slot, anteprima=False)
                 with sqlite3.connect(DB_PATH, timeout=30) as db:
+                    db.execute("INSERT OR REPLACE INTO pausa_caffe_pubblicazioni VALUES (?,?,?,?)",
+                               (giorno, str(destinazione), slot, datetime.now(ROMA_TZ).isoformat(timespec='seconds')))
                     db.execute("UPDATE oroscopo_uscite SET stato='inviato', message_id=? WHERE giorno=? AND canale=? AND slot=?",
                                (post.message_id, giorno, str(destinazione), slot))
             except Exception as errore:
@@ -13438,6 +13556,7 @@ async def controlla_oroscopi(app):
 def main():
 
     inizializza_oroscopi()
+    inizializza_pause_caffe()
     inizializza_programmazioni()
     inizializza_recap()
     inizializza_automazione()
