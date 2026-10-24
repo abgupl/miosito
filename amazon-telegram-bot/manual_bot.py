@@ -9055,6 +9055,10 @@ def intervallo_multiplo(utente, valore=None):
     return row[0] if row else 30
 
 
+def tastiera_annulla_elaborazione():
+    return InlineKeyboardMarkup([[InlineKeyboardButton('🛑 ANNULLA REPOST / LETTURA', callback_data='multi_annulla')]])
+
+
 def tastiera_multiplo(draft):
     if draft.get('tipo') == 'singolo_cronologia':
         return tastiera_confronto_cronologia(bool(draft.get('pronti')) and not draft.get('elaborazione'))
@@ -9216,7 +9220,8 @@ def candidati_repost(canale, quantita):
             continue
         candidati.append('https://www.amazon.it/dp/' + asin)
     random.shuffle(candidati)
-    # Esamina candidati sostitutivi, ma non ricerca all'infinito.
+    # La quantità richiesta è il numero di post da preparare, NON di candidati
+    # da controllare. I candidati aggiuntivi servono solo come sostituti.
     return candidati[:min(300,max(30,quantita*6))]
 
 
@@ -9252,7 +9257,7 @@ async def rapido_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def prepara_repost(messaggio, context, draft):
     try:
         links = await asyncio.to_thread(candidati_repost,draft['canale'],draft['richiesti'])
-        if context.user_data.get('multiplo') is not draft:
+        if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
             return
         draft['candidati'] = len(links)
         if not links:
@@ -9388,9 +9393,19 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
             if draft.get('richiesti') and len(draft['pronti']) >= draft['richiesti']:
                 break
 
-            if context.user_data.get('multiplo') is not draft:
+            if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
                 return
-            await messaggio.edit_text(f"🔎 Prodotto {indice}/{len(links)} — preparazione in corso…")
+            # Nel Repost il numero richiesto è l'obiettivo; la lista più ampia
+            # contiene solo possibili sostituti per gli articoli scartati.
+            if draft.get('tipo') == 'repost':
+                stato = (f"🔁 REPOST: {len(draft['pronti'])}/{draft['richiesti']} post pronti\n"
+                         f"🔎 Candidato esaminato: {indice} (gli altri sono riserve)")
+            else:
+                stato = f"🔎 Prodotto {indice}/{len(links)} — preparazione in corso…"
+            try:
+                await messaggio.edit_text(stato, reply_markup=tastiera_annulla_elaborazione())
+            except Exception:
+                pass
             asin_iniziale = await asyncio.to_thread(risolvi_asin_da_link, link)
             if draft.get('tipo') != 'singolo_cronologia' and prodotto_inviato_ultime_24h(asin_iniziale, _chat_id_per_canale(draft['canale'])):
                 draft['scartati'].append(f"{link} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
@@ -9398,11 +9413,12 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
             async def mostra_tentativo_multiplo(numero):
                 if numero < 6:
                     try:
-                        await messaggio.edit_text(f'🔎 Prodotto {indice}/{len(links)} — tentativo {numero}/6 incompleto. Riprovo automaticamente…')
+                        if context.user_data.get('multiplo') is draft and not draft.get('annullato'):
+                            await messaggio.edit_text(f'🔎 Tentativo {numero}/6 — {len(draft["pronti"])}/{draft.get("richiesti", len(links))} post pronti. Riprovo…', reply_markup=tastiera_annulla_elaborazione())
                     except Exception:
                         pass
             dati = await leggi_offerta_con_sei_tentativi(link, richiedi_immagine=True, callback=mostra_tentativo_multiplo)
-            if context.user_data.get('multiplo') is not draft:
+            if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
                 return
             if not dati:
                 draft['scartati'].append(f'{link} — dati insufficienti dopo 6 tentativi')
@@ -9422,14 +9438,18 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                     continue
                 affiliato = link_affiliato_multiplo(link, asin)
                 foto = await prepara_foto_automatica(dati['immagine'])
+                if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
+                    return
                 # Upload nella chat amministratore: salva un file_id persistente,
                 # senza dipendere da file temporanei o URL al momento dell'invio.
                 anteprima = await messaggio.reply_photo(photo=foto, caption=f"📦 Preparato {indice}/{len(links)}: {str(dati['nome'])[:700]}")
+                if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
+                    return
                 visti.add(asin)
                 draft['pronti'].append({'nome': ' '.join(str(dati['nome']).split())[:500], 'prezzo': pulisci_prezzo(dati['prezzo']), 'vecchio_prezzo': pulisci_prezzo(dati['vecchio_prezzo']) if dati.get('vecchio_prezzo') else 'NO', 'link': affiliato, 'foto_file_id': anteprima.photo[-1].file_id, 'categoria': dati.get('categoria'), 'asin': asin, 'link_originale': link, 'coupon': dati.get('coupon')})
             except Exception as exc:
                 draft['scartati'].append(f"{link} — {str(exc)[:120]}")
-        if context.user_data.get('multiplo') is draft:
+        if context.user_data.get('multiplo') is draft and not draft.get('annullato'):
             draft['elaborazione'] = False
             if draft.get('tipo') == 'singolo_cronologia':
                 await mostra_confronto_cronologia(messaggio,context,draft)
@@ -9477,7 +9497,11 @@ async def ricevi_rapido(update: Update, context: ContextTypes.DEFAULT_TYPE):
         draft['elaborazione'] = True
         draft['richiesti'] = quantita
         draft.pop('repost_attesa_quantita', None)
-        attesa = await update.message.reply_text(f'🔁 Cerco fino a {quantita} prodotti validi nella cronologia degli ultimi 7 giorni…')
+        attesa = await update.message.reply_text(
+            f'🔁 REPOST — Obiettivo: {quantita} post.\n'
+            'Potrei esaminare più prodotti come riserve se alcuni non sono validi.\n'
+            'Premi ANNULLA per interrompere.',
+            reply_markup=tastiera_annulla_elaborazione())
         context.application.create_task(prepara_repost(attesa,context,draft),update=update)
         return RAPIDO
     if draft.get('pronti'):
@@ -9516,8 +9540,9 @@ async def gestisci_multiplo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     azione = query.data
     if azione == 'multi_annulla':
+        draft['annullato'] = True
         context.user_data.pop('multiplo', None)
-        await query.edit_message_text("❌ Lotto annullato. Nessun invio aggiunto.")
+        await query.edit_message_text("🛑 Elaborazione annullata. Nessun nuovo post verrà preparato o programmato.\nLa lettura Amazon già avviata potrebbe terminare in background, ma il risultato sarà ignorato.")
         return ConversationHandler.END
     if draft.get('elaborazione') or draft.get('conferma_in_corso'):
         await query.message.reply_text("⏳ Attendi il completamento dell'operazione in corso.")
