@@ -12881,7 +12881,7 @@ def salva_oroscopi(giornate):
 def tastiera_segni_oroscopo(snapshot_id):
     pulsanti = [InlineKeyboardButton(f"{s} {n}", callback_data=f"oro_segno:{snapshot_id}:{i}")
                 for i, (s, n) in enumerate(OROSCOPO_SEGNI)]
-    return InlineKeyboardMarkup([pulsanti[i:i + 3] for i in range(0, 12, 3)])
+    return InlineKeyboardMarkup([pulsanti[i:i + 2] for i in range(0, 12, 2)])
 
 
 async def invia_anteprima_oroscopo(bot, chat_id, giorno, slot=0, anteprima=True):
