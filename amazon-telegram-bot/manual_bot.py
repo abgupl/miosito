@@ -1551,11 +1551,143 @@ def render_template_generale(dati):
     return '\n'.join(righe)
 
 
+# =========================================================
+# TIPOLOGIA AMAZON: NUOVO / SECONDA MANO / RENEWED
+# Modalita' prudente: se la tipologia non e' verificabile, salta.
+# =========================================================
+
+def riconosci_tipologia_amazon(link, dati=None):
+    """Non deduce la condizione dall'ASIN o dal solo prezzo.
+
+    La pagina e la Creator API possono riferirsi a offerte differenti:
+    un link con offerListingID richiede una verifica dell'offerta specifica.
+    """
+    from urllib.parse import urlsplit, parse_qs
+    dati = dati or {}
+    titolo = str(dati.get('nome') or '').lower()
+    link = str(link or '')
+    parametri = parse_qs(urlsplit(link).query)
+    condizioni = [str(v).strip().lower() for v in (dati.get('condizione'), dati.get('condition'), dati.get('item_condition')) if v]
+    condizione = ' '.join(condizioni)
+    # Un'offerta specifica non e' verificabile tramite i soli dati dell'ASIN.
+    offerta_specifica = any(k.lower() in {'offeringid','offeringid.1','offerlistingid','smid','aod'} for k in parametri)
+    if offerta_specifica and not dati.get('offerta_specifica_verificata'):
+        return 'sconosciuto'
+    if re.search(r'\b(?:amazon renewed|renewed|ricondizionato)\b', titolo) or re.search(r'\b(?:renewed|refurbished|ricondizionato)\b', condizione):
+        return 'renewed'
+    if re.search(r'\b(?:used|usato|seconda mano|warehouse)\b', condizione):
+        return 'seconda_mano' if dati.get('prezzo_offerta_verificato') else 'sconosciuto'
+    if re.search(r'\b(?:new|nuovo)\b', condizione):
+        return 'nuovo'
+    return 'sconosciuto'
+
+
+def prezzi_offerta_validi(dati):
+    """Fallback neutro soltanto con due prezzi numerici, coerenti e positivi."""
+    if not isinstance(dati, dict):
+        return False
+    try:
+        attuale = numero_da_prezzo(str(dati.get('prezzo') or dati.get('prezzo_valore') or ''))
+        prima = numero_da_prezzo(str(dati.get('vecchio_prezzo') or dati.get('vecchio_valore') or ''))
+        return bool(attuale and prima and 0 < attuale < prima)
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def tipo_o_fallback(link, dati):
+    tipo = riconosci_tipologia_amazon(link, dati)
+    if tipo == 'sconosciuto' and prezzi_offerta_validi(dati):
+        return 'standard_neutro'
+    return tipo
+
+
+async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callback=None):
+    """Massimo sei letture: 3 Creators + 3 pagina, con uscita anticipata.
+
+    Una lettura e' valida solo con nome, prezzo e tipologia identificabile
+    oppure due prezzi coerenti per il template standard neutro.
+    """
+    lettori = (leggi_prodotto_creators_da_link, leggi_prodotto_amazon) * 3
+    for indice, lettore in enumerate(lettori, 1):
+        try:
+            risultato = await asyncio.to_thread(lettore, link)
+            if risultato and risultato.get('disponibile') is False:
+                return None
+            if (risultato and risultato.get('nome')
+                    and numero_da_prezzo(str(risultato.get('prezzo') or ''))
+                    and (not richiedi_immagine or risultato.get('immagine'))):
+                tipo = tipo_o_fallback(link, risultato)
+                if tipo != 'sconosciuto':
+                    risultato['tipologia_amazon'] = tipo
+                    risultato['_lettura_offerta_completata'] = True
+                    return risultato
+        except Exception as errore:
+            print(f'Lettura Amazon {indice}/6: {type(errore).__name__}: {errore}')
+        if callback:
+            await callback(indice)
+        if indice < 6:
+            await asyncio.sleep(2 if indice < 3 else 4)
+    return None
+
+
+def dati_automatici_sufficienti(prodotto):
+    """Non ripete chiamate quando search_items ha gia' restituito dati validi."""
+    if not isinstance(prodotto, dict):
+        return False
+    try:
+        prezzo = float(prodotto.get('prezzo_valore') or 0)
+    except (ValueError, TypeError):
+        return False
+    return bool(prodotto.get('nome') and prodotto.get('immagine')
+                and prodotto.get('link') and prezzo > 0
+                and tipo_o_fallback(prodotto.get('link'), prodotto) != 'sconosciuto')
+
+
+async def completa_candidato_automatico(prodotto):
+    """Si usa in ricerca, non nella spedizione del post programmato."""
+    if dati_automatici_sufficienti(prodotto):
+        prodotto['tipologia_amazon'] = tipo_o_fallback(prodotto.get('link'), prodotto)
+        prodotto['_lettura_offerta_completata'] = True
+        return prodotto
+    recuperato = await leggi_offerta_con_sei_tentativi(
+        prodotto.get('link'), richiedi_immagine=True
+    )
+    if not recuperato:
+        return None
+    unito = dict(prodotto)
+    unito.update({k: v for k, v in recuperato.items() if v is not None})
+    if not dati_automatici_sufficienti(unito):
+        return None
+    unito['tipologia_amazon'] = tipo_o_fallback(unito.get('link'), unito)
+    unito['_lettura_offerta_completata'] = True
+    return unito
+
+
+def render_template_condizione(dati):
+    tipo = dati.get('tipologia_amazon')
+    if tipo not in {'seconda_mano', 'renewed'}:
+        return render_template_generale(dati)
+    base, prima, finale, coupon, sconto = importi_template(dati)
+    nome = html.escape(' '.join(str(dati.get('nome') or '').split())[:300])
+    titolo = '♻️ AMAZON SECONDA MANO' if tipo == 'seconda_mano' else '🔄 AMAZON RENEWED'
+    etichetta = 'Prezzo seconda mano' if tipo == 'seconda_mano' else 'Prezzo ricondizionato'
+    righe = [f'<b>{titolo}</b>', '', '🛒 '+nome, '']
+    condizione = str(dati.get('condizione') or '').strip()
+    if condizione:
+        righe.append('📦 Condizione: '+html.escape(condizione[:100]))
+    if prima is not None and finale is not None and prima > finale and dati.get('prezzo_nuovo_verificato'):
+        righe.append('❌ Prezzo nuovo: <s>'+euro_template(prima)+'</s>')
+        righe.append(f'💰 Risparmio rispetto al nuovo: <b>{sconto}%</b>')
+    righe.append('✅ '+etichetta+': <b>'+(euro_template(finale) if finale is not None else 'non disponibile')+'</b>')
+    righe.extend(['', 'Categoria: '+html.escape(hashtag_categoria_post(dati.get('categoria')))])
+    return '\n'.join(righe)
+
+
 def crea_caption_con_link(messaggio, link, messaggio_gia_html=False):
     """Crea una didascalia uniforme senza mostrare l'URL completo."""
     dati=dati_template_da_corpo(messaggio)
     if dati is not None:
-        corpo=render_template_generale(dati)
+        corpo=render_template_condizione(dati)
     elif messaggio_gia_html:
         corpo=messaggio
     else:
@@ -1810,7 +1942,7 @@ async def invia_recap_giornaliero(bot, canale, telegram_chat_id):
         + '\n\n'.join(righe)
         + '\n\n☕ <b>HAI GIÀ LETTO IL TUO OROSCOPO DI OGGI?</b>\n'
           '✨ Scopri cosa ti riservano le stelle!\n\n'
-          '⚠️ Prezzi e disponibilità possono variare.'
+          ''
     )
     url_oroscopo = link_oroscopo_recap(oggi, canale, telegram_chat_id)
     tastiera = (InlineKeyboardMarkup([[InlineKeyboardButton(
@@ -1828,6 +1960,90 @@ async def invia_recap_giornaliero(bot, canale, telegram_chat_id):
     return True
 
 
+def orario_recap_configurato():
+    """Un solo orario persistente per TECH e CASA, letto a ogni ciclo."""
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS recap_config (chiave TEXT PRIMARY KEY, valore TEXT NOT NULL)")
+        row = db.execute("SELECT valore FROM recap_config WHERE chiave='orario'").fetchone()
+    valore = row[0] if row else '22:01'
+    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', valore):
+        return '22:01'
+    return valore
+
+
+def imposta_orario_recap(valore):
+    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', valore):
+        raise ValueError('Orario non valido')
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS recap_config (chiave TEXT PRIMARY KEY, valore TEXT NOT NULL)")
+        db.execute("INSERT OR REPLACE INTO recap_config(chiave, valore) VALUES ('orario', ?)", (valore,))
+
+
+RECAP_ORARIO_ATTESA = 905
+
+
+def tastiera_orario_recap():
+    ora = orario_recap_configurato()
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('21:45', callback_data='recap_time_2145'),
+         InlineKeyboardButton('22:01', callback_data='recap_time_2201')],
+        [InlineKeyboardButton('22:30', callback_data='recap_time_2230'),
+         InlineKeyboardButton('23:00', callback_data='recap_time_2300')],
+        [InlineKeyboardButton('✏️ INSERISCI UN ORARIO', callback_data='recap_time_custom')],
+        [InlineKeyboardButton('⬅️ IMPOSTAZIONI', callback_data='settings_menu')],
+    ])
+
+
+async def menu_orario_recap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        f'🌙 ORARIO RECAP SERALE\n\nOrario attuale: {orario_recap_configurato()} (Italia)\n'
+        'Valido per entrambi i canali TECH e CASA.\n'
+        'Il recap viene inviato una sola volta al giorno per canale, se ci sono offerte.\n\n'
+        'Seleziona un orario oppure inseriscilo manualmente.',
+        reply_markup=tastiera_orario_recap(),
+    )
+    return ConversationHandler.END
+
+
+async def seleziona_orario_recap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    valore = query.data.removeprefix('recap_time_')
+    if valore == 'custom':
+        await query.edit_message_text(
+            '✏️ Scrivi il nuovo orario del recap in formato HH:MM (esempio: 22:15).\n'
+            'L’orario sarà uguale per TECH e CASA. /annulla per uscire.'
+        )
+        return RECAP_ORARIO_ATTESA
+    imposta_orario_recap(valore[:2] + ':' + valore[2:])
+    await query.edit_message_text(
+        f'✅ Recap serale programmato alle {orario_recap_configurato()} per TECH e CASA.',
+        reply_markup=tastiera_orario_recap(),
+    )
+    return ConversationHandler.END
+
+
+async def ricevi_orario_recap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    valore = (update.message.text or '').strip()
+    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', valore):
+        await update.message.reply_text('⚠️ Formato non valido. Scrivi HH:MM, ad esempio 22:15.')
+        return RECAP_ORARIO_ATTESA
+    imposta_orario_recap(valore)
+    await update.message.reply_text(
+        f'✅ Nuovo orario recap: {valore} (Italia), valido per TECH e CASA.',
+        reply_markup=tastiera_orario_recap(),
+    )
+    return ConversationHandler.END
+
+
 async def controlla_recap(app):
 
     while True:
@@ -1836,10 +2052,8 @@ async def controlla_recap(app):
             adesso = datetime.now(ROMA_TZ)
             oggi = adesso.date().isoformat()
 
-            orario_recap_raggiunto = (
-                adesso.hour > 22
-                or (adesso.hour == 22 and adesso.minute >= 1)
-            )
+            ora_recap, minuto_recap = map(int, orario_recap_configurato().split(':'))
+            orario_recap_raggiunto = (adesso.hour, adesso.minute) >= (ora_recap, minuto_recap)
 
             if orario_recap_raggiunto:
                 for canale, telegram_chat_id in (
@@ -2258,6 +2472,9 @@ async def invia_offerta_programmata(
                 bot, f"⏭ Invio multiplo scartato: {nome}\n{link}\nGià pubblicato nelle ultime 24 ore nel canale di destinazione."
             )
             return
+
+    # Il post programmato e' stato preparato durante l'acquisizione del link.
+    # Nessuna seconda lettura Amazon immediatamente prima della pubblicazione.
 
     messaggio_html = messaggio.startswith("__RICERCA_HTML__")
     if messaggio_html:
@@ -4469,6 +4686,8 @@ def estrai_prodotto_creators(item):
             return None
 
         offerta = offerte[0]
+        condizione_api = getattr(offerta, 'condition', None)
+        condizione_api = (getattr(condizione_api, 'value', None) or getattr(condizione_api, 'display_value', None) or str(condizione_api or '')).strip()
         prezzo_api = offerta.price
         denaro = prezzo_api.money
         if not denaro or denaro.amount is None:
@@ -4513,6 +4732,7 @@ def estrai_prodotto_creators(item):
 
         return {
             "asin": asin,
+            "condizione": condizione_api,
             "nome": titolo,
             "prezzo": prezzo,
             "prezzo_valore": prezzo_valore,
@@ -6622,10 +6842,20 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale, canale="t
         ),
         reverse=True,
     )
-    return candidati[0], statistiche
+    # La ricerca e i filtri rimangono invariati. Completiamo soltanto i
+    # candidati con dati insufficienti, PRIMA della fase di pubblicazione.
+    for candidato in candidati:
+        pronto = await completa_candidato_automatico(candidato)
+        if pronto is not None:
+            return pronto, statistiche
+        statistiche['incompleti'] += 1
+        print(f"Offerta automatica saltata dopo recupero: {candidato.get('asin')}")
+    return None, statistiche
 
 
 def crea_corpo_offerta_automatica(prodotto, categoria=None):
+    if prodotto.get('tipologia_amazon') in ('seconda_mano', 'renewed'):
+        return render_template_condizione(prodotto)
     return corpo_pulito_post(prodotto['nome'],prodotto['prezzo'],prodotto.get('vecchio_prezzo'),categoria or prodotto.get('categoria'),prodotto.get('coupon'))
 
 
@@ -6710,6 +6940,19 @@ async def storico_prezzi_non_disponibile(update, context):
 
 
 async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="automatico"):
+    tipo = tipo_o_fallback(prodotto.get('link'), prodotto)
+    if tipo == 'sconosciuto' and not prodotto.get('_lettura_offerta_completata'):
+        # Solo per pubblicazioni dirette non passate dalla ricerca automatica.
+        # La ricerca automatica ha gia' completato l'acquisizione; nessuna
+        # seconda lettura viene eseguita al momento del suo invio.
+        recuperato = await leggi_offerta_con_sei_tentativi(prodotto.get('link'), richiedi_immagine=True)
+        if not recuperato:
+            raise ValueError('Offerta non leggibile dopo 6 tentativi: prodotto saltato')
+        prodotto.update(recuperato)
+        tipo = tipo_o_fallback(prodotto.get('link'), prodotto)
+    elif tipo == 'sconosciuto':
+        raise ValueError('Offerta non verificabile: prodotto saltato')
+    prodotto['tipologia_amazon'] = tipo
     nome = prodotto["nome"]
     prezzo_numero = _prezzo_italiano(prodotto["prezzo_valore"])
     vecchio_numero = None
@@ -6717,16 +6960,6 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
         base = prodotto.get("vecchio_valore")
         if base is not None:
             vecchio_numero = _prezzo_italiano(base)
-
-    try:
-        pagina_coupon=await asyncio.to_thread(leggi_prodotto_amazon,prodotto['link'])
-        if pagina_coupon and pagina_coupon.get('coupon'):
-            prezzo_pagina=numero_da_prezzo(pagina_coupon.get('prezzo'))
-            prezzo_api=numero_da_prezzo(prodotto.get('prezzo'))
-            if prezzo_pagina is not None and prezzo_api is not None and abs(prezzo_pagina-prezzo_api)<0.005:
-                prodotto['coupon']=pagina_coupon['coupon']
-    except Exception as exc:
-        print(f'Coupon automatico non verificabile: {type(exc).__name__}')
 
     corpo_messaggio = crea_corpo_offerta_automatica(prodotto)
     messaggio = crea_caption_con_link(
@@ -7896,6 +8129,7 @@ def menu_impostazioni():
         [InlineKeyboardButton("📢 GESTIONE CANALI", callback_data="channels_manage")],
         [InlineKeyboardButton("🎨 GRAFICA E TEMPLATE", callback_data="template")],
         [InlineKeyboardButton("🎯 FILTRI E PRIORITÀ", callback_data="auto_filtri")],
+        [InlineKeyboardButton("🌙 ORARIO RECAP SERALE", callback_data="recap_time_menu")],
         [InlineKeyboardButton("📊 STATO DEL BOT", callback_data="bot_status")],
         [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
     ])
@@ -8462,86 +8696,25 @@ async def ricevi_link(
         )
     )
 
-    dati = None
-    dati_parziali = None
+    async def mostra_tentativo(numero):
+        if numero < 6:
+            try:
+                await messaggio_attesa.edit_text(f'🔎 Lettura offerta Amazon: tentativo {numero}/6 incompleto. Riprovo automaticamente…')
+            except Exception:
+                pass
 
-    def dati_completi(valore):
-        return bool(valore and valore.get("nome") and valore.get("prezzo"))
-
-    # Prima prova con Creator API. Se restituisce solo dati parziali,
-    # li conserviamo ma continuiamo comunque con 3 tentativi dalla pagina Amazon.
-    try:
-        dati_creators = await asyncio.to_thread(leggi_prodotto_creators_da_link, link)
-    except Exception as errore:
-        print(f"Creator API non disponibile per inserimento manuale: {errore}")
-        dati_creators = None
-
-    if dati_creators:
-        dati_parziali = dati_creators
-        if dati_creators.get("immagine"):
-            context.user_data["foto_url_automatica"] = dati_creators.get("immagine")
-        if dati_creators.get("asin"):
-            context.user_data["asin"] = dati_creators.get("asin")
-        if dati_completi(dati_creators):
-            dati = dati_creators
-
-    # Se non abbiamo ancora nome + prezzo, esegue SEMPRE fino a 3 tentativi.
-    # Un risultato parziale non viene considerato riuscito.
-    if not dati_completi(dati):
-        for tentativo in range(1, 4):
-            risultato = await asyncio.to_thread(
-                leggi_prodotto_amazon,
-                link,
-            )
-
-            if risultato:
-                dati_parziali = risultato
-                if risultato.get("immagine") and not context.user_data.get("foto_url_automatica"):
-                    context.user_data["foto_url_automatica"] = risultato.get("immagine")
-                if risultato.get("asin") and not context.user_data.get("asin"):
-                    context.user_data["asin"] = risultato.get("asin")
-
-            if dati_completi(risultato):
-                dati = risultato
-                break
-
-            if tentativo < 3:
-                await messaggio_attesa.edit_text(
-                    f"🔎 Tentativo {tentativo}/3 incompleto.\n"
-                    "Riprovo automaticamente..."
-                )
-                await asyncio.sleep(2)
-
-    # Se dopo i 3 tentativi abbiamo solo informazioni parziali,
-    # le conserviamo per l'eventuale inserimento manuale ma mostriamo RIPROVA.
-    if not dati_completi(dati):
-        dati = dati_parziali
-
-    if dati and dati.get("immagine") and not context.user_data.get("foto_url_automatica"):
-        context.user_data["foto_url_automatica"] = dati.get("immagine")
-
-    if not dati_completi(dati):
-
-        tastiera_riprova = InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("🔄 RIPROVA", callback_data="dati_riprova")],
-                [InlineKeyboardButton("✏️ INSERISCI MANUALMENTE", callback_data="dati_manual")],
-            ]
-        )
-
-        testo_esito = (
-            "⚠️ Ho trovato solo una parte dei dati dopo 3 tentativi."
-            if dati
-            else "⚠️ Non sono riuscito a leggere automaticamente i dati dopo 3 tentativi."
-        )
-        await messaggio_attesa.edit_text(
-            testo_esito
-            + "\n\nPuoi riprovare: verranno eseguiti altri 3 tentativi. "
-              "In alternativa puoi continuare manualmente.",
-            reply_markup=tastiera_riprova,
-        )
-        return DATI_AUTOMATICI
-
+    dati = await leggi_offerta_con_sei_tentativi(link, callback=mostra_tentativo)
+    if not dati:
+        await messaggio_attesa.edit_text('⏭️ PRODOTTO SALTATO\n\nDati insufficienti dopo 6 tentativi automatici. Invia un altro link Amazon.')
+        context.user_data.clear()
+        return LINK
+    if dati.get('immagine'):
+        context.user_data['foto_url_automatica'] = dati['immagine']
+    if dati.get('asin'):
+        context.user_data['asin'] = dati['asin']
+    tipo = tipo_o_fallback(link, dati)
+    context.user_data['tipologia_amazon'] = tipo
+    context.user_data['condizione'] = dati.get('condizione')
     context.user_data["categoria"] = dati.get("categoria")
     context.user_data["coupon"] = dati.get("coupon")
     nome = dati.get("nome")
@@ -9222,42 +9395,20 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
             if draft.get('tipo') != 'singolo_cronologia' and prodotto_inviato_ultime_24h(asin_iniziale, _chat_id_per_canale(draft['canale'])):
                 draft['scartati'].append(f"{link} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
                 continue
-            dati = None
-            errore_finale = 'dati incompleti dopo 6 tentativi'
-            non_disponibile = False
-            # I due cicli sono automatici e non richiedono il pulsante Riprova.
-            for ciclo in range(2):
-                for tentativo in range(3):
-                    if context.user_data.get('multiplo') is not draft:
-                        return
+            async def mostra_tentativo_multiplo(numero):
+                if numero < 6:
                     try:
-                        risultato = None
-                        if ciclo == 0 and tentativo == 0:
-                            try:
-                                risultato = await asyncio.to_thread(leggi_prodotto_creators_da_link, link)
-                            except Exception:
-                                pass
-                        if not risultato or not risultato.get('nome') or not risultato.get('prezzo') or not risultato.get('immagine'):
-                            risultato = await asyncio.to_thread(leggi_prodotto_amazon, link)
-                        if risultato and risultato.get('disponibile') is False:
-                            non_disponibile = True
-                            errore_finale = 'prodotto non disponibile'
-                            break
-                        if risultato and risultato.get('nome') and numero_da_prezzo(risultato.get('prezzo')) and risultato.get('immagine'):
-                            dati = risultato
-                            break
-                    except Exception as exc:
-                        print(f"Invio multiplo: recupero fallito ({ciclo*3+tentativo+1}/6): {type(exc).__name__}")
-                    if ciclo*3+tentativo < 5:
-                        await messaggio.edit_text(f"🔎 Prodotto {indice}/{len(links)} — tentativo {ciclo*3+tentativo+1}/6 incompleto. Riprovo automaticamente…")
-                        await asyncio.sleep(2 if ciclo == 0 else 4)
-                if dati or non_disponibile:
-                    break
+                        await messaggio.edit_text(f'🔎 Prodotto {indice}/{len(links)} — tentativo {numero}/6 incompleto. Riprovo automaticamente…')
+                    except Exception:
+                        pass
+            dati = await leggi_offerta_con_sei_tentativi(link, richiedi_immagine=True, callback=mostra_tentativo_multiplo)
             if context.user_data.get('multiplo') is not draft:
                 return
             if not dati:
-                draft['scartati'].append(f"{link} — {errore_finale}")
+                draft['scartati'].append(f'{link} — dati insufficienti dopo 6 tentativi')
                 continue
+            tipo = tipo_o_fallback(link, dati)
+            dati['tipologia_amazon'] = tipo
             if draft.get('tipo') == 'repost' and not offerta_attuale_rilevata(dati):
                 draft['scartati'].append(f"{link} — nessuno sconto attuale né coupon rilevato")
                 continue
@@ -12794,7 +12945,7 @@ async def template_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     q=update.callback_query
     await q.answer()
-    await q.message.reply_text('🎨 FORMATO GENERALE AUTOMATICO\n\n🏷 Offerta: meno del 30%\n🔥 Super offerta: dal 30% al 69%\n🚨 Sconto extra: dal 70%\n🎟 Solo coupon: quando manca una riduzione sul prezzo esposto.\n\nPrezzo finale con coupon quando calcolabile, istruzione per attivarlo e categoria sempre presenti. La categoria sconosciuta usa #OfferteAmazon.',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Impostazioni',callback_data='settings_menu')]]))
+    await q.message.reply_text('🎨 GRAFICA E TEMPLATE\n\n🏷 Offerta: meno del 30%\n🔥 Super offerta: dal 30% al 69%\n🚨 Sconto extra: dal 70%\n🎟 Solo coupon: quando manca una riduzione sul prezzo esposto.\n♻️ Amazon Seconda mano: solo se condizione e prezzo specifico sono verificati.\n🔄 Amazon Renewed: ricondizionato identificato esplicitamente.\n\n❓ Tipologia non verificabile → SALTA IL PRODOTTO.\n\nPrezzo e disponibilità possono variare.',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Impostazioni',callback_data='settings_menu')]]))
 
 
 async def scegli_template_menu(
@@ -13869,6 +14020,19 @@ def main():
         entry_points=[CallbackQueryHandler(menu_fascia_manuale, pattern=r'^mf_(menu|toggle|inizio|fine)$')],
         states={'FASCIA_ORARIO':[MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_fascia_manuale)]},
         fallbacks=[CommandHandler('annulla',annulla),CallbackQueryHandler(mostra_menu_pubblicazione,pattern='^publish_menu$')],
+        allow_reentry=True,
+    ))
+
+    app.add_handler(ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(menu_orario_recap, pattern=r'^recap_time_menu$'),
+            CallbackQueryHandler(seleziona_orario_recap, pattern=r'^recap_time_(?:custom|\d{4})$'),
+        ],
+        states={RECAP_ORARIO_ATTESA: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_orario_recap),
+            CallbackQueryHandler(seleziona_orario_recap, pattern=r'^recap_time_(?:custom|\d{4})$'),
+        ]},
+        fallbacks=[CommandHandler('annulla', annulla)],
         allow_reentry=True,
     ))
 
