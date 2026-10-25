@@ -9238,16 +9238,19 @@ def asin_in_programmati(destinazione):
 
 
 def candidati_repost(canale, quantita):
-    """Ultimi 7 giorni, un solo candidato per ASIN, esclusi recenti e in coda."""
+    """Storico completo per il repost; metadata storici NON validano offerte attuali."""
     destinazione = _chat_id_per_canale(canale)
     adesso = datetime.now(timezone.utc)
     limite = adesso - timedelta(days=7)
     with sqlite3.connect(DB_PATH, timeout=30) as db:
-        righe = db.execute("SELECT asin,link,pubblicata_il FROM recap_offerte WHERE CAST(telegram_chat_id AS TEXT)=? AND COALESCE(origine,'manuale')<>'raccolta' ORDER BY pubblicata_il DESC,id DESC", (destinazione,)).fetchall()
+        righe = db.execute("""SELECT asin,link,pubblicata_il,nome,foto_file_id,categoria
+            FROM recap_offerte WHERE CAST(telegram_chat_id AS TEXT)=?
+            AND COALESCE(origine,'manuale')<>'raccolta'
+            ORDER BY pubblicata_il DESC,id DESC""", (destinazione,)).fetchall()
     in_coda = asin_in_programmati(destinazione)
     visti = set()
     candidati = []
-    for asin, link, data in righe:
+    for asin, link, data, nome, foto_id, categoria in righe:
         quando = _data_sqlite(data)
         if not quando or not limite <= quando.astimezone(timezone.utc) <= adesso:
             continue
@@ -9255,13 +9258,53 @@ def candidati_repost(canale, quantita):
         if not asin or asin in visti:
             continue
         visti.add(asin)
-        if asin in in_coda or prodotto_inviato_ultime_24h(asin,destinazione):
+        if asin in in_coda or prodotto_inviato_ultime_24h(asin, destinazione):
             continue
-        candidati.append('https://www.amazon.it/dp/' + asin)
+        candidati.append({'link': 'https://www.amazon.it/dp/' + asin,
+                          'nome': nome, 'foto_file_id': foto_id, 'categoria': categoria})
+    # Preferire prodotti con nome e foto salvati; mescolare solo a parita' di completezza.
     random.shuffle(candidati)
-    # La quantità richiesta è il numero di post da preparare, NON di candidati
-    # da controllare. I candidati aggiuntivi servono solo come sostituti.
+    candidati.sort(key=lambda r: bool(r.get('nome')) + bool(r.get('foto_file_id')), reverse=True)
     return candidati[:min(300,max(30,quantita*6))]
+
+
+async def leggi_offerta_repost(link, storico, callback=None):
+    """Richiede sempre prezzi/coupon e disponibilita' attuali; storico solo per nome/foto."""
+    lettori = (leggi_prodotto_creators_da_link, leggi_prodotto_amazon) * 3
+    errore = 'prezzo attuale non rilevato'
+    senza_offerta = 0
+    for indice, lettore in enumerate(lettori, 1):
+        try:
+            dati = await asyncio.to_thread(lettore, link)
+            if dati and dati.get('disponibile') is False:
+                return None, 'prodotto non disponibile'
+            if dati:
+                prezzo = numero_da_prezzo(str(dati.get('prezzo') or ''))
+                if prezzo is not None and prezzo > 0:
+                    if not offerta_attuale_rilevata(dati):
+                        # Conferma su due letture indipendenti prima dello scarto.
+                        senza_offerta += 1
+                        errore = 'nessuno sconto o coupon attuale rilevato'
+                        if senza_offerta >= 2:
+                            return None, errore
+                        continue
+                    dati['nome'] = dati.get('nome') or storico.get('nome')
+                    dati['_foto_storica_repost'] = storico.get('foto_file_id')
+                    dati['categoria'] = dati.get('categoria') or storico.get('categoria')
+                    if dati.get('nome') and (dati.get('immagine') or storico.get('foto_file_id')):
+                        dati['tipologia_amazon'] = tipo_o_fallback(link, dati)
+                        return dati, None
+                    errore = 'nome o foto mancanti anche nella cronologia'
+                else:
+                    errore = 'prezzo attuale non rilevato'
+        except Exception as exc:
+            errore = f'errore Amazon: {type(exc).__name__}'
+            print(f'Repost lettura {indice}/6: {type(exc).__name__}: {exc}')
+        if callback:
+            await callback(indice)
+        if indice < 6:
+            await asyncio.sleep(2 if indice < 3 else 4)
+    return None, errore
 
 
 async def repost_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -9428,7 +9471,9 @@ async def decidi_ricontrollo_cronologia(update: Update, context: ContextTypes.DE
 async def prepara_lotto_multiplo(messaggio, context, draft, links):
     visti = set()
     try:
-        for indice, link in enumerate(links, 1):
+        for indice, candidato in enumerate(links, 1):
+            storico = candidato if isinstance(candidato, dict) else {}
+            link = storico.get('link') if storico else candidato
             if draft.get('richiesti') and len(draft['pronti']) >= draft['richiesti']:
                 break
 
@@ -9456,11 +9501,15 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                             await messaggio.edit_text(f'🔎 Tentativo {numero}/6 — {len(draft["pronti"])}/{draft.get("richiesti", len(links))} post pronti. Riprovo…', reply_markup=tastiera_annulla_elaborazione())
                     except Exception:
                         pass
-            dati = await leggi_offerta_con_sei_tentativi(link, richiedi_immagine=True, callback=mostra_tentativo_multiplo)
+            if draft.get('tipo') == 'repost':
+                dati, motivo_repost = await leggi_offerta_repost(link, storico, mostra_tentativo_multiplo)
+            else:
+                dati = await leggi_offerta_con_sei_tentativi(link, richiedi_immagine=True, callback=mostra_tentativo_multiplo)
+                motivo_repost = None
             if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
                 return
             if not dati:
-                draft['scartati'].append(f'{link} — dati insufficienti dopo 6 tentativi')
+                draft['scartati'].append(f'{link} — {motivo_repost or "dati insufficienti dopo 6 tentativi"}')
                 continue
             tipo = tipo_o_fallback(link, dati)
             dati['tipologia_amazon'] = tipo
@@ -9476,7 +9525,11 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                     draft['duplicati'] += 1
                     continue
                 affiliato = link_affiliato_multiplo(link, asin)
-                foto = await prepara_foto_automatica(dati['immagine'])
+                foto_storica = dati.get('_foto_storica_repost') if draft.get('tipo') == 'repost' else None
+                if foto_storica:
+                    foto = foto_storica
+                else:
+                    foto = await prepara_foto_automatica(dati['immagine'])
                 if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
                     return
                 # Upload nella chat amministratore: salva un file_id persistente,
