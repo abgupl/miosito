@@ -13862,21 +13862,20 @@ async def risposta_quiz(query):
                 if not inserito:
                     await query.answer('✅ Hai già partecipato a questo quiz!\n✨ Torna domani per mettere nuovamente alla prova le tue conoscenze!', show_alert=True)
                     return
+        # TEST: un solo popup Telegram, nessun messaggio privato.
+        # Telegram limita answerCallbackQuery a 200 caratteri.
         pref = '🎉 Esatto!' if scelta == giusta else '❌ Non esatto.'
-        conclusione = '✨ Torna domani per mettere nuovamente alla prova le tue conoscenze!'
-        testo = (f"{pref}\n✅ Risposta corretta: {item['risposte'][giusta]}\n\n"
-                 f"📚 {item['approfondimento']}\n\n"
-                 f"🧠 Sfida completata! La tua risposta è stata registrata.\n{conclusione}")
-        if len(testo) <= 195:
-            await query.answer(testo, show_alert=True)
+        intestazione = f"{pref}\n✅ Risposta corretta: {item['risposte'][giusta]}\n\n📚 "
+        spiegazione = item['approfondimento'].strip()
+        spazio = 200 - len(intestazione)
+        if spazio <= 0:
+            # Risposte insolitamente lunghe: conserva almeno l'esito.
+            popup = intestazione[:200]
+        elif len(spiegazione) <= spazio:
+            popup = intestazione + spiegazione
         else:
-            breve = (f"{pref}\n✅ {item['risposte'][giusta]}\n\n"
-                     f"📚 {item['approfondimento'][:65]}…\n\n{conclusione}")
-            await query.answer(breve[:200], show_alert=True)
-            try:
-                await query.get_bot().send_message(chat_id=uid, text=testo)
-            except Exception:
-                pass  # DM consentito solo se l'utente ha già avviato il bot.
+            popup = intestazione + spiegazione[:max(0, spazio - 1)].rstrip() + '…'
+        await query.answer(popup[:200], show_alert=True)
     except Exception as e:
         await query.answer(f'Quiz non disponibile: {str(e)[:100]}', show_alert=True)
 
