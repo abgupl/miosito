@@ -13790,6 +13790,7 @@ def inizializza_quiz():
         CREATE TABLE IF NOT EXISTS quiz_giorni (giorno TEXT PRIMARY KEY, contenuto TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS quiz_uscite (giorno TEXT PRIMARY KEY, stato TEXT NOT NULL, message_id INTEGER, pubblicato_il TEXT, errore TEXT);
         CREATE TABLE IF NOT EXISTS quiz_voti (giorno TEXT NOT NULL, user_id INTEGER NOT NULL, username TEXT, scelta INTEGER NOT NULL, corretta INTEGER NOT NULL, votato_il TEXT NOT NULL, PRIMARY KEY(giorno,user_id));
+        CREATE TABLE IF NOT EXISTS quiz_voti_test (giorno TEXT NOT NULL, user_id INTEGER NOT NULL, scelta INTEGER NOT NULL, votato_il TEXT NOT NULL, PRIMARY KEY(giorno,user_id));
         """)
         defaults={'attivo':False,'ora':'17:00','foto':'','promemoria':'','esaurimento':''}
         db.executemany('INSERT OR IGNORE INTO quiz_config VALUES (?,?)',[(k,json.dumps(v)) for k,v in defaults.items()])
@@ -13832,7 +13833,7 @@ def tastiera_quiz(g):
     with sqlite3.connect(DB_PATH,timeout=30) as db:
         r=db.execute('SELECT contenuto FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
     item=json.loads(r[0])
-    return InlineKeyboardMarkup([[InlineKeyboardButton(f'{chr(65+i)}) {x}',callback_data=f'quiz_r:{g}:{i}')] for i,x in enumerate(item['risposte'])])
+    return InlineKeyboardMarkup([[InlineKeyboardButton(x,callback_data=f'quiz_r:{g}:{i}')] for i,x in enumerate(item['risposte'])])
 
 async def risposta_quiz(query):
     try:
@@ -13856,16 +13857,26 @@ async def risposta_quiz(query):
                 and str(query.message.chat_id) == str(CHANNEL_ID)
             )
             if ufficiale:
-                # Vincolo PRIMARY KEY(giorno,user_id): il primo voto resta definitivo.
+                # Il voto ufficiale viene registrato una sola volta per utente e data.
                 inserito = db.execute(
                     'INSERT OR IGNORE INTO quiz_voti VALUES (?,?,?,?,?,?)',
                     (g, uid, query.from_user.username, scelta, int(scelta == giusta),
                      datetime.now(timezone.utc).isoformat())
                 ).rowcount
-                if not inserito:
-                    await query.answer('🧠 Hai già risposto!\nTorna domani per mettere nuovamente alla prova le tue conoscenze!', show_alert=True)
-                    return
-        # TEST: un solo popup Telegram, nessun messaggio privato.
+            else:
+                # Anche l'anteprima privata blocca i tentativi successivi.
+                # I test sono separati dalle statistiche e dai voti del canale.
+                inserito = db.execute(
+                    'INSERT OR IGNORE INTO quiz_voti_test VALUES (?,?,?,?)',
+                    (g, uid, scelta, datetime.now(timezone.utc).isoformat())
+                ).rowcount
+            if not inserito:
+                await query.answer(
+                    '🧠 Hai già risposto al quiz di oggi!\n✨ Torna domani per una nuova sfida!',
+                    show_alert=True
+                )
+                return
+        # Un solo popup Telegram, nessun messaggio privato (test e canale).
         # Telegram limita answerCallbackQuery a 200 caratteri.
         # Formato compatto: ❌ solo se errata, poi risposta e 📚 spiegazione.
         # Manteniamo la risposta corretta visibile e non tagliamo parole a metà.
