@@ -13903,7 +13903,8 @@ async def pannello_quiz(msg):
         gg=[r[0] for r in db.execute('SELECT giorno FROM quiz_giorni WHERE giorno>=? ORDER BY giorno',(oggi,))]
     await msg.reply_text(f"🧠 QUIZ DEL CAFFÈ — TECH\n\nStato: {'ATTIVO' if c['attivo'] else 'SOSPESO'}\n🕒 Orario: {c['ora']} (Italia)\n🖼 Foto: {'caricata' if c['foto'] else 'da caricare'}\n📅 Quiz disponibili: {len(gg)}\nUltima data: {gg[-1] if gg else 'nessuna'}\n⏸ Pausa offerte: 30 minuti",reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton('📥 Carica quiz',callback_data='quiz_carica'),InlineKeyboardButton('🖼 Imposta foto',callback_data='quiz_foto')],
-        [InlineKeyboardButton('🕒 Cambia orario',callback_data='quiz_ora'),InlineKeyboardButton('👁 Anteprima',callback_data='quiz_preview')],
+        [InlineKeyboardButton('🕒 Cambia orario',callback_data='quiz_ora'),InlineKeyboardButton('📅 Calendario quiz',callback_data='quiz_cal:0')],
+        [InlineKeyboardButton('👁 Anteprima di oggi',callback_data='quiz_preview')],
         [InlineKeyboardButton('📊 Statistiche',callback_data='quiz_stats'),InlineKeyboardButton('▶️ Attiva' if not c['attivo'] else '⏸ Sospendi',callback_data='quiz_toggle')],
         [InlineKeyboardButton('⬅️ Rubrica',callback_data='rub_menu')]]))
 
@@ -13929,6 +13930,44 @@ async def azione_quiz(dato,msg,context):
                 disponibile=db.execute('SELECT 1 FROM quiz_giorni WHERE giorno>=? LIMIT 1',(oggi,)).fetchone()
             if not c['foto'] or not disponibile: raise ValueError('Prima carica foto e quiz per le prossime giornate.')
         imposta_quiz('attivo',not c['attivo']); await pannello_quiz(msg); return
+    if dato.startswith('quiz_cal:'):
+        # Elenco completo, comprese le date passate, come nel calendario oroscopo.
+        try: pagina = max(0, int(dato.split(':', 1)[1]))
+        except (ValueError, IndexError): pagina = 0
+        with sqlite3.connect(DB_PATH, timeout=30) as db:
+            righe = db.execute("SELECT g.giorno, u.stato FROM quiz_giorni g LEFT JOIN quiz_uscite u ON u.giorno=g.giorno ORDER BY g.giorno").fetchall()
+        if not righe: raise ValueError('Nessun quiz caricato. Usa 📥 Carica quiz.')
+        pagine = max(1, (len(righe) + 6) // 7)
+        pagina = min(pagina, pagine - 1)
+        bottoni = []
+        for giorno, stato in righe[pagina*7:(pagina+1)*7]:
+            simbolo = '✅' if stato == 'inviato' else ('⚠️' if stato else '👁')
+            bottoni.append([InlineKeyboardButton(f'{simbolo} {giorno}', callback_data=f'quiz_det:{giorno}:{pagina}')])
+        nav = []
+        if pagina: nav.append(InlineKeyboardButton('⬅️ Precedenti', callback_data=f'quiz_cal:{pagina-1}'))
+        if pagina + 1 < pagine: nav.append(InlineKeyboardButton('Successivi ➡️', callback_data=f'quiz_cal:{pagina+1}'))
+        if nav: bottoni.append(nav)
+        bottoni.append([InlineKeyboardButton('⬅️ Menu Quiz', callback_data='quiz_menu')])
+        await msg.reply_text(f'📅 CALENDARIO QUIZ TECH\nPagina {pagina+1}/{pagine} · {len(righe)} quiz\n\n👁 Da pubblicare · ✅ Pubblicato · ⚠️ Da verificare\n\nSeleziona una data per leggere domanda, risposte e spiegazione in privato.', reply_markup=InlineKeyboardMarkup(bottoni))
+        return
+    if dato.startswith('quiz_det:'):
+        parti = dato.split(':')
+        if len(parti) != 3: raise ValueError('Data quiz non valida.')
+        _, giorno, pagina = parti
+        with sqlite3.connect(DB_PATH, timeout=30) as db:
+            r = db.execute('SELECT contenuto FROM quiz_giorni WHERE giorno=?', (giorno,)).fetchone()
+            uscita = db.execute('SELECT stato FROM quiz_uscite WHERE giorno=?', (giorno,)).fetchone()
+        if not r: raise ValueError('Quiz non trovato per questa data.')
+        item = json.loads(r[0]); giusta = int(item['corretta'])
+        righe = [f'🧠 QUIZ TECH — {giorno}', f"❓ {item['domanda']}", '']
+        for i, risposta in enumerate(item['risposte']):
+            righe.append(f"{'✅ ' if i == giusta else ''}{chr(65+i)}) {risposta}")
+        righe.extend(['', '📚 Spiegazione completa:', item['approfondimento'], '',
+                      '📢 Stato: ' + (uscita[0] if uscita else 'non ancora pubblicato')])
+        await msg.reply_text('\n'.join(righe), reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('⬅️ Calendario quiz', callback_data=f'quiz_cal:{pagina}')],
+            [InlineKeyboardButton('🧠 Menu Quiz', callback_data='quiz_menu')]]))
+        return
     if dato=='quiz_preview':
         oggi=datetime.now(ROMA_TZ).date().isoformat()
         with sqlite3.connect(DB_PATH,timeout=30) as db:
@@ -13955,10 +13994,12 @@ async def input_quiz(msg,context,modalita):
         f=await msg.document.get_file(); dati=await f.download_as_bytearray()
         giorni=valida_file_quiz(bytes(dati).decode('utf-8-sig'))
         with sqlite3.connect(DB_PATH,timeout=30) as db:
-            for g in giorni:
-                if db.execute('SELECT 1 FROM quiz_uscite WHERE giorno=?',(g,)).fetchone(): raise ValueError(f'{g}: quiz già pubblicato o prenotato; non sovrascrivibile.')
-            db.executemany('INSERT OR REPLACE INTO quiz_giorni VALUES (?,?)',[(g,json.dumps(item,ensure_ascii=False)) for g,item in giorni.items()])
-        await msg.reply_text(f'✅ Caricati {len(giorni)} quiz, dal {min(giorni)} al {max(giorni)}.')
+            # I quiz già pubblicati o prenotati non vengono mai alterati.
+            bloccati = {r[0] for r in db.execute('SELECT giorno FROM quiz_uscite WHERE giorno IN (' + ','.join('?' for _ in giorni) + ')', tuple(giorni))}
+            aggiornabili = [(g, json.dumps(item, ensure_ascii=False)) for g,item in giorni.items() if g not in bloccati]
+            if aggiornabili:
+                db.executemany('INSERT OR REPLACE INTO quiz_giorni VALUES (?,?)', aggiornabili)
+        await msg.reply_text(f'✅ Quiz caricati/aggiornati: {len(aggiornabili)} su {len(giorni)}.\n🔒 Già pubblicati o prenotati, lasciati invariati: {len(bloccati)}.\n📅 Dal {min(giorni)} al {max(giorni)}.\nControlla tutto da 📅 Calendario quiz.')
     context.user_data.pop('oroscopo_modalita',None)
     await pannello_quiz(msg)
 
