@@ -14021,7 +14021,7 @@ async def invia_quiz(bot,chat_id,g,anteprima=False):
         row=db.execute('SELECT contenuto FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
     if not row: raise ValueError('Quiz mancante per '+g)
     item=json.loads(row[0])
-    return await bot.send_photo(chat_id=chat_id,photo=c['foto'],caption=f"☕🧠 IL QUIZ DEL CAFFÈ — TECH\n📅 {g}\n\n❓ {item['domanda']}\n\n👇 Scegli la tua risposta e scopri subito la spiegazione!",reply_markup=tastiera_quiz(g))
+    return await bot.send_photo(chat_id=chat_id,photo=c['foto'],caption=f"🧠 QUIZ TECH\n📅 {datetime.strptime(g, '%Y-%m-%d').strftime('%d/%m/%Y')}\n\n⚡ La sfida del giorno!\nQuattro risposte, una sola corretta. Riuscirai a indovinarla?\n\n❓ {item['domanda']}",reply_markup=tastiera_quiz(g))
 
 async def pubblica_quiz(app,adesso=None):
     adesso=adesso or datetime.now(ROMA_TZ)
@@ -14059,7 +14059,7 @@ async def controlla_quiz(app):
                     ultimo=r[0]; scadenza=datetime.fromisoformat(f"{ultimo}T{c['ora']}").replace(tzinfo=ROMA_TZ)
                     adesso=datetime.now(ROMA_TZ)
                     if timedelta(0)<=scadenza-adesso<=timedelta(hours=24) and c.get('promemoria')!=ultimo and ADMIN_ID:
-                        await app.bot.send_message(chat_id=ADMIN_ID,text=f'⚠️ Quiz TECH: archivio in esaurimento il {ultimo}. Richiedi il prossimo file da 30 giorni.')
+                        await app.bot.send_message(chat_id=ADMIN_ID,text=f'⏰ PROMEMORIA QUIZ TECH\n\n📅 Ultimo quiz disponibile: {datetime.strptime(ultimo, "%Y-%m-%d").strftime("%d/%m/%Y")} alle {c["ora"]}.\n\n📥 Mancano meno di 24 ore alla conclusione del ciclo: carica il nuovo file JSON da 30 giorni tramite ☕ Rubrica → 🧠 Quiz TECH → Carica quiz.')
                         imposta_quiz('promemoria',ultimo)
             await pubblica_quiz(app)
         except Exception as e: print('Errore quiz TECH:',type(e).__name__,str(e)[:300])
