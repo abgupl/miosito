@@ -13972,7 +13972,7 @@ async def azione_quiz(dato,msg,context):
         item = json.loads(r[0]); giusta = int(item['corretta'])
         righe = [f'🧠 QUIZ TECH — {giorno}', f"❓ {item['domanda']}", '']
         for i, risposta in enumerate(item['risposte']):
-            righe.append(f"{'✅ ' if i == giusta else ''}{chr(65+i)}) {risposta}")
+            righe.append(f"{'✅ ' if i == giusta else '▫️ '}{risposta}")
         righe.extend(['', '📚 Spiegazione completa:', item['approfondimento'], '',
                       '📢 Stato: ' + (uscita[0] if uscita else 'non ancora pubblicato')])
         await msg.reply_text('\n'.join(righe), reply_markup=InlineKeyboardMarkup([
