@@ -7,6 +7,9 @@ import csv
 import re
 import random
 import threading
+import hmac
+import hashlib
+import time
 import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO, StringIO
@@ -27,6 +30,7 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    WebAppInfo,
     InputMediaPhoto,
 )
 
@@ -781,6 +785,36 @@ def foto_offerta_per_web(offerta_id):
     return contenuto, tipo
 
 
+# Mini App: impostare QUIZ_WEBAPP_URL=https://<dominio-railway>/quiz-app
+# e QUIZ_BOT_USERNAME senza @. La verifica initData e il voto sono server-side.
+def quiz_web_url():
+    return (os.getenv('QUIZ_WEBAPP_URL') or '').strip().rstrip('/')
+
+def quiz_bot_username():
+    return (os.getenv('QUIZ_BOT_USERNAME') or '').strip().lstrip('@')
+
+def verifica_init_data(init_data):
+    valori = dict(__import__('urllib.parse', fromlist=['parse_qsl']).parse_qsl(init_data, keep_blank_values=True))
+    firma = valori.pop('hash', '')
+    try:
+        data_auth = int(valori.get('auth_date', '0'))
+        if abs(time.time() - data_auth) > 86400: return None
+        stringa = '\n'.join(f'{k}={v}' for k,v in sorted(valori.items()))
+        segreto = hmac.new(b'WebAppData', TOKEN.encode(), hashlib.sha256).digest()
+        attesa = hmac.new(segreto, stringa.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(firma, attesa): return None
+        return int(json.loads(valori['user'])['id'])
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+QUIZ_APP_HTML = r'''<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BestPrice24h Quiz TECH</title><script src="https://telegram.org/js/telegram-web-app.js"></script><style>body{font:16px system-ui;background:var(--tg-theme-bg-color,#101827);color:var(--tg-theme-text-color,#fff);margin:0;padding:24px}main{max-width:600px;margin:auto}.card{background:var(--tg-theme-secondary-bg-color,#202d40);border-radius:18px;padding:22px;line-height:1.6}h2{margin-top:0}button{border:0;border-radius:12px;background:#2788e8;color:white;padding:15px;width:100%;font-weight:700;margin-top:20px;cursor:pointer}#state{white-space:pre-wrap}</style></head><body><main><h2>🧠 BestPrice24h | Quiz TECH</h2><div class="card" id="state">Caricamento spiegazione...</div><button id="back" hidden>📢 Torna al quiz TECH</button></main><script>
+const tg=window.Telegram?.WebApp; tg?.ready(); tg?.expand();
+const g=new URLSearchParams(location.search).get('g');
+const state=document.getElementById('state'), back=document.getElementById('back');
+function line(parent,tag,txt){const el=document.createElement(tag);el.textContent=txt;parent.appendChild(el)}
+fetch('/api/quiz-spiegazione',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({g,initData:tg?.initData||''})}).then(async r=>({ok:r.ok,data:await r.json()})).then(({ok,data})=>{state.replaceChildren();if(!ok){line(state,'p',data.errore||'Non disponibile');return}line(state,'h3',data.esito);line(state,'p','❓ '+data.domanda);line(state,'p','✅ Risposta corretta: '+data.risposta);line(state,'h3','📚 Spiegazione completa');line(state,'p',data.approfondimento);if(data.link){back.hidden=false;back.onclick=()=>tg?.openTelegramLink?tg.openTelegramLink(data.link):location.assign(data.link)}}).catch(()=>{state.textContent='Impossibile caricare la spiegazione. Riprova.'});
+</script></body></html>'''
+
 class OfferteWebHandler(BaseHTTPRequestHandler):
     def _json(self, payload, status=200):
         corpo = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -794,6 +828,15 @@ class OfferteWebHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         percorso = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if percorso == "/quiz-app":
+            corpo = QUIZ_APP_HTML.encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type','text/html; charset=utf-8')
+            self.send_header('Content-Length',str(len(corpo)))
+            self.send_header('Cache-Control','no-store')
+            self.end_headers()
+            self.wfile.write(corpo)
+            return
         if percorso == "/health":
             self._json({"ok": True})
             return
@@ -852,6 +895,36 @@ class OfferteWebHandler(BaseHTTPRequestHandler):
                 self._json({"errore": "immagine non disponibile"}, status=404)
             return
         self._json({"errore": "non trovato"}, status=404)
+
+    def do_POST(self):
+        if self.path.split('?',1)[0] != '/api/quiz-spiegazione':
+            self._json({'errore':'non trovato'},404); return
+        try:
+            lunghezza=int(self.headers.get('Content-Length','0'))
+            if not 0 < lunghezza <= 8192:
+                self._json({'errore':'Richiesta non valida'},400); return
+            dati=json.loads(self.rfile.read(lunghezza))
+            uid=verifica_init_data(dati.get('initData',''))
+            g=str(dati.get('g',''))
+            if not uid:
+                self._json({'errore':'Apri questa pagina dal pulsante del bot Telegram.'},403); return
+            if not re.fullmatch(r'\d{4}-\d{2}-\d{2}',g):
+                self._json({'errore':'Quiz non valido'},400); return
+            with sqlite3.connect(DB_PATH,timeout=30) as db:
+                voto=db.execute('SELECT scelta,corretta FROM quiz_voti WHERE giorno=? AND user_id=?',(g,uid)).fetchone()
+                if not voto:
+                    self._json({'errore':'🔒 Rispondi prima al quiz per sbloccare la spiegazione.'},403); return
+                row=db.execute('SELECT contenuto FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
+            if not row:
+                self._json({'errore':'Quiz non disponibile'},404); return
+            item=json.loads(row[0]); idx=int(item['corretta'])
+            link=link_quiz_recap(g,CHANNEL_ID)
+            self._json({'esito':'🎉 Risposta esatta!' if voto[1] else '❌ Risposta errata',
+                'domanda':item['domanda'],'risposta':item['risposte'][idx],
+                'approfondimento':item['approfondimento'],'link':link})
+        except Exception as e:
+            print('Errore Mini App quiz:',type(e).__name__,str(e)[:120])
+            self._json({'errore':'Errore temporaneo'},500)
 
     def log_message(self, formato, *argomenti):
         return
@@ -8337,6 +8410,26 @@ async def start(
         return ConversationHandler.END
 
 
+    # Collegamento dalla didascalia del quiz: il bot mostra il pulsante Mini App
+    # soltanto dopo aver verificato il primo voto. Non invia spiegazioni automatiche.
+    if context.args and re.fullmatch(r'spiega_\d{8}',context.args[0]):
+        raw=context.args[0][7:]
+        g=f'{raw[:4]}-{raw[4:6]}-{raw[6:8]}'
+        with sqlite3.connect(DB_PATH,timeout=30) as db:
+            voto=db.execute('SELECT 1 FROM quiz_voti WHERE giorno=? AND user_id=?',(g,user.id)).fetchone()
+        link=link_quiz_recap(g,CHANNEL_ID)
+        if not voto:
+            markup=InlineKeyboardMarkup([[InlineKeyboardButton('📢 Vai al quiz',url=link)]]) if link else None
+            await update.message.reply_text('🔒 Per leggere la spiegazione completa devi prima rispondere al quiz.',reply_markup=markup)
+            return ConversationHandler.END
+        url=quiz_web_url()
+        if not url or not url.startswith('https://'):
+            await update.message.reply_text('⚠️ Mini App non configurata. Imposta QUIZ_WEBAPP_URL su Railway.')
+            return ConversationHandler.END
+        markup=InlineKeyboardMarkup([[InlineKeyboardButton('📚 Apri la spiegazione completa',web_app=WebAppInfo(url=f'{url}?g={g}'))]])
+        await update.message.reply_text('🧠 Hai già partecipato! Apri la spiegazione completa qui sotto.',reply_markup=markup)
+        return ConversationHandler.END
+
     # =====================================================
     # ADMIN
     # =====================================================
@@ -13959,7 +14052,7 @@ async def invia_quiz(bot,chat_id,g,anteprima=False):
         row=db.execute('SELECT contenuto FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
     if not row: raise ValueError('Quiz mancante per '+g)
     item=json.loads(row[0])
-    return await bot.send_photo(chat_id=chat_id,photo=c['foto'],caption=f"☕🧠 IL QUIZ DEL CAFFÈ — TECH\n📅 {g}\n\n❓ {item['domanda']}\n\n👇 Scegli la tua risposta e scopri subito la spiegazione!",reply_markup=tastiera_quiz(g))
+    return await bot.send_photo(chat_id=chat_id,photo=c['foto'],caption=(f"☕🧠 IL QUIZ DEL CAFFÈ — TECH\n📅 {g}\n\n❓ {item['domanda']}\n\n👇 Scegli la tua risposta e scopri subito la spiegazione!" + (f"\n\n📖 Spiegazione completa dopo il voto: https://t.me/{quiz_bot_username()}?start=spiega_{g.replace('-', '')}" if quiz_bot_username() and quiz_web_url() else '')),reply_markup=tastiera_quiz(g))
 
 async def pubblica_quiz(app,adesso=None):
     adesso=adesso or datetime.now(ROMA_TZ)
