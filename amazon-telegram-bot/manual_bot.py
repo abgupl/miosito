@@ -1862,6 +1862,24 @@ def link_oroscopo_recap(giorno, canale, telegram_chat_id):
     return f"{base.rstrip('/')}/{int(riga[0])}"
 
 
+
+def link_quiz_recap(giorno, telegram_chat_id):
+    """Link al quiz TECH effettivamente pubblicato oggi; nessun link se assente."""
+    if str(telegram_chat_id) != str(CHANNEL_ID):
+        return None
+    try:
+        with sqlite3.connect(DB_PATH, timeout=30) as db:
+            riga = db.execute(
+                "SELECT message_id FROM quiz_uscite WHERE giorno=? AND stato='inviato' AND message_id IS NOT NULL",
+                (giorno,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not riga:
+        return None
+    return f"{TECH_CHANNEL_URL.rstrip('/')}/{int(riga[0])}"
+
+
 def recap_gia_inviato(oggi, canale):
 
     db = sqlite3.connect(DB_PATH)
@@ -1945,9 +1963,15 @@ async def invia_recap_giornaliero(bot, canale, telegram_chat_id):
           ''
     )
     url_oroscopo = link_oroscopo_recap(oggi, canale, telegram_chat_id)
-    tastiera = (InlineKeyboardMarkup([[InlineKeyboardButton(
-        '🔮 Scopri il tuo oroscopo', url=url_oroscopo
-    )]]) if url_oroscopo else None)
+    url_quiz = link_quiz_recap(oggi, telegram_chat_id) if canale == 'tech' else None
+    pulsanti = []
+    if url_oroscopo:
+        pulsanti.append([InlineKeyboardButton('🔮 Scopri il tuo oroscopo', url=url_oroscopo)])
+    if url_quiz:
+        pulsanti.append([InlineKeyboardButton('🧠 Partecipa al quiz di oggi', url=url_quiz)])
+        testo += ('\n🧠 <b>NON HAI ANCORA FATTO IL QUIZ DI OGGI?</b>\n'
+                  '🎯 Mettiti alla prova: puoi ancora partecipare!\n')
+    tastiera = InlineKeyboardMarkup(pulsanti) if pulsanti else None
     if not url_oroscopo:
         testo = testo.replace(
             '☕ <b>HAI GIÀ LETTO IL TUO OROSCOPO DI OGGI?</b>\n'
@@ -13809,31 +13833,52 @@ def tastiera_quiz(g):
 
 async def risposta_quiz(query):
     try:
-        _,g,scelta=query.data.split(':'); scelta=int(scelta)
-        with sqlite3.connect(DB_PATH,timeout=30) as db:
-            row=db.execute('SELECT contenuto FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
-            if not row: raise ValueError('Quiz non disponibile.')
-            item=json.loads(row[0]); giusta=item['corretta']; uid=query.from_user.id
-            # Un solo voto per persona e quiz; le anteprime private non contano.
-            valido=db.execute('SELECT message_id FROM quiz_uscite WHERE giorno=? AND stato=?',(g,'inviato')).fetchone()
-            ufficiale=bool(valido and query.message and query.message.message_id==valido[0] and str(query.message.chat_id)==str(CHANNEL_ID))
+        _, g, scelta_testo = query.data.split(':')
+        scelta = int(scelta_testo)
+        with sqlite3.connect(DB_PATH, timeout=30) as db:
+            row = db.execute('SELECT contenuto FROM quiz_giorni WHERE giorno=?', (g,)).fetchone()
+            if not row:
+                raise ValueError('Quiz non disponibile.')
+            item = json.loads(row[0])
+            giusta = int(item['corretta'])
+            if not 0 <= scelta < len(item['risposte']):
+                raise ValueError('Risposta non valida.')
+            uid = query.from_user.id
+            valido = db.execute(
+                "SELECT message_id FROM quiz_uscite WHERE giorno=? AND stato='inviato'", (g,)
+            ).fetchone()
+            ufficiale = bool(
+                valido and query.message
+                and query.message.message_id == valido[0]
+                and str(query.message.chat_id) == str(CHANNEL_ID)
+            )
             if ufficiale:
-                db.execute('INSERT OR IGNORE INTO quiz_voti VALUES (?,?,?,?,?,?)',(g,uid,query.from_user.username,scelta,int(scelta==giusta),datetime.now(timezone.utc).isoformat()))
-                voto=db.execute('SELECT scelta FROM quiz_voti WHERE giorno=? AND user_id=?',(g,uid)).fetchone()
-                scelta=voto[0]
-        # Telegram limita i popup a 200 caratteri: approfondimento lungo in DM se disponibile.
-        pref='🎉 Esatto!' if scelta==giusta else '❌ Non esatto.'
-        testo=f"{pref}\n✅ {item['risposte'][giusta]}\n\n📚 {item['approfondimento']}"
-        if len(testo)<=195:
-            await query.answer(testo,show_alert=True)
+                # Vincolo PRIMARY KEY(giorno,user_id): il primo voto resta definitivo.
+                inserito = db.execute(
+                    'INSERT OR IGNORE INTO quiz_voti VALUES (?,?,?,?,?,?)',
+                    (g, uid, query.from_user.username, scelta, int(scelta == giusta),
+                     datetime.now(timezone.utc).isoformat())
+                ).rowcount
+                if not inserito:
+                    await query.answer('✅ Hai già partecipato a questo quiz!\n✨ Torna domani per mettere nuovamente alla prova le tue conoscenze!', show_alert=True)
+                    return
+        pref = '🎉 Esatto!' if scelta == giusta else '❌ Non esatto.'
+        conclusione = '✨ Torna domani per mettere nuovamente alla prova le tue conoscenze!'
+        testo = (f"{pref}\n✅ Risposta corretta: {item['risposte'][giusta]}\n\n"
+                 f"📚 {item['approfondimento']}\n\n"
+                 f"🧠 Sfida completata! La tua risposta è stata registrata.\n{conclusione}")
+        if len(testo) <= 195:
+            await query.answer(testo, show_alert=True)
         else:
-            await query.answer(f"{pref}\n✅ {item['risposte'][giusta]}\n\n📚 {item['approfondimento'][:115]}…",show_alert=True)
+            breve = (f"{pref}\n✅ {item['risposte'][giusta]}\n\n"
+                     f"📚 {item['approfondimento'][:65]}…\n\n{conclusione}")
+            await query.answer(breve[:200], show_alert=True)
             try:
-                await query.get_bot().send_message(chat_id=uid,text=testo)
+                await query.get_bot().send_message(chat_id=uid, text=testo)
             except Exception:
-                pass  # Telegram non consente DM se l'utente non ha avviato il bot.
+                pass  # DM consentito solo se l'utente ha già avviato il bot.
     except Exception as e:
-        await query.answer(f'Quiz non disponibile: {str(e)[:100]}',show_alert=True)
+        await query.answer(f'Quiz non disponibile: {str(e)[:100]}', show_alert=True)
 
 async def mostra_rubrica(msg):
     oc=configurazione_oroscopo(); qc=configurazione_quiz()
