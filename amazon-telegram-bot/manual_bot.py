@@ -2141,6 +2141,17 @@ def finestre_pausa_caffe(canale, giorno):
                 continue
             previsto = datetime.fromisoformat(f'{giorno_iso}T{ora}').replace(tzinfo=ROMA_TZ)
             finestre.append((previsto, previsto + timedelta(minutes=PAUSA_CAFFE_MINUTI)))
+    if nome == 'tech':
+        qcfg = configurazione_quiz()
+        if qcfg['attivo']:
+            with sqlite3.connect(DB_PATH, timeout=30) as db:
+                row = db.execute("SELECT stato,pubblicato_il FROM quiz_uscite WHERE giorno=?", (giorno_iso,)).fetchone()
+            if row and row[1]:
+                inizio = datetime.fromisoformat(row[1]).astimezone(ROMA_TZ)
+                finestre.append((inizio, inizio + timedelta(minutes=PAUSA_CAFFE_MINUTI)))
+            elif not row:
+                previsto = datetime.fromisoformat(f"{giorno_iso}T{qcfg['ora']}").replace(tzinfo=ROMA_TZ)
+                finestre.append((previsto, previsto + timedelta(minutes=PAUSA_CAFFE_MINUTI)))
     return sorted(finestre, key=lambda item: item[0])
 
 
@@ -2179,7 +2190,7 @@ def descrizione_pause_programmate(canale, giorni):
     eventi = []
     for giorno in sorted(set(giorni)):
         for indice, (inizio, fine) in enumerate(finestre_pausa_caffe(canale, giorno)):
-            titolo = '☀️ Prima Pausa Caffè' if indice == 0 else '🌙 Seconda Pausa Caffè'
+            titolo = ('🧠 Quiz del Caffè' if configurazione_quiz()['attivo'] and str(canale) == str(CHANNEL_ID) and inizio.strftime('%H:%M') == configurazione_quiz()['ora'] else ('☀️ Prima Pausa Caffè' if inizio.strftime('%H:%M') == configurazione_oroscopo()['ora'] else '🌙 Seconda Pausa Caffè'))
             eventi.append((inizio, f'{inizio:%d/%m • %H:%M}\n{titolo}\n⏸ Pausa offerte fino alle {fine:%H:%M}'))
     return eventi
 
@@ -2645,6 +2656,7 @@ async def controlla_programmazioni(app):
 async def avvia_programmazioni(app):
 
     app.create_task(controlla_oroscopi(app))
+    app.create_task(controlla_quiz(app))
 
     app.create_task(
         controlla_programmazioni(app)
@@ -8081,7 +8093,7 @@ def menu_principale():
             [InlineKeyboardButton("📅 POST PROGRAMMATI", callback_data="programmati")],
             [InlineKeyboardButton("📚 CRONOLOGIA", callback_data="history_menu")],
             [InlineKeyboardButton("🎵 AUTOMAZIONE TIKTOK", callback_data="tiktok_menu")],
-            [InlineKeyboardButton("☕ UN CAFFÈ CON LE STELLE", callback_data="oro_menu")],
+            [InlineKeyboardButton("☕ RUBRICA", callback_data="rub_menu")],
             [InlineKeyboardButton("⚙️ IMPOSTAZIONI", callback_data="settings_menu")],
         ]
     )
@@ -13260,7 +13272,7 @@ async def mostra_pannello_oroscopo(messaggio, context):
         [InlineKeyboardButton("⚙️ Impostazioni rubrica", callback_data="oro_impostazioni")],
         [InlineKeyboardButton("📊 Statistiche", callback_data="oro_stats:oggi")],
         [InlineKeyboardButton("⏸ Sospendi" if cfg["attivo"] else "▶️ Attiva", callback_data="oro_attiva")],
-        [InlineKeyboardButton("⬅️ Menu principale", callback_data="menu_admin")],
+        [InlineKeyboardButton("⬅️ Rubrica", callback_data="rub_menu")],
     ]))
 
 
@@ -13408,6 +13420,9 @@ async def gestisci_oroscopi(update, context):
     """Gruppo -1: blocca gli altri handler solo per aggiornamenti della rubrica."""
     query, msg = update.callback_query, update.effective_message
     dato = query.data if query else ""
+    if query and dato.startswith("quiz_r:"):
+        await risposta_quiz(query)
+        raise ApplicationHandlerStop
     if query and dato.startswith("oro_segno:"):
         row = None
         try:
@@ -13432,10 +13447,10 @@ async def gestisci_oroscopi(update, context):
                 print(f"Errore registrazione clic oroscopo: {type(errore).__name__}")
         raise ApplicationHandlerStop
     modalita = context.user_data.get("oroscopo_modalita")
-    if query and not dato.startswith("oro_"):
+    if query and not (dato.startswith("oro_") or dato.startswith("quiz_") or dato == "rub_menu"):
         context.user_data.pop("oroscopo_modalita", None)
         return
-    if not ((query and dato.startswith("oro_")) or (modalita and update.message)):
+    if not ((query and (dato.startswith("oro_") or dato.startswith("quiz_") or dato == "rub_menu")) or (modalita and update.message)):
         return
     if not await controlla_autorizzazione(update):
         raise ApplicationHandlerStop
@@ -13453,9 +13468,15 @@ async def gestisci_oroscopi(update, context):
     try:
         if query:
             await query.answer()
-            await azione_oroscopo(dato, msg, context)
+            if dato == "rub_menu" or dato.startswith("quiz_"):
+                await azione_quiz(dato, msg, context)
+            else:
+                await azione_oroscopo(dato, msg, context)
         else:
-            await ricevi_input_oroscopo(msg, context, modalita)
+            if str(modalita).startswith("quiz_"):
+                await input_quiz(msg, context, modalita)
+            else:
+                await ricevi_input_oroscopo(msg, context, modalita)
     except ValueError as errore:
         await msg.reply_text(f"⚠️ {errore}", reply_markup=oroscopo_indietro())
     except Exception as errore:
@@ -13729,9 +13750,220 @@ async def controlla_oroscopi(app):
         await asyncio.sleep(30)
 
 
+
+# =========================================================
+# RUBRICA: QUIZ TECH (un quiz al giorno, orari modificabili)
+# =========================================================
+QUIZ_LOCK = asyncio.Lock()
+
+def inizializza_quiz():
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        db.executescript("""
+        CREATE TABLE IF NOT EXISTS quiz_config (chiave TEXT PRIMARY KEY, valore TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS quiz_giorni (giorno TEXT PRIMARY KEY, contenuto TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS quiz_uscite (giorno TEXT PRIMARY KEY, stato TEXT NOT NULL, message_id INTEGER, pubblicato_il TEXT, errore TEXT);
+        CREATE TABLE IF NOT EXISTS quiz_voti (giorno TEXT NOT NULL, user_id INTEGER NOT NULL, username TEXT, scelta INTEGER NOT NULL, corretta INTEGER NOT NULL, votato_il TEXT NOT NULL, PRIMARY KEY(giorno,user_id));
+        """)
+        defaults={'attivo':False,'ora':'17:00','foto':'','promemoria':'','esaurimento':''}
+        db.executemany('INSERT OR IGNORE INTO quiz_config VALUES (?,?)',[(k,json.dumps(v)) for k,v in defaults.items()])
+
+def configurazione_quiz():
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        return {k:json.loads(v) for k,v in db.execute('SELECT chiave,valore FROM quiz_config')}
+
+def imposta_quiz(k,v):
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        db.execute('INSERT OR REPLACE INTO quiz_config VALUES (?,?)',(k,json.dumps(v,ensure_ascii=False)))
+
+def valida_file_quiz(testo):
+    try:
+        data=json.loads(testo.lstrip('\ufeff'))
+    except (ValueError,TypeError) as e:
+        raise ValueError('File JSON non valido: '+str(e))
+    if not isinstance(data,list) or not 1 <= len(data) <= 62:
+        raise ValueError('Il file deve contenere da 1 a 62 quiz.')
+    giorni={}
+    for item in data:
+        if not isinstance(item,dict): raise ValueError('Ogni quiz deve essere un oggetto JSON.')
+        g=item.get('data')
+        try: g=datetime.strptime(g,'%Y-%m-%d').date().isoformat()
+        except (ValueError,TypeError): raise ValueError('Data non valida nel file quiz.')
+        op=item.get('risposte')
+        if not isinstance(op,list) or len(op)!=4 or any(not isinstance(x,str) or not x.strip() or len(x)>80 for x in op):
+            raise ValueError(f'{g}: servono esattamente 4 risposte brevi.')
+        if not isinstance(item.get('domanda'),str) or not 8<=len(item['domanda'])<=300:
+            raise ValueError(f'{g}: domanda mancante o troppo lunga.')
+        if not isinstance(item.get('corretta'),int) or not 0<=item['corretta']<=3:
+            raise ValueError(f'{g}: corretta deve essere un numero da 0 a 3.')
+        if not isinstance(item.get('approfondimento'),str) or not 20<=len(item['approfondimento'])<=450:
+            raise ValueError(f'{g}: approfondimento mancante (20–450 caratteri).')
+        if g in giorni: raise ValueError(f'Data duplicata: {g}')
+        giorni[g]=item
+    return giorni
+
+def tastiera_quiz(g):
+    with sqlite3.connect(DB_PATH,timeout=30) as db:
+        r=db.execute('SELECT contenuto FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
+    item=json.loads(r[0])
+    return InlineKeyboardMarkup([[InlineKeyboardButton(f'{chr(65+i)}) {x}',callback_data=f'quiz_r:{g}:{i}')] for i,x in enumerate(item['risposte'])])
+
+async def risposta_quiz(query):
+    try:
+        _,g,scelta=query.data.split(':'); scelta=int(scelta)
+        with sqlite3.connect(DB_PATH,timeout=30) as db:
+            row=db.execute('SELECT contenuto FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
+            if not row: raise ValueError('Quiz non disponibile.')
+            item=json.loads(row[0]); giusta=item['corretta']; uid=query.from_user.id
+            # Un solo voto per persona e quiz; le anteprime private non contano.
+            valido=db.execute('SELECT message_id FROM quiz_uscite WHERE giorno=? AND stato=?',(g,'inviato')).fetchone()
+            ufficiale=bool(valido and query.message and query.message.message_id==valido[0] and str(query.message.chat_id)==str(CHANNEL_ID))
+            if ufficiale:
+                db.execute('INSERT OR IGNORE INTO quiz_voti VALUES (?,?,?,?,?,?)',(g,uid,query.from_user.username,scelta,int(scelta==giusta),datetime.now(timezone.utc).isoformat()))
+                voto=db.execute('SELECT scelta FROM quiz_voti WHERE giorno=? AND user_id=?',(g,uid)).fetchone()
+                scelta=voto[0]
+        # Telegram limita i popup a 200 caratteri: approfondimento lungo in DM se disponibile.
+        pref='🎉 Esatto!' if scelta==giusta else '❌ Non esatto.'
+        testo=f"{pref}\n✅ {item['risposte'][giusta]}\n\n📚 {item['approfondimento']}"
+        if len(testo)<=195:
+            await query.answer(testo,show_alert=True)
+        else:
+            await query.answer(f"{pref}\n✅ {item['risposte'][giusta]}\n\n📚 {item['approfondimento'][:115]}…",show_alert=True)
+            try:
+                await query.get_bot().send_message(chat_id=uid,text=testo)
+            except Exception:
+                pass  # Telegram non consente DM se l'utente non ha avviato il bot.
+    except Exception as e:
+        await query.answer(f'Quiz non disponibile: {str(e)[:100]}',show_alert=True)
+
+async def mostra_rubrica(msg):
+    oc=configurazione_oroscopo(); qc=configurazione_quiz()
+    await msg.reply_text(f"☕ RUBRICA — BESTPRICE24H\n\n☀️ Primo Caffè: {oc['ora']}\n🧠 Quiz TECH: {qc['ora']} ({'ON' if qc['attivo'] else 'OFF'})\n🌙 Secondo Caffè: {oc['ora2']}\n\n⏸ Pausa offerte: 30 minuti per ogni appuntamento.",reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton('♈ Oroscopo',callback_data='oro_menu'),InlineKeyboardButton('🧠 Quiz TECH',callback_data='quiz_menu')],
+        [InlineKeyboardButton('🕒 Orari rubrica',callback_data='quiz_orari')],
+        [InlineKeyboardButton('📅 Post programmati',callback_data='programmati')],
+        [InlineKeyboardButton('⬅️ Menu principale',callback_data='menu_admin')]]))
+
+async def pannello_quiz(msg):
+    c=configurazione_quiz(); oggi=datetime.now(ROMA_TZ).date().isoformat()
+    with sqlite3.connect(DB_PATH,timeout=30) as db:
+        gg=[r[0] for r in db.execute('SELECT giorno FROM quiz_giorni WHERE giorno>=? ORDER BY giorno',(oggi,))]
+    await msg.reply_text(f"🧠 QUIZ DEL CAFFÈ — TECH\n\nStato: {'ATTIVO' if c['attivo'] else 'SOSPESO'}\n🕒 Orario: {c['ora']} (Italia)\n🖼 Foto: {'caricata' if c['foto'] else 'da caricare'}\n📅 Quiz disponibili: {len(gg)}\nUltima data: {gg[-1] if gg else 'nessuna'}\n⏸ Pausa offerte: 30 minuti",reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton('📥 Carica quiz',callback_data='quiz_carica'),InlineKeyboardButton('🖼 Imposta foto',callback_data='quiz_foto')],
+        [InlineKeyboardButton('🕒 Cambia orario',callback_data='quiz_ora'),InlineKeyboardButton('👁 Anteprima',callback_data='quiz_preview')],
+        [InlineKeyboardButton('📊 Statistiche',callback_data='quiz_stats'),InlineKeyboardButton('▶️ Attiva' if not c['attivo'] else '⏸ Sospendi',callback_data='quiz_toggle')],
+        [InlineKeyboardButton('⬅️ Rubrica',callback_data='rub_menu')]]))
+
+async def azione_quiz(dato,msg,context):
+    context.user_data.pop('oroscopo_modalita',None)
+    if dato=='rub_menu': await mostra_rubrica(msg); return
+    if dato=='quiz_menu': await pannello_quiz(msg); return
+    if dato=='quiz_orari':
+        c=configurazione_oroscopo(); q=configurazione_quiz()
+        await msg.reply_text(f"🕒 ORARI RUBRICA\n☀️ Primo Caffè: {c['ora']}\n🧠 Quiz TECH: {q['ora']}\n🌙 Secondo Caffè: {c['ora2']}\n\nLe modifiche aggiornano subito la lista Programmati e le pause di 30 minuti.",reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('☀️ Primo Caffè',callback_data='oro_ora'),InlineKeyboardButton('🧠 Quiz',callback_data='quiz_ora')],
+            [InlineKeyboardButton('🌙 Secondo Caffè',callback_data='oro_ora2')],
+            [InlineKeyboardButton('⬅️ Rubrica',callback_data='rub_menu')]])); return
+    if dato in ('quiz_carica','quiz_foto','quiz_ora'):
+        context.user_data['oroscopo_modalita']=dato
+        prompt={'quiz_carica':'📥 Invia il file JSON dei quiz (30 giornate con domanda, 4 risposte, corretta e approfondimento).', 'quiz_foto':'🖼 Invia una foto Telegram da utilizzare per il quiz quotidiano.', 'quiz_ora':'🕒 Invia il nuovo orario del quiz in formato HH:MM.'}[dato]
+        await msg.reply_text(prompt,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Annulla',callback_data='quiz_menu')]])); return
+    if dato=='quiz_toggle':
+        c=configurazione_quiz()
+        if not c['attivo']:
+            oggi=datetime.now(ROMA_TZ).date().isoformat()
+            with sqlite3.connect(DB_PATH,timeout=30) as db:
+                disponibile=db.execute('SELECT 1 FROM quiz_giorni WHERE giorno>=? LIMIT 1',(oggi,)).fetchone()
+            if not c['foto'] or not disponibile: raise ValueError('Prima carica foto e quiz per le prossime giornate.')
+        imposta_quiz('attivo',not c['attivo']); await pannello_quiz(msg); return
+    if dato=='quiz_preview':
+        oggi=datetime.now(ROMA_TZ).date().isoformat()
+        with sqlite3.connect(DB_PATH,timeout=30) as db:
+            row=db.execute('SELECT giorno FROM quiz_giorni WHERE giorno>=? ORDER BY giorno LIMIT 1',(oggi,)).fetchone()
+        if not row: raise ValueError('Carica prima il file quiz.')
+        await invia_quiz(context.bot,msg.chat_id,row[0],anteprima=True)
+        await msg.reply_text('👁 Anteprima privata: premi una risposta per leggere la spiegazione.',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Quiz',callback_data='quiz_menu')]])); return
+    if dato=='quiz_stats':
+        with sqlite3.connect(DB_PATH,timeout=30) as db:
+            tot,giuste,persone=db.execute('SELECT count(*),coalesce(sum(corretta),0),count(DISTINCT user_id) FROM quiz_voti').fetchone()
+        await msg.reply_text(f'📊 QUIZ TECH\n👥 Partecipanti unici: {persone}\n🗳 Risposte: {tot}\n✅ Corrette: {giuste}\n❌ Errate: {tot-giuste}\n🎯 Successo: {100*giuste/tot:.1f}%' if tot else '📊 Nessun voto registrato.',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Quiz',callback_data='quiz_menu')]])); return
+
+async def input_quiz(msg,context,modalita):
+    if modalita=='quiz_foto':
+        if not msg.photo: raise ValueError('Invia una foto Telegram, non un documento.')
+        imposta_quiz('foto',msg.photo[-1].file_id)
+    elif modalita=='quiz_ora':
+        ora=(msg.text or '').strip()
+        if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',ora): raise ValueError('Usa HH:MM, per esempio 17:00.')
+        imposta_quiz('ora',ora)
+    elif modalita=='quiz_carica':
+        if not msg.document or not (msg.document.file_name or '').lower().endswith('.json'): raise ValueError('Allega il file .json.')
+        if (msg.document.file_size or 0)>1_000_000: raise ValueError('File troppo grande (max 1 MB).')
+        f=await msg.document.get_file(); dati=await f.download_as_bytearray()
+        giorni=valida_file_quiz(bytes(dati).decode('utf-8-sig'))
+        with sqlite3.connect(DB_PATH,timeout=30) as db:
+            for g in giorni:
+                if db.execute('SELECT 1 FROM quiz_uscite WHERE giorno=?',(g,)).fetchone(): raise ValueError(f'{g}: quiz già pubblicato o prenotato; non sovrascrivibile.')
+            db.executemany('INSERT OR REPLACE INTO quiz_giorni VALUES (?,?)',[(g,json.dumps(item,ensure_ascii=False)) for g,item in giorni.items()])
+        await msg.reply_text(f'✅ Caricati {len(giorni)} quiz, dal {min(giorni)} al {max(giorni)}.')
+    context.user_data.pop('oroscopo_modalita',None)
+    await pannello_quiz(msg)
+
+async def invia_quiz(bot,chat_id,g,anteprima=False):
+    c=configurazione_quiz()
+    if not c['foto']: raise ValueError('Imposta prima la foto del quiz.')
+    with sqlite3.connect(DB_PATH,timeout=30) as db:
+        row=db.execute('SELECT contenuto FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
+    if not row: raise ValueError('Quiz mancante per '+g)
+    item=json.loads(row[0])
+    return await bot.send_photo(chat_id=chat_id,photo=c['foto'],caption=f"☕🧠 IL QUIZ DEL CAFFÈ — TECH\n📅 {g}\n\n❓ {item['domanda']}\n\n👇 Scegli la tua risposta e scopri subito la spiegazione!",reply_markup=tastiera_quiz(g))
+
+async def pubblica_quiz(app,adesso=None):
+    adesso=adesso or datetime.now(ROMA_TZ)
+    async with QUIZ_LOCK:
+        c=configurazione_quiz()
+        if not c['attivo']: return
+        g=adesso.date().isoformat()
+        if adesso.strftime('%H:%M')<c['ora']: return
+        with sqlite3.connect(DB_PATH,timeout=30) as db:
+            row=db.execute('SELECT 1 FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
+            if not row:
+                if c.get('esaurimento')!=g and ADMIN_ID:
+                    await app.bot.send_message(chat_id=ADMIN_ID,text=f'⚠️ Quiz TECH: nessuna domanda caricata per {g}. Carica il prossimo file da ☕ Rubrica → Quiz.')
+                    imposta_quiz('esaurimento',g)
+                return
+            result=db.execute("INSERT OR IGNORE INTO quiz_uscite(giorno,stato) VALUES (?,'in_invio')",(g,))
+            if not result.rowcount: return
+        try:
+            post=await invia_quiz(app.bot,CHANNEL_ID,g)
+            with sqlite3.connect(DB_PATH,timeout=30) as db:
+                db.execute("UPDATE quiz_uscite SET stato='inviato',message_id=?,pubblicato_il=? WHERE giorno=?",(post.message_id,datetime.now(ROMA_TZ).isoformat(timespec='seconds'),g))
+        except Exception as e:
+            with sqlite3.connect(DB_PATH,timeout=30) as db:
+                db.execute("UPDATE quiz_uscite SET stato='da_verificare',errore=? WHERE giorno=?",(str(e)[:500],g))
+            if ADMIN_ID: await app.bot.send_message(chat_id=ADMIN_ID,text=f'⚠️ Invio quiz {g} da verificare: {str(e)[:180]}. Nessun reinvio automatico per evitare doppioni.')
+
+async def controlla_quiz(app):
+    while True:
+        try:
+            c=configurazione_quiz()
+            if c['attivo']:
+                with sqlite3.connect(DB_PATH,timeout=30) as db:
+                    r=db.execute('SELECT max(giorno) FROM quiz_giorni').fetchone()
+                if r and r[0]:
+                    ultimo=r[0]; scadenza=datetime.fromisoformat(f"{ultimo}T{c['ora']}").replace(tzinfo=ROMA_TZ)
+                    adesso=datetime.now(ROMA_TZ)
+                    if timedelta(0)<=scadenza-adesso<=timedelta(hours=24) and c.get('promemoria')!=ultimo and ADMIN_ID:
+                        await app.bot.send_message(chat_id=ADMIN_ID,text=f'⚠️ Quiz TECH: archivio in esaurimento il {ultimo}. Richiedi il prossimo file da 30 giorni.')
+                        imposta_quiz('promemoria',ultimo)
+            await pubblica_quiz(app)
+        except Exception as e: print('Errore quiz TECH:',type(e).__name__,str(e)[:300])
+        await asyncio.sleep(30)
+
+
 def main():
 
     inizializza_oroscopi()
+    inizializza_quiz()
     inizializza_pause_caffe()
     inizializza_programmazioni()
     inizializza_recap()
