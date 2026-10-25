@@ -1598,38 +1598,106 @@ def prezzi_offerta_validi(dati):
 
 
 def tipo_o_fallback(link, dati):
+    """Un prezzo valido basta per leggere un articolo ordinario.
+
+    'standard_neutro' NON certifica la condizione 'nuovo'. Per offerte
+    specifiche e articoli usati restano obbligatorie verifiche dedicate.
+    """
+    from urllib.parse import urlsplit, parse_qs
     tipo = riconosci_tipologia_amazon(link, dati)
-    if tipo == 'sconosciuto' and prezzi_offerta_validi(dati):
+    if tipo != 'sconosciuto':
+        return tipo
+    if not isinstance(dati, dict):
+        return tipo
+    params = parse_qs(urlsplit(str(link or '')).query)
+    if any(k.lower() in {'offeringid', 'offeringid.1', 'offerlistingid', 'smid', 'aod'} for k in params):
+        return tipo
+    condizione = ' '.join(str(dati.get(k) or '') for k in ('condizione', 'condition', 'item_condition')).lower()
+    if re.search(r'\b(?:used|usato|seconda mano|warehouse|refurbished|ricondizionato)\b', condizione + ' ' + str(dati.get('nome') or '').lower()):
+        return tipo
+    if dati.get('disponibile') is False:
+        return tipo
+    prezzo = numero_da_prezzo(str(dati.get('prezzo') or dati.get('prezzo_valore') or ''))
+    if dati.get('nome') and prezzo is not None and prezzo > 0:
         return 'standard_neutro'
     return tipo
 
 
-async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callback=None):
-    """Massimo sei letture: 3 Creators + 3 pagina, con uscita anticipata.
+def _diagnostica_lettura(dati, richiedi_immagine=False):
+    if not isinstance(dati, dict) or not dati:
+        return 'Amazon non ha restituito dati del prodotto'
+    if dati.get('disponibile') is False:
+        return 'prodotto non disponibile'
+    if not dati.get('nome'):
+        return 'nome prodotto non rilevato'
+    prezzo = numero_da_prezzo(str(dati.get('prezzo') or dati.get('prezzo_valore') or ''))
+    if prezzo is None or prezzo <= 0:
+        return 'prezzo attuale non rilevato'
+    if tipo_o_fallback(dati.get('_link_originale'), dati) == 'sconosciuto':
+        return 'condizione o offerta specifica non verificabile'
+    if richiedi_immagine and not dati.get('immagine'):
+        return 'immagine non disponibile'
+    return None
 
-    Una lettura e' valida solo con nome, prezzo e tipologia identificabile
-    oppure due prezzi coerenti per il template standard neutro.
+
+def _unisci_dati_lettura(base, nuovo):
+    """Integra SOLO metadati. Prezzi/coupon/disponibilita' restano della singola fonte verificata."""
+    risultato = dict(nuovo)
+    for chiave in ('nome', 'immagine', 'categoria', 'asin'):
+        if not risultato.get(chiave) and base.get(chiave):
+            risultato[chiave] = base[chiave]
+    return risultato
+
+
+async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callback=None):
+    """Tre passaggi massimi sulle due fonti, con integrazione prudente dei metadati.
+
+    Mai mescolare prezzi, coupon, condizioni o disponibilita' di letture diverse.
     """
-    lettori = (leggi_prodotto_creators_da_link, leggi_prodotto_amazon) * 3
-    for indice, lettore in enumerate(lettori, 1):
+    asin = await asyncio.to_thread(risolvi_asin_da_link, link)
+    if not asin:
+        print('Lettura Amazon: ASIN non rilevato dal link (anche dopo redirect).')
+        return None
+    url_canonico = f'https://www.amazon.it/dp/{asin}'
+    lettori = (('Creators API', leggi_prodotto_creators_da_link),
+               ('pagina Amazon', leggi_prodotto_amazon)) * 3
+    metadati = {}
+    motivi = []
+    for indice, (fonte, lettore) in enumerate(lettori, 1):
         try:
-            risultato = await asyncio.to_thread(lettore, link)
+            # La pagina originale puo' includere parametri di offerta specifica.
+            url_lettura = url_canonico if fonte == 'pagina Amazon' and not re.search(
+                r'[?&](?:offeringid|offerlistingid|smid|aod)=', str(link), re.I) else link
+            risultato = await asyncio.to_thread(lettore, url_lettura)
             if risultato and risultato.get('disponibile') is False:
+                print(f'Lettura Amazon ASIN {asin}: prodotto non disponibile ({fonte}).')
                 return None
-            if (risultato and risultato.get('nome')
-                    and numero_da_prezzo(str(risultato.get('prezzo') or ''))
-                    and (not richiedi_immagine or risultato.get('immagine'))):
-                tipo = tipo_o_fallback(link, risultato)
-                if tipo != 'sconosciuto':
-                    risultato['tipologia_amazon'] = tipo
-                    risultato['_lettura_offerta_completata'] = True
-                    return risultato
+            if isinstance(risultato, dict) and risultato:
+                dati = _unisci_dati_lettura(metadati, risultato)
+                dati['_link_originale'] = link
+                motivo = _diagnostica_lettura(dati, richiedi_immagine)
+                if not motivo:
+                    dati.pop('_link_originale', None)
+                    dati['tipologia_amazon'] = tipo_o_fallback(link, dati)
+                    dati['_lettura_offerta_completata'] = True
+                    print(f'Lettura Amazon ASIN {asin}: completata al tentativo {indice} ({fonte}).')
+                    return dati
+                # Metadati sicuri possono essere riutilizzati, non i dati economici.
+                for campo in ('nome', 'immagine', 'categoria', 'asin'):
+                    if dati.get(campo):
+                        metadati[campo] = dati[campo]
+            else:
+                motivo = 'nessuna risposta utilizzabile'
+            motivi.append(f'{fonte}: {motivo}')
+            print(f'Lettura Amazon ASIN {asin} tentativo {indice}/6 ({fonte}): {motivo}')
         except Exception as errore:
-            print(f'Lettura Amazon {indice}/6: {type(errore).__name__}: {errore}')
+            motivi.append(f'{fonte}: {type(errore).__name__}')
+            print(f'Lettura Amazon ASIN {asin} tentativo {indice}/6 ({fonte}): {type(errore).__name__}: {errore}')
         if callback:
             await callback(indice)
         if indice < 6:
             await asyncio.sleep(2 if indice < 3 else 4)
+    print(f'Lettura Amazon ASIN {asin}: fallita. Motivi: {"; ".join(motivi)}')
     return None
 
 
@@ -8562,6 +8630,11 @@ def leggi_prodotto_amazon(url):
                 corrispondenza = re.search(r'"(https?://[^"]+)"', immagine)
                 immagine = corrispondenza.group(1) if corrispondenza else None
 
+        if not immagine:
+            og = soup.select_one('meta[property="og:image"], meta[name="twitter:image"]')
+            if og:
+                immagine = og.get('content')
+
         if not titolo and not prezzo:
             return None
 
@@ -8617,12 +8690,17 @@ def estrai_asin_da_link(link):
 
 
 def link_amazon_valido(link):
-    testo = str(link or "").strip().lower()
-    return (
-        "amazon." in testo
-        or "amzn." in testo
-        or "link.amazon/" in testo
-    )
+    from urllib.parse import urlsplit
+    try:
+        parsed = urlsplit(str(link or '').strip())
+        host = (parsed.hostname or '').lower()
+        return parsed.scheme in ('http', 'https') and (
+            host == 'link.amazon' or host == 'amzn.to' or
+            host == 'amazon.it' or host.endswith('.amazon.it') or
+            bool(re.fullmatch(r'(?:www\.)?amazon\.[a-z.]+', host))
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 def risolvi_asin_da_link(link):
@@ -8656,7 +8734,7 @@ def leggi_prodotto_creators_da_link(link):
         pagina = leggi_prodotto_amazon(link)
         if pagina:
             prodotto['coupon'] = pagina.get('coupon')
-            prodotto['disponibile'] = pagina.get('disponibile',True)
+            prodotto['disponibile'] = pagina.get('disponibile', prodotto.get('disponibile'))
             prodotto['categoria'] = prodotto.get('categoria') or pagina.get('categoria')
     return prodotto
 
@@ -8744,7 +8822,7 @@ async def ricevi_link(
 
     dati = await leggi_offerta_con_sei_tentativi(link, callback=mostra_tentativo)
     if not dati:
-        await messaggio_attesa.edit_text('⏭️ PRODOTTO SALTATO\n\nDati insufficienti dopo 6 tentativi automatici. Invia un altro link Amazon.')
+        await messaggio_attesa.edit_text('⏭️ PRODOTTO SALTATO\n\nLettura non completata: prezzo, disponibilità o condizione non verificabili. Controlla i log Railway e riprova con un link Amazon diretto.')
         context.user_data.clear()
         return LINK
     if dati.get('immagine'):
@@ -9269,42 +9347,18 @@ def candidati_repost(canale, quantita):
 
 
 async def leggi_offerta_repost(link, storico, callback=None):
-    """Richiede sempre prezzi/coupon e disponibilita' attuali; storico solo per nome/foto."""
-    lettori = (leggi_prodotto_creators_da_link, leggi_prodotto_amazon) * 3
-    errore = 'prezzo attuale non rilevato'
-    senza_offerta = 0
-    for indice, lettore in enumerate(lettori, 1):
-        try:
-            dati = await asyncio.to_thread(lettore, link)
-            if dati and dati.get('disponibile') is False:
-                return None, 'prodotto non disponibile'
-            if dati:
-                prezzo = numero_da_prezzo(str(dati.get('prezzo') or ''))
-                if prezzo is not None and prezzo > 0:
-                    if not offerta_attuale_rilevata(dati):
-                        # Conferma su due letture indipendenti prima dello scarto.
-                        senza_offerta += 1
-                        errore = 'nessuno sconto o coupon attuale rilevato'
-                        if senza_offerta >= 2:
-                            return None, errore
-                        continue
-                    dati['nome'] = dati.get('nome') or storico.get('nome')
-                    dati['_foto_storica_repost'] = storico.get('foto_file_id')
-                    dati['categoria'] = dati.get('categoria') or storico.get('categoria')
-                    if dati.get('nome') and (dati.get('immagine') or storico.get('foto_file_id')):
-                        dati['tipologia_amazon'] = tipo_o_fallback(link, dati)
-                        return dati, None
-                    errore = 'nome o foto mancanti anche nella cronologia'
-                else:
-                    errore = 'prezzo attuale non rilevato'
-        except Exception as exc:
-            errore = f'errore Amazon: {type(exc).__name__}'
-            print(f'Repost lettura {indice}/6: {type(exc).__name__}: {exc}')
-        if callback:
-            await callback(indice)
-        if indice < 6:
-            await asyncio.sleep(2 if indice < 3 else 4)
-    return None, errore
+    """Storico per nome/foto; prezzi, sconto, coupon e disponibilita' da lettura corrente."""
+    dati = await leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callback=callback)
+    if not dati:
+        return None, 'prezzo, disponibilita’ o condizione non verificabili (vedi log Railway)'
+    if not offerta_attuale_rilevata(dati):
+        return None, 'nessuno sconto o coupon attuale rilevato'
+    dati['nome'] = dati.get('nome') or storico.get('nome')
+    dati['_foto_storica_repost'] = storico.get('foto_file_id')
+    dati['categoria'] = dati.get('categoria') or storico.get('categoria')
+    if not dati.get('nome') or not (dati.get('immagine') or storico.get('foto_file_id')):
+        return None, 'nome o foto mancanti anche nella cronologia'
+    return dati, None
 
 
 async def repost_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -9509,7 +9563,7 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
             if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
                 return
             if not dati:
-                draft['scartati'].append(f'{link} — {motivo_repost or "dati insufficienti dopo 6 tentativi"}')
+                draft['scartati'].append(f'{link} — {motivo_repost or "lettura non completata (vedi log Railway)"}')
                 continue
             tipo = tipo_o_fallback(link, dati)
             dati['tipologia_amazon'] = tipo
