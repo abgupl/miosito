@@ -8516,9 +8516,25 @@ async def bp_select_channel(update, context):
 
 
 async def bp_select_channel_priority(update, context):
-    """Callback prioritario per la selezione; risponde anche durante una conversazione."""
-    await bp_select_channel(update, context)
-    raise ApplicationHandlerStop
+    """Always acknowledge channel taps and report errors instead of silently failing."""
+    query = update.callback_query
+    try:
+        await bp_select_channel(update, context)
+    except Exception as exc:
+        import traceback
+        print('ERRORE SELEZIONE CANALE:', traceback.format_exc(), flush=True)
+        try:
+            await query.answer('Errore apertura canale. Controlla i log Railway.', show_alert=True)
+        except Exception:
+            pass
+        try:
+            await query.message.reply_text(
+                '❌ Impossibile aprire il canale. Errore: '
+                + type(exc).__name__ + '. Controlla i log Railway.')
+        except Exception:
+            pass
+    finally:
+        raise ApplicationHandlerStop
 
 
 def menu_principale():
@@ -14743,7 +14759,7 @@ def main():
     app.add_handler(CallbackQueryHandler(bp_add_help, pattern=r"^bp_add_help$"))
     app.add_handler(CallbackQueryHandler(bp_home, pattern=r"^bp_home$"))
     # Canale: handler prioritario, non intercettato dai ConversationHandler.
-    app.add_handler(CallbackQueryHandler(bp_select_channel_priority, pattern=r"^bp_channel_-?\d+$"), group=-2)
+    app.add_handler(CallbackQueryHandler(bp_select_channel_priority, pattern=r"^bp_channel_.+$"), group=-2)
     app.add_handler(CallbackQueryHandler(
         storico_prezzi_non_disponibile, pattern="^offer_price_unavailable$"
     ))
