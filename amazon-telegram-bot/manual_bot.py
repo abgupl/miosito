@@ -13,6 +13,9 @@ import time
 import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO, StringIO
+import sys
+import logging
+import traceback
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -24,7 +27,14 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
-from amazon_client import get_items, search_items
+# Accesso Creators API temporaneamente disabilitato: nessuna chiamata remota.
+# La ricerca automatica basata esclusivamente sull'API non puo' trovare nuovi candidati
+# finche' non viene implementata una fonte alternativa autorizzata.
+def get_items(*args, **kwargs):
+    return []
+
+def search_items(*args, **kwargs):
+    return []
 
 from telegram import (
     Update,
@@ -45,6 +55,90 @@ from telegram.ext import (
     ApplicationHandlerStop,
 )
 
+
+# =========================================================
+# LOG DIAGNOSTICI: cattura stdout/stderr e logging Python
+# Solo gli eventi da questo avvio del processo; nessun accesso API Railway.
+# =========================================================
+_LOG_BUFFER = deque(maxlen=3000)
+_LOG_LOCK = threading.RLock()
+_LOG_STARTED = datetime.now(timezone.utc)
+
+
+def _redact_log_line(line):
+    line = str(line)
+    secrets = [os.environ.get(k, "") for k in (
+        "TELEGRAM_BOT_TOKEN", "AMAZON_ACCESS_KEY", "AMAZON_SECRET_KEY",
+        "CREATORS_API_SECRET", "BUFFER_ACCESS_TOKEN", "RAILWAY_API_TOKEN",
+    )]
+    for secret in secrets:
+        if secret and len(secret) >= 5:
+            line = line.replace(secret, "[RISERVATO]")
+    line = re.sub(r"(?i)(authorization\s*[:=]\s*(?:bearer|basic)\s+)\S+", r"\1[RISERVATO]", line)
+    line = re.sub(r"(?i)((?:token|secret|password|api[_-]?key)\s*[:=]\s*)[^\s,;]+", r"\1[RISERVATO]", line)
+    line = re.sub(r"\b\d{8,10}:[A-Za-z0-9_-]{30,}\b", "[TOKEN_TELEGRAM_RISERVATO]", line)
+    return line[:3000]
+
+
+def _save_log_line(line, stream):
+    if not line.strip():
+        return
+    stamp = datetime.now(ROMA_TZ).strftime("%d/%m %H:%M:%S")
+    with _LOG_LOCK:
+        _LOG_BUFFER.append((stamp, stream, _redact_log_line(line)))
+
+
+class _LogTee:
+    def __init__(self, original, label):
+        self.original = original
+        self.label = label
+        self.pending = ""
+        self.lock = threading.RLock()
+
+    def write(self, text):
+        with self.lock:
+            self.original.write(text)
+            self.pending += str(text)
+            while "\n" in self.pending:
+                line, self.pending = self.pending.split("\n", 1)
+                _save_log_line(line, self.label)
+        return len(text)
+
+    def flush(self):
+        with self.lock:
+            if self.pending:
+                _save_log_line(self.pending, self.label)
+                self.pending = ""
+            self.original.flush()
+
+    def isatty(self):
+        return self.original.isatty()
+
+    def __getattr__(self, name):
+        return getattr(self.original, name)
+
+
+class _MemoryLogHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            _save_log_line(self.format(record), "PYTHON")
+        except Exception:
+            pass
+
+
+def _install_log_capture():
+    if not isinstance(sys.stdout, _LogTee):
+        sys.stdout = _LogTee(sys.stdout, "STDOUT")
+    if not isinstance(sys.stderr, _LogTee):
+        sys.stderr = _LogTee(sys.stderr, "STDERR")
+    root = logging.getLogger()
+    if not any(isinstance(h, _MemoryLogHandler) for h in root.handlers):
+        handler = _MemoryLogHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        root.addHandler(handler)
+
+
+_install_log_capture()
 
 # =========================================================
 # CONFIGURAZIONE
@@ -1675,7 +1769,7 @@ async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callbac
                 if callback:
                     await callback(indice)
                 if indice < 3:
-                    await asyncio.sleep(2 if indice == 1 else 4)
+                    await asyncio.sleep(3)
                 continue
             if isinstance(risultato, dict) and risultato:
                 dati = _unisci_dati_lettura(metadati, risultato)
@@ -1701,7 +1795,7 @@ async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callbac
         if callback:
             await callback(indice)
         if indice < 3:
-            await asyncio.sleep(2 if indice < 3 else 4)
+            await asyncio.sleep(3)
     print(f'Lettura Amazon ASIN {asin}: fallita. Motivi: {"; ".join(motivi)}')
     return None
 
@@ -2999,7 +3093,7 @@ def inizializza_automazione():
         "punteggio_minimo": "5",
         "bonus_sconto_da": "30",
         "priorita_amazon": "1",
-        "tentativi_ricerca": "6",
+        "tentativi_ricerca": "3",
         "giorni_blocco_duplicati": "10",
         "raggruppa_varianti": "1",
         "indice_categoria_automatica": "0",
@@ -3305,7 +3399,7 @@ def leggi_config_automatica(canale="tech"):
         "punteggio_minimo": int(valori.get("punteggio_minimo", "4")),
         "bonus_sconto_da": int(valori.get("bonus_sconto_da", "30")),
         "priorita_amazon": valori.get("priorita_amazon", "1") == "1",
-        "tentativi_ricerca": int(valori.get("tentativi_ricerca", "6")),
+        "tentativi_ricerca": 3,
         "giorni_blocco_duplicati": int(valori.get("giorni_blocco_duplicati", "10")),
         "raggruppa_varianti": valori.get("raggruppa_varianti", "1") == "1",
         "categorie": categorie,
@@ -4407,7 +4501,7 @@ async def gestisci_selettiva(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "punteggio_minimo": 4,
             "bonus_sconto_da": 30,
             "priorita_amazon": 1,
-            "tentativi_ricerca": 6,
+            "tentativi_ricerca": 3,
             "raggruppa_varianti": 1,
         }.items():
             salva_config_automatica(chiave, valore, canale)
@@ -6832,7 +6926,7 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale, canale="t
 
     snapshot_filtri = carica_snapshot_filtri(configurazione=configurazione)
 
-    massimo = max(3, min(9, int(configurazione.get("tentativi_ricerca", 6))))
+    massimo = 3  # Limite fisso per ciclo di ricerca automatica
     tentativi = []
     visti = set()
     indice = 0
@@ -6918,7 +7012,7 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale, canale="t
         except Exception as errore:
             statistiche["errori"] += 1
             print(f"Errore tentativo automatico {numero}: {errore}")
-        # Strategia 3+3: se i primi tre tentativi bastano, non consumiamo altre richieste.
+        # Ricerca automatica limitata a tre tentativi per ciclo.
         if numero == 3 and candidati:
             break
         if numero < len(tentativi):
@@ -7059,7 +7153,7 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
         # seconda lettura viene eseguita al momento del suo invio.
         recuperato = await leggi_offerta_con_sei_tentativi(prodotto.get('link'), richiedi_immagine=True)
         if not recuperato:
-            raise ValueError('Offerta non leggibile dopo 6 tentativi: prodotto saltato')
+            raise ValueError('Offerta non leggibile dopo 3 tentativi: prodotto saltato')
         prodotto.update(recuperato)
         tipo = tipo_o_fallback(prodotto.get('link'), prodotto)
     elif tipo == 'sconosciuto':
@@ -7766,26 +7860,18 @@ async def controlla_raccolte_casa_terminate(app):
         asins = [riga[2] for riga in gruppo if riga[2]]
         if not asins:
             continue
-        try:
-            items = await asyncio.to_thread(get_items, asins)
-        except Exception as errore:
-            print(f"Errore verifica raccolte CASA: {errore}")
-            continue
-        prodotti_api = {
-            getattr(item, "asin", None): estrai_prodotto_creators(item)
-            for item in items if getattr(item, "asin", None)
-        }
+        prodotti_api = await _prodotti_monitorati_da_pagina(asins)
         for (
             prodotto_id, raccolta_id, asin, nome, _,
             prezzo_memorizzato, vecchio_memorizzato, sconto_memorizzato,
         ) in gruppo:
             prodotto = prodotti_api.get(asin)
-            non_disponibile = not prodotto
-            _aggiorna_verifica_prodotto_raccolta(prodotto_id, non_disponibile)
+            if prodotto:
+                _aggiorna_verifica_prodotto_raccolta(prodotto_id, False)
             if not prodotto:
                 # Un risultato API mancante non dimostra che lo sconto sia finito.
                 continue
-            sconto_azzerato = bool(prodotto and int(prodotto.get("sconto") or 0) == 0)
+            sconto_azzerato = bool(prodotto and prodotto.get("sconto") is not None and int(prodotto["sconto"]) == 0)
             if sconto_azzerato:
                 raccolta_modificata = _segna_prodotto_raccolta_terminato(prodotto_id)
                 if raccolta_modificata:
@@ -7793,11 +7879,13 @@ async def controlla_raccolte_casa_terminate(app):
                     nomi_terminati.append(nome)
                 continue
             valori_cambiati = (
+                prodotto.get('sconto') is not None and (
                 int(prodotto.get("sconto") or 0) != int(sconto_memorizzato or 0)
                 or _normalizza_valore_monitorato(prodotto.get("prezzo"))
                 != _normalizza_valore_monitorato(prezzo_memorizzato)
                 or _normalizza_valore_monitorato(prodotto.get("vecchio_prezzo"))
                 != _normalizza_valore_monitorato(vecchio_memorizzato)
+                )
             )
             if valori_cambiati:
                 raccolta_modificata = _aggiorna_prodotto_raccolta(prodotto_id, prodotto)
@@ -8023,26 +8111,18 @@ async def controlla_raccolte_tech_terminate(app):
         asins = [riga[2] for riga in gruppo if riga[2]]
         if not asins:
             continue
-        try:
-            items = await asyncio.to_thread(get_items, asins)
-        except Exception as errore:
-            print(f"Errore verifica raccolte TECH: {errore}")
-            continue
-        prodotti_api = {
-            getattr(item, "asin", None): estrai_prodotto_creators(item)
-            for item in items if getattr(item, "asin", None)
-        }
+        prodotti_api = await _prodotti_monitorati_da_pagina(asins)
         for (
             prodotto_id, raccolta_id, asin, nome, _,
             prezzo_memorizzato, vecchio_memorizzato, sconto_memorizzato,
         ) in gruppo:
             prodotto = prodotti_api.get(asin)
-            non_disponibile = not prodotto
-            _aggiorna_verifica_prodotto_raccolta_tech(prodotto_id, non_disponibile)
+            if prodotto:
+                _aggiorna_verifica_prodotto_raccolta_tech(prodotto_id, False)
             if not prodotto:
                 # Un risultato API mancante non dimostra che lo sconto sia finito.
                 continue
-            sconto_azzerato = bool(prodotto and int(prodotto.get("sconto") or 0) == 0)
+            sconto_azzerato = bool(prodotto and prodotto.get("sconto") is not None and int(prodotto["sconto"]) == 0)
             if sconto_azzerato:
                 raccolta_modificata = _segna_prodotto_raccolta_tech_terminato(prodotto_id)
                 if raccolta_modificata:
@@ -8050,11 +8130,13 @@ async def controlla_raccolte_tech_terminate(app):
                     nomi_terminati.append(nome)
                 continue
             valori_cambiati = (
+                prodotto.get('sconto') is not None and (
                 int(prodotto.get("sconto") or 0) != int(sconto_memorizzato or 0)
                 or _normalizza_valore_monitorato(prodotto.get("prezzo"))
                 != _normalizza_valore_monitorato(prezzo_memorizzato)
                 or _normalizza_valore_monitorato(prodotto.get("vecchio_prezzo"))
                 != _normalizza_valore_monitorato(vecchio_memorizzato)
+                )
             )
             if valori_cambiati:
                 raccolta_modificata = _aggiorna_prodotto_raccolta_tech(prodotto_id, prodotto)
@@ -8075,6 +8157,29 @@ async def controlla_raccolte_tech_terminate(app):
         )
 
 
+
+async def _prodotti_monitorati_da_pagina(asins):
+    """Legge ASIN dal sito senza API; non equipara errore di lettura a prodotto terminato."""
+    risultati = {}
+    for asin in dict.fromkeys(a for a in asins if a):
+        dati = await leggi_offerta_con_sei_tentativi(f'https://www.amazon.it/dp/{asin}')
+        if not dati or dati.get('disponibile') is False:
+            print(f'Monitoraggio {asin}: dati non verificabili, post lasciato invariato')
+            continue
+        prezzo = numero_da_prezzo(str(dati.get('prezzo') or ''))
+        vecchio = numero_da_prezzo(str(dati.get('vecchio_prezzo') or ''))
+        if not prezzo or prezzo <= 0:
+            continue
+        # Zero solo quando c'e' evidenza esplicita; senza prezzo precedente
+        # lo sconto e' sconosciuto e non va dichiarato terminato.
+        if vecchio and vecchio > 0:
+            dati['sconto'] = max(0, round((1 - prezzo / vecchio) * 100))
+        else:
+            dati['sconto'] = None
+        dati['asin'] = asin
+        risultati[asin] = dati
+    return risultati
+
 async def controlla_offerte_terminate(app):
     while True:
         try:
@@ -8084,17 +8189,7 @@ async def controlla_offerte_terminate(app):
                 asins = [riga[1] for riga in gruppo if riga[1]]
                 if not asins:
                     continue
-                try:
-                    items = await asyncio.to_thread(get_items, asins)
-                except Exception as errore:
-                    print(f"Errore verifica disponibilità Creator API: {errore}")
-                    continue
-
-                prodotti = {}
-                for item in items:
-                    asin = getattr(item, "asin", None)
-                    if asin:
-                        prodotti[asin] = estrai_prodotto_creators(item)
+                prodotti = await _prodotti_monitorati_da_pagina(asins)
 
                 for (
                     invio_id,
@@ -8112,15 +8207,15 @@ async def controlla_offerte_terminate(app):
                     vecchio_memorizzato,
                 ) in gruppo:
                     prodotto = prodotti.get(asin)
-                    non_disponibile = not prodotto
-                    _aggiorna_verifica_offerta(invio_id, non_disponibile)
+                    if prodotto:
+                        _aggiorna_verifica_offerta(invio_id, False)
                     if not prodotto:
                         # Le API possono omettere temporaneamente un ASIN:
                         # senza uno sconto certo allo 0% il post resta invariato.
                         continue
 
                     sconto_attuale = int(prodotto.get("sconto") or 0)
-                    if sconto_attuale == 0:
+                    if prodotto.get('sconto') is not None and sconto_attuale == 0:
                         try:
                             await _modifica_post_terminato(
                                 app.bot,
@@ -8142,11 +8237,13 @@ async def controlla_offerte_terminate(app):
                         continue
 
                     valori_cambiati = (
+                        prodotto.get('sconto') is not None and (
                         sconto_attuale != int(sconto_iniziale or 0)
                         or _normalizza_valore_monitorato(prodotto.get("prezzo"))
                         != _normalizza_valore_monitorato(prezzo_memorizzato)
                         or _normalizza_valore_monitorato(prodotto.get("vecchio_prezzo"))
                         != _normalizza_valore_monitorato(vecchio_memorizzato)
+                        )
                     )
                     if valori_cambiati:
                         try:
@@ -8243,8 +8340,89 @@ def menu_impostazioni():
         [InlineKeyboardButton("🎯 FILTRI E PRIORITÀ", callback_data="auto_filtri")],
         [InlineKeyboardButton("🌙 ORARIO RECAP SERALE", callback_data="recap_time_menu")],
         [InlineKeyboardButton("📊 STATO DEL BOT", callback_data="bot_status")],
+        [InlineKeyboardButton("📋 LOG E DIAGNOSTICA", callback_data="diag_logs_all_0")],
         [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
     ])
+
+
+def _diagnostic_entries(kind="all"):
+    with _LOG_LOCK:
+        entries = list(_LOG_BUFFER)
+    if kind == "errors":
+        entries = [e for e in entries if re.search(r"errore|error|exception|traceback|fallit|timeout|denied|warning|pending", e[2], re.I)]
+    elif kind == "amazon":
+        entries = [e for e in entries if re.search(r"amazon|asin|creator|prezzo|lettura|offert", e[2], re.I)]
+    return entries
+
+
+def _diag_keyboard(kind, page, total):
+    buttons = [
+        [InlineKeyboardButton("📋 Tutti", callback_data="diag_logs_all_0"),
+         InlineKeyboardButton("❌ Errori", callback_data="diag_logs_errors_0"),
+         InlineKeyboardButton("📦 Amazon", callback_data="diag_logs_amazon_0")],
+    ]
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Più recenti", callback_data=f"diag_logs_{kind}_{page-1}"))
+    if (page + 1) * 12 < total:
+        nav.append(InlineKeyboardButton("Più vecchi ➡️", callback_data=f"diag_logs_{kind}_{page+1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.extend([
+        [InlineKeyboardButton("🔄 Aggiorna", callback_data=f"diag_logs_{kind}_{page}"),
+         InlineKeyboardButton("📄 Esporta TXT", callback_data=f"diag_export_{kind}")],
+        [InlineKeyboardButton("⬅️ Impostazioni", callback_data="settings_menu")],
+    ])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def mostra_log_diagnostici(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    match = re.fullmatch(r"diag_logs_(all|errors|amazon)_(\d+)", query.data or "")
+    if not match:
+        return
+    kind, page = match.group(1), int(match.group(2))
+    entries = _diagnostic_entries(kind)
+    total = len(entries)
+    max_page = max(0, (total - 1) // 12)
+    page = min(page, max_page)
+    subset = list(reversed(entries))[page * 12:(page + 1) * 12]
+    heading = {"all": "TUTTI", "errors": "ERRORI", "amazon": "AMAZON"}[kind]
+    lines = [f"📋 LOG BOT — {heading}",
+             f"Avvio raccolta: {_LOG_STARTED.astimezone(ROMA_TZ):%d/%m/%Y %H:%M}",
+             f"Eventi: {total} · Pagina {page + 1}/{max_page + 1}",
+             "(Solo processo corrente, non l'intero storico Railway)", ""]
+    for stamp, source, line in subset:
+        candidate = f"[{stamp}] {line}"
+        lines.append(candidate[:420])
+    text = "\n".join(lines)
+    while len(text) > 3900 and len(lines) > 5:
+        lines.pop()
+        text = "\n".join(lines)
+    await query.edit_message_text(text, reply_markup=_diag_keyboard(kind, page, total))
+
+
+async def esporta_log_diagnostici(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer("Preparazione log…")
+    match = re.fullmatch(r"diag_export_(all|errors|amazon)", query.data or "")
+    if not match:
+        return
+    kind = match.group(1)
+    entries = _diagnostic_entries(kind)
+    lines = [f"BestPrice24h — Log {kind}",
+             f"Raccolta dal {_LOG_STARTED.astimezone(ROMA_TZ):%Y-%m-%d %H:%M:%S}",
+             "Solo log raccolti dal bot durante questo processo; non log completi Railway.", ""]
+    lines.extend(f"[{stamp}] [{source}] {line}" for stamp, source, line in entries)
+    data = BytesIO("\n".join(lines).encode("utf-8", errors="replace"))
+    data.name = f"BestPrice24h_log_{kind}_{datetime.now(ROMA_TZ):%Y%m%d_%H%M}.txt"
+    await context.bot.send_document(chat_id=update.effective_chat.id, document=data,
+                                    filename=data.name, caption=f"📋 Log {kind}: {len(entries)} eventi")
 
 
 async def mostra_menu_impostazioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8535,11 +8713,18 @@ def leggi_prodotto_amazon(url):
         risposta = requests.get(
             url,
             headers=headers,
-            timeout=15,
+            timeout=10,
             allow_redirects=True,
         )
 
         if risposta.status_code != 200:
+            print(f"Amazon pagina HTTP {risposta.status_code}: {risposta.url}")
+            return None
+        if not risposta.content:
+            print(f"Amazon pagina vuota: {risposta.url}")
+            return None
+        if any(m in risposta.text.lower() for m in ('captcha', 'enter the characters you see below', 'robot check')):
+            print(f"Amazon pagina di verifica anti-bot: {risposta.url}")
             return None
 
         soup = BeautifulSoup(
@@ -8641,6 +8826,7 @@ def leggi_prodotto_amazon(url):
                 immagine = og.get('content')
 
         if not titolo and not prezzo:
+            print(f"Amazon pagina HTTP 200 ma senza titolo e prezzo: {risposta.url}")
             return None
 
         categorie_pagina = [el.get_text(" ", strip=True) for el in soup.select(
@@ -8661,14 +8847,16 @@ def leggi_prodotto_amazon(url):
             "disponibile": not bool(re.search(r'non (?:è )?disponibile|attualmente non disponibile|temporaneamente esaurito', (soup.select_one('#availability').get_text(' ',strip=True) if soup.select_one('#availability') else ''),flags=re.IGNORECASE)),
         }
 
-    except requests.RequestException:
+    except requests.Timeout as errore:
+        print(f"Amazon timeout HTTP (10s): {type(errore).__name__}: {errore}")
+        return None
+    except requests.RequestException as errore:
+        print(f"Amazon errore HTTP: {type(errore).__name__}: {errore}")
         return None
 
     except Exception as errore:
 
-        print(
-            f"Errore lettura Amazon: {errore}"
-        )
+        print(f"Errore lettura Amazon: {type(errore).__name__}: {errore}")
 
         return None
 
@@ -8716,7 +8904,7 @@ def risolvi_asin_da_link(link):
     try:
         with requests.get(
             link,
-            timeout=15,
+            timeout=10,
             allow_redirects=True,
             stream=True,
             headers={"User-Agent": "Mozilla/5.0"},
@@ -8731,17 +8919,9 @@ def leggi_prodotto_creators_da_link(link):
     asin = risolvi_asin_da_link(link)
     if not asin:
         return None
-    items = get_items([asin])
-    if not items:
-        return None
-    prodotto = estrai_prodotto_creators(items[0])
-    if prodotto:
-        pagina = leggi_prodotto_amazon(link)
-        if pagina:
-            prodotto['coupon'] = pagina.get('coupon')
-            prodotto['disponibile'] = pagina.get('disponibile', prodotto.get('disponibile'))
-            prodotto['categoria'] = prodotto.get('categoria') or pagina.get('categoria')
-    return prodotto
+    # Compatibilita' con chiamanti esistenti: lettura esclusivamente pagina.
+    return leggi_prodotto_amazon(f'https://www.amazon.it/dp/{asin}')
+
 
 
 # =========================================================
@@ -9387,7 +9567,7 @@ async def rapido_da_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     draft = {'canale': 'tech', 'minuti': intervallo_multiplo(update.effective_user.id), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
     context.user_data['multiplo'] = draft
-    await update.effective_message.reply_text("📦 INVIO MULTIPLO\n\nScegli canale e intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi + altri 3 automatici.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.", reply_markup=tastiera_multiplo(draft))
+    await update.effective_message.reply_text("📦 INVIO MULTIPLO\n\nScegli canale e intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.", reply_markup=tastiera_multiplo(draft))
     return RAPIDO
 
 
@@ -14521,6 +14701,8 @@ def main():
     app.add_handler(
         CallbackQueryHandler(mostra_menu_impostazioni, pattern="^settings_menu$")
     )
+    app.add_handler(CallbackQueryHandler(mostra_log_diagnostici, pattern=r"^diag_logs_(?:all|errors|amazon)_\d+$"))
+    app.add_handler(CallbackQueryHandler(esporta_log_diagnostici, pattern=r"^diag_export_(?:all|errors|amazon)$"))
     app.add_handler(
         CallbackQueryHandler(mostra_gestione_canali, pattern="^channels_manage$")
     )
