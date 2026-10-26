@@ -37,6 +37,16 @@ def search_items(*args, **kwargs):
     return []
 
 import bestprice_channels as bp_channels
+import bestprice_collections_routing as bp_collections_routing
+import bestprice_collections_history as bp_collections_history
+import bestprice_collections_multichannel as bp_collages_multi
+import bestprice_collection_selection as bp_collection_selection
+import bestprice_rubriche_routing as bp_rubriche_routing
+from bestprice_post_safety import require_post_destination
+import bestprice_scheduler as bp_scheduler
+import bestprice_readiness as bp_readiness
+import bestprice_automation_config as bp_auto_config
+import bestprice_publishing as bp_publishing
 
 from telegram import (
     Update,
@@ -740,6 +750,8 @@ def salva_offerta_recap(
     if not nome or not link:
         return
 
+    from bestprice_post_safety import require_post_destination
+    telegram_chat_id = require_post_destination(DB_PATH, telegram_chat_id)
     adesso = datetime.now(ROMA_TZ)
 
     db = sqlite3.connect(DB_PATH)
@@ -770,7 +782,7 @@ def salva_offerta_recap(
         template or "pulito",
         asin,
         categoria or "manuale",
-        telegram_chat_id or CHANNEL_ID,
+        telegram_chat_id,
         origine or "manuale",
         int(sconto or 0),
         telegram_message_id,
@@ -810,8 +822,12 @@ def offerte_pubblicate_per_web(limit=60, base_url=""):
 
     offerte = []
     for riga in righe:
-        chat_id = str(riga["telegram_chat_id"] or CHANNEL_ID)
-        canale = "casa" if chat_id.lower() == str(CASA_CHANNEL_ID).lower() else "tech"
+        chat_id = str(riga["telegram_chat_id"] or "").strip()
+        if not chat_id:
+            continue  # Unknown destination must not be presented as TECH.
+        canale = ("casa" if chat_id.lower() == str(CASA_CHANNEL_ID).lower()
+                  else "tech" if chat_id.lower() == str(CHANNEL_ID).lower()
+                  else chat_id)
         username = chat_id[1:] if chat_id.startswith("@") else ""
         message_id = riga["telegram_message_id"]
         telegram_url = (
@@ -1899,6 +1915,9 @@ def registra_pubblicazione_monitorata(
     telegram_chat_id=None,
 ):
     """Registra qualsiasi post Amazon per duplicati e controllo disponibilità."""
+    # Never persist a monitored publication without an explicit, enabled channel.
+    # Resolve before opening the write transaction to fail closed.
+    telegram_chat_id = bp_publishing.resolve_destination(DB_PATH, telegram_chat_id).chat_id
     asin = asin or risolvi_asin_da_link(link)
     if not asin:
         return False
@@ -1927,7 +1946,7 @@ def registra_pubblicazione_monitorata(
             int(soglia_sconto or 0),
             deal_end_time,
             adesso.isoformat(timespec="seconds"),
-            telegram_chat_id or CHANNEL_ID,
+            telegram_chat_id,
         ),
     )
     db.commit()
@@ -2391,10 +2410,12 @@ def descrizione_pause_programmate(canale, giorni):
 
 
 def slot_manuale_libero(data, occupati, minuti, config):
+    # The scheduler must never assume TECH when a destination was omitted.
+    canale = bp_publishing.resolve_destination(DB_PATH, config.get('_canale')).chat_id
     passo = timedelta(minutes=max(1, int(minuti)))
     candidato = prossimo_orario_manuale(data, config)
     while True:
-        candidato = prossimo_orario_manuale(prossimo_fuori_pausa(candidato, config.get('_canale', CHANNEL_ID)), config)
+        candidato = prossimo_orario_manuale(prossimo_fuori_pausa(candidato, canale), config)
         conflitti = [t for t in occupati if abs((t-candidato).total_seconds()) < passo.total_seconds()]
         if not conflitti:
             return candidato
@@ -2416,7 +2437,11 @@ def riallinea_programmati_fascia():
                 continue
             precedente = precedente.astimezone(timezone.utc)
             base = max(precedente, ora) if precedente < ora-timedelta(seconds=30) else precedente
-            canale = str(chat or CHANNEL_ID)
+            # Historical records without a destination must not be silently assigned to TECH.
+            try:
+                canale = bp_publishing.resolve_destination(DB_PATH, chat).chat_id
+            except bp_publishing.ChannelRoutingError:
+                continue
             nuovo = slot_manuale_libero(base, occupati.setdefault(canale, []), minuti or DISTANZA_MINIMA_MINUTI, dict(cfg, _canale=canale))
             occupati[canale].append(nuovo)
             if nuovo.astimezone(timezone.utc) != precedente:
@@ -2564,9 +2589,10 @@ def salva_programmazione(
     link,
     prezzo,
     invio_previsto_locale,
-    telegram_chat_id=CHANNEL_ID,
+    telegram_chat_id=None,
     origine="manuale",
 ):
+    telegram_chat_id = bp_publishing.resolve_destination(DB_PATH, telegram_chat_id).chat_id
 
     # Salviamo in UTC per evitare problemi
     # con ora legale/solare.
@@ -2579,9 +2605,9 @@ def salva_programmazione(
     db = sqlite3.connect(DB_PATH, timeout=30)
     cur = db.cursor()
     cur.execute('BEGIN IMMEDIATE')
-    righe = cur.execute("SELECT invio_previsto FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),str(telegram_chat_id or CHANNEL_ID))).fetchall()
+    righe = cur.execute("SELECT invio_previsto FROM programmazioni WHERE stato='attesa' AND CAST(telegram_chat_id AS TEXT)=?", (str(telegram_chat_id),)).fetchall()
     occupati = [_data_sqlite(r[0]) for r in righe if _data_sqlite(r[0])]
-    invio_previsto_locale = slot_manuale_libero(invio_previsto_locale, occupati, DISTANZA_MINIMA_MINUTI, cfg)
+    invio_previsto_locale = slot_manuale_libero(invio_previsto_locale, occupati, DISTANZA_MINIMA_MINUTI, dict(cfg, _canale=str(telegram_chat_id)))
     invio_previsto_utc = invio_previsto_locale.astimezone(timezone.utc)
 
     vecchio_prezzo = (
@@ -2626,7 +2652,7 @@ def salva_programmazione(
         vecchio_prezzo,
         template,
         None,
-        telegram_chat_id or CHANNEL_ID,
+        telegram_chat_id,
         invio_previsto_utc.isoformat(
             timespec="seconds"
         ),
@@ -2663,7 +2689,7 @@ async def invia_offerta_programmata(
         foto_file_id,
         telegram_chat_id,
     ) = programmazione
-    destinazione = telegram_chat_id or CHANNEL_ID
+    destinazione = _chat_id_per_canale(telegram_chat_id)
 
     with sqlite3.connect(DB_PATH) as db_duplicati:
         origine_riga = db_duplicati.execute(
@@ -2695,21 +2721,10 @@ async def invia_offerta_programmata(
 
     # Ricontrolla la pausa anche se la coda e' stata preparata ore prima.
     await attendi_finestra_offerte(destinazione)
-    if foto_file_id:
-        messaggio_telegram = await bot.send_photo(
-            chat_id=destinazione,
-            photo=foto_file_id,
-            caption=messaggio_con_link,
-            parse_mode="HTML",
-            reply_markup=bottone_offerta,
-        )
-    else:
-        messaggio_telegram = await bot.send_message(
-            chat_id=destinazione,
-            text=messaggio_con_link,
-            parse_mode="HTML",
-            reply_markup=bottone_offerta,
-        )
+    messaggio_telegram = await bp_publishing.send_offer(
+        bot, DB_PATH, destinazione, text=messaggio_con_link,
+        photo=foto_file_id, parse_mode="HTML", reply_markup=bottone_offerta,
+    )
 
     await aggiorna_pulsanti_offerta(bot, messaggio_telegram, link, chat_id=destinazione)
 
@@ -2861,9 +2876,8 @@ async def avvia_programmazioni(app):
         controlla_recap(app)
     )
 
-    app.create_task(
-        controlla_invii_automatici(app)
-    )
+    # Amazon automatic posting is suspended until Creators API access.
+    # Do not start the legacy automatic worker on Railway.
 
     app.create_task(
         controlla_offerte_terminate(app)
@@ -3356,65 +3370,15 @@ def inizializza_automazione():
 
 
 def _chiave_config_canale(canale, chiave):
-    return chiave if canale == "tech" else f"{canale}:{chiave}"
+    return bp_auto_config.config_key(canale, chiave, DB_PATH)
 
 
 def leggi_config_automatica(canale="tech"):
-    if canale not in {"tech", "casa"}:
-        canale = "tech"
-    db = sqlite3.connect(DB_PATH)
-    cur = db.cursor()
-    cur.execute("SELECT chiave, valore FROM configurazione_automatica")
-    valori_grezzi = dict(cur.fetchall())
-    valori = {
-        chiave: valore
-        for chiave in (
-            "attiva", "intervallo_minuti", "ora_inizio", "ora_fine",
-            "prossimo_invio", "sconto_minimo", "qualita_prodotti",
-            "punteggio_minimo", "bonus_sconto_da", "priorita_amazon",
-            "tentativi_ricerca", "giorni_blocco_duplicati", "raggruppa_varianti",
-        )
-        if (valore := valori_grezzi.get(_chiave_config_canale(canale, chiave)))
-        is not None
-    }
-    cur.execute(
-        """
-        SELECT categoria FROM categorie_automatiche_canali
-        WHERE canale = ? ORDER BY categoria
-        """,
-        (canale,),
-    )
-    categorie_consentite = TECH_CATEGORIE if canale == "tech" else CASA_CATEGORIE
-    categorie = [
-        riga[0] for riga in cur.fetchall() if riga[0] in categorie_consentite
-    ]
-    db.close()
-    return {
-        "attiva": valori.get("attiva", "0") == "1",
-        "intervallo_minuti": int(valori.get("intervallo_minuti", "120")),
-        "ora_inizio": valori.get("ora_inizio", "09:00"),
-        "ora_fine": valori.get("ora_fine", "21:00"),
-        "prossimo_invio": valori.get("prossimo_invio", ""),
-        "sconto_minimo": int(valori.get("sconto_minimo", "20")),
-        "qualita_prodotti": valori.get("qualita_prodotti", "selettiva"),
-        "punteggio_minimo": int(valori.get("punteggio_minimo", "4")),
-        "bonus_sconto_da": int(valori.get("bonus_sconto_da", "30")),
-        "priorita_amazon": valori.get("priorita_amazon", "1") == "1",
-        "tentativi_ricerca": 3,
-        "giorni_blocco_duplicati": int(valori.get("giorni_blocco_duplicati", "10")),
-        "raggruppa_varianti": valori.get("raggruppa_varianti", "1") == "1",
-        "categorie": categorie,
-    }
+    return bp_auto_config.read_config(DB_PATH, canale, TECH_CATEGORIE, CASA_CATEGORIE)
 
 
 def salva_config_automatica(chiave, valore, canale="tech"):
-    db = sqlite3.connect(DB_PATH)
-    db.execute(
-        "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
-        (_chiave_config_canale(canale, chiave), str(valore)),
-    )
-    db.commit()
-    db.close()
+    return bp_auto_config.write_config(DB_PATH, chiave, valore, canale)
 
 
 def leggi_config_raccolte_casa():
@@ -4157,8 +4121,11 @@ def tastiera_automazione(configurazione, canale):
 
 
 def _auto_canale_corrente(context):
-    canale = context.user_data.get("auto_canale", "tech")
-    return canale if canale in {"tech", "casa"} else "tech"
+    canale = context.user_data.get("auto_canale")
+    if not canale:
+        raise ValueError("Seleziona prima un canale")
+    bp_publishing.resolve_destination(DB_PATH, canale)
+    return canale
 
 
 async def mostra_menu_raccolte_casa(query):
@@ -4198,6 +4165,7 @@ async def mostra_menu_raccolte_casa(query):
             )],
             [InlineKeyboardButton("🗂 Scegli temi", callback_data="casa_bundle_themes")],
             [InlineKeyboardButton("🧪 Testa raccolta", callback_data="casa_bundle_test")],
+            [InlineKeyboardButton("🕘 Cronologia collage", callback_data="collection_history_casa")],
             [InlineKeyboardButton("⬅️ Torna all'automazione Casa", callback_data="auto_menu")],
         ]),
     )
@@ -4215,6 +4183,37 @@ async def mostra_temi_raccolte_casa(query):
     await query.edit_message_text(
         "🗂 Scegli i temi delle raccolte. Ogni post conterrà prodotti dello stesso tema:",
         reply_markup=InlineKeyboardMarkup(tastiera),
+    )
+
+
+async def mostra_cronologia_collage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mostra solo collage del canale esplicitato nel callback."""
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    key = query.data.removeprefix("collection_history_")
+    destinazioni = {"tech": CHANNEL_ID, "casa": CASA_CHANNEL_ID}
+    if key not in destinazioni:
+        await query.edit_message_text("❌ Canale non supportato.")
+        return
+    try:
+        righe = cronologia_raccolte_canale(destinazioni[key], limit=10)
+    except (ValueError, sqlite3.Error) as errore:
+        await query.edit_message_text(f"❌ Cronologia non disponibile: {errore}")
+        return
+    testo = [f"🕘 Ultime raccolte {key.upper()}"]
+    for r in righe:
+        tema = str(r.get("tema") or "Senza tema").replace("<", "‹").replace(">", "›")
+        data = str(r.get("pubblicata_il") or "Data sconosciuta")[:16]
+        testo.append(f"• #{r['id']} — {tema[:65]} — {data}")
+    if not righe:
+        testo.append("Nessun collage presente nella cronologia.")
+    await query.edit_message_text(
+        "\n".join(testo),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ Torna alle raccolte", callback_data=f"{key}_collections")
+        ]]),
     )
 
 
@@ -4319,6 +4318,7 @@ async def mostra_menu_raccolte_tech(query):
             )],
             [InlineKeyboardButton("🗂 Scegli temi", callback_data="tech_bundle_themes")],
             [InlineKeyboardButton("🧪 Testa raccolta", callback_data="tech_bundle_test")],
+            [InlineKeyboardButton("🕘 Cronologia collage", callback_data="collection_history_tech")],
             [InlineKeyboardButton("⬅️ Torna all'automazione TECH", callback_data="auto_menu")],
         ]),
     )
@@ -5479,6 +5479,7 @@ def salva_raccolta_casa(prodotti, tema, messaggio_telegram, foto_file_id):
 
 
 async def pubblica_raccolta_casa(bot, prodotti, tema):
+    bp_collections_routing.resolve_legacy_collection(DB_PATH, CASA_CHANNEL_ID, CHANNEL_ID, CASA_CHANNEL_ID)
     collage = await asyncio.to_thread(crea_collage_raccolta_casa, prodotti, tema)
     caption = crea_caption_raccolta_casa(prodotti, tema)
     messaggio = await bot.send_photo(
@@ -5874,6 +5875,7 @@ def salva_raccolta_tech(prodotti, tema, messaggio_telegram, foto_file_id):
 
 
 async def pubblica_raccolta_tech(bot, prodotti, tema):
+    bp_collections_routing.resolve_legacy_collection(DB_PATH, CHANNEL_ID, CHANNEL_ID, CASA_CHANNEL_ID)
     collage = await asyncio.to_thread(crea_collage_raccolta_tech, prodotti, tema)
     caption = crea_caption_raccolta_tech(prodotti, tema)
     messaggio = await bot.send_photo(
@@ -5886,6 +5888,52 @@ async def pubblica_raccolta_tech(bot, prodotti, tema):
     foto_file_id = messaggio.photo[-1].file_id if messaggio.photo else None
     salva_raccolta_tech(prodotti, tema, messaggio, foto_file_id)
     return messaggio
+
+
+def cronologia_raccolte_canale(chat_id, limit=30):
+    """Cronologia collage del solo canale richiesto, senza fallback TECH."""
+    if str(chat_id) not in (str(CHANNEL_ID), str(CASA_CHANNEL_ID)):
+        return bp_collages_multi.history(DB_PATH, chat_id, limit=limit)
+    return bp_collections_history.collection_history(
+        DB_PATH, chat_id, CHANNEL_ID, CASA_CHANNEL_ID, limit=limit
+    )
+
+
+def crea_caption_raccolta_nuovo_canale(prodotti, tema):
+    """Caption generica: non dipende dai temi hardcoded TECH/CASA."""
+    righe = [f"📦 <b>{html.escape(str(tema))}</b>"]
+    for i, p in enumerate(prodotti, 1):
+        nome = html.escape(str(p['nome'])[:65])
+        link = html.escape(str(p['link']), quote=True)
+        righe.append(f'#{i} <a href="{link}">{nome}</a>\n'
+                     f'✅ Ora: <b>{html.escape(str(p.get("prezzo") or "N/D"))}</b>')
+    righe.append('⚡ Prezzi e disponibilità possono variare.')
+    return "\n\n".join(righe)
+
+
+async def pubblica_raccolta_da_candidati(bot, candidati, tema, chat_id):
+    """Pipeline esplicita: filtro per canale -> render -> Telegram -> cronologia.
+
+    I candidati devono provenire da una fonte già disponibile e autorizzata.
+    Non viene invocata la ricerca API disabilitata e non viene abilitato lo scheduler.
+    """
+    selezionati = bp_collection_selection.select(DB_PATH, chat_id, candidati)
+    if not selezionati:
+        raise ValueError('Nessun prodotto valido per i filtri di questo canale')
+    return await pubblica_raccolta_canale(bot, selezionati, tema, chat_id)
+
+
+async def pubblica_raccolta_canale(bot, prodotti, tema, chat_id):
+    """Dispatcher esplicito: nessun fallback e nessun collage nuovo non supportato."""
+    chat_id = bp_collages_multi.require_channel(DB_PATH, chat_id)
+    if chat_id == str(CHANNEL_ID):
+        return await pubblica_raccolta_tech(bot, prodotti, tema)
+    if chat_id == str(CASA_CHANNEL_ID):
+        return await pubblica_raccolta_casa(bot, prodotti, tema)
+    return await bp_collages_multi.publish(
+        bot, DB_PATH, chat_id, prodotti, tema,
+        crea_collage_raccolta_tech, crea_caption_raccolta_nuovo_canale,
+    )
 
 
 async def testa_raccolta_tech(query, context):
@@ -6516,6 +6564,11 @@ async def pubblica_prodotto_ricerca_offerte(query, context, indice):
     if not prodotto:
         await query.message.reply_text("❌ Risultato scaduto. Avvia una nuova ricerca.")
         return
+    try:
+        _chat_id_per_canale(context.user_data.get("ricerca_offerte_canale"))
+    except bp_publishing.ChannelRoutingError as exc:
+        await query.message.reply_text(f"⛔ {exc}")
+        return
     attesa_minuti = minuti_rimanenti_prima_del_prossimo_invio(_chat_id_per_canale(context.user_data.get("ricerca_offerte_canale")))
     if attesa_minuti:
         await query.message.reply_text(
@@ -6599,11 +6652,16 @@ async def prepara_programmazione_ricerca_offerte(update: Update, context: Contex
     context.user_data["foto_file_id"] = prodotto.get("foto_file_id") or prodotto["immagine"]
     context.user_data["messaggio"] = _messaggio_programmato_da_prodotto(prodotto)
     canale = context.user_data.get("ricerca_offerte_canale")
-    context.user_data["telegram_chat_id"] = (
-        CASA_CHANNEL_ID if canale == "casa"
-        else CHANNEL_ID if canale == "tech"
-        else canale_pubblicazione_per_categoria(prodotto.get("categoria"))
-    )
+    # Non dedurre la destinazione dalla categoria: serve un canale esplicito.
+    try:
+        context.user_data["telegram_chat_id"] = _chat_id_per_canale(canale)
+    except bp_publishing.ChannelRoutingError:
+        context.user_data.pop("telegram_chat_id", None)
+        await query.message.reply_text(
+            "❌ Canale non selezionato, inesistente o disattivato. "
+            "Seleziona un canale e ripeti la programmazione."
+        )
+        return ConversationHandler.END
     await query.message.reply_text(
         "📅 PROGRAMMA INVIO\n\nScegli il giorno:",
         reply_markup=InlineKeyboardMarkup([
@@ -6707,18 +6765,8 @@ def _aggiorna_slot_automatico(
 
 
 def _chat_id_per_canale(canale):
-    """Fail closed: never route an unknown channel to TECH."""
-    if canale is None:
-        raise ValueError("Canale non selezionato: pubblicazione bloccata")
-    value = str(canale).strip()
-    if value == "tech":
-        return str(CHANNEL_ID)
-    if value == "casa":
-        return str(CASA_CHANNEL_ID)
-    for entry in bp_channels.channels(DB_PATH):
-        if value == str(entry['chat_id']):
-            return value
-    raise ValueError("Canale non registrato o disattivato: pubblicazione bloccata")
+    """All channels use the same validated registry; unknown channels are blocked."""
+    return bp_publishing.resolve_destination(DB_PATH, canale).chat_id
 
 
 def _data_sqlite(valore):
@@ -6732,10 +6780,11 @@ def _data_sqlite(valore):
 
 
 def _asin_gia_pubblicato(asin, giorni=10, canale="tech"):
-    """Controlla i duplicati separatamente per TECH e CASA, in ogni modalità."""
+    """Controlla i duplicati per ogni canale registrato, senza fallback."""
     if not asin:
         return True
-    canale = "casa" if canale == "casa" else "tech"
+    canale = str(canale).strip()
+    _chat_id_per_canale(canale)  # Fail closed: unknown or disabled channels are rejected.
     adesso = datetime.now(ROMA_TZ)
     limite = adesso - timedelta(days=max(1, int(giorni)))
     chat_id = _chat_id_per_canale(canale)
@@ -6794,7 +6843,8 @@ def _prenota_asin_pubblicazione(asin, canale, giorni):
     """Prenota atomicamente un ASIN prima dell'invio a Telegram."""
     if not asin or _asin_gia_pubblicato(asin, giorni, canale):
         return False
-    canale = "casa" if canale == "casa" else "tech"
+    canale = str(canale).strip()
+    _chat_id_per_canale(canale)  # Fail closed: unknown or disabled channels are rejected.
     adesso = datetime.now(ROMA_TZ)
     limite = adesso - timedelta(days=max(1, int(giorni)))
     db = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
@@ -6849,7 +6899,8 @@ def _prenota_asin_pubblicazione(asin, canale, giorni):
 def _conferma_asin_pubblicato(asin, canale):
     if not asin:
         return
-    canale = "casa" if canale == "casa" else "tech"
+    canale = str(canale).strip()
+    _chat_id_per_canale(canale)  # Fail closed: unknown or disabled channels are rejected.
     db = sqlite3.connect(DB_PATH, timeout=30)
     db.execute(
         """
@@ -6920,7 +6971,9 @@ async def _notifica_admin_automazione(bot, testo):
 
 
 async def cerca_offerta_automatica(configurazione, categoria_iniziale, canale="tech"):
-    categorie = list(configurazione["categorie"])
+    categorie = [c for c in configurazione.get("categorie", []) if c in AUTO_CATEGORIE]
+    if not categorie:
+        return None, {"ricerche": 0, "prodotti": 0, "incompleti": 0, "sconto": 0, "duplicati": 0, "qualita": 0, "errori": 0, "varianti": 0, "riserva": False, "fallback_standard": False}
     if categoria_iniziale in categorie:
         indice = categorie.index(categoria_iniziale)
         categorie = categorie[indice:] + categorie[:indice]
@@ -7176,12 +7229,17 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
     )
     tastiera = tastiera_offerta_automatica(prodotto["link"], asin=prodotto.get("asin"))
     foto = await prepara_foto_automatica(prodotto["immagine"])
-    canale_effettivo = (
-        canale if canale in {"tech", "casa"}
-        else "casa" if prodotto.get("categoria") in CASA_CATEGORIE
-        else "tech"
+    # Ogni origine, inclusi i job automatici, richiede un canale esplicito.
+    if canale is None:
+        raise bp_publishing.ChannelRoutingError("Canale mancante: invio bloccato")
+    destinazione_verificata = bp_publishing.resolve_destination(DB_PATH, canale)
+    telegram_chat_id = destinazione_verificata.chat_id
+    canale_effettivo = next(
+        (r.get("legacy_key") or r["chat_id"] for r in bp_channels.channels(DB_PATH)
+         if str(r["chat_id"]) == str(telegram_chat_id)), None
     )
-    telegram_chat_id = CASA_CHANNEL_ID if canale_effettivo == "casa" else CHANNEL_ID
+    if canale_effettivo is None:
+        raise bp_publishing.ChannelRoutingError("Canale non registrato")
     giorni_blocco = leggi_config_automatica(canale_effettivo)[
         "giorni_blocco_duplicati"
     ]
@@ -7194,12 +7252,9 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
         )
     # Ultima verifica degli orari aggiornati prima di inviare l'offerta.
     await attendi_finestra_offerte(telegram_chat_id)
-    messaggio_telegram = await bot.send_photo(
-        chat_id=telegram_chat_id,
-        photo=foto,
-        caption=messaggio,
-        parse_mode="HTML",
-        reply_markup=tastiera,
+    messaggio_telegram = await bp_publishing.send_offer(
+        bot, DB_PATH, telegram_chat_id, text=messaggio,
+        photo=foto, parse_mode="HTML", reply_markup=tastiera,
     )
     await aggiorna_pulsanti_offerta(
         bot, messaggio_telegram, prodotto["link"], asin=prodotto.get("asin"),
@@ -7236,7 +7291,7 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
     return messaggio_telegram.message_id, foto_telegram, telegram_chat_id
 
 
-async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canale="tech"):
+async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canale="tech", slot_key=None):
     categorie = configurazione["categorie"]
     if not categorie:
         return
@@ -7246,7 +7301,7 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canal
         canale,
     )
     categoria = categorie_ruotate[0]
-    slot_ora_db = f"{canale}:{ora_slot}"
+    slot_ora_db = slot_key if slot_key is not None else f"{canale}:{ora_slot}"
     if not _prenota_slot_automatico(data_slot, slot_ora_db, categoria):
         return
 
@@ -7271,7 +7326,7 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canal
         # Uno slot automatico in pausa resta prenotato e attende la ripresa.
         while True:
             adesso_pausa = datetime.now(ROMA_TZ)
-            ripresa = prossimo_fuori_pausa(adesso_pausa, CASA_CHANNEL_ID if canale == 'casa' else CHANNEL_ID)
+            ripresa = prossimo_fuori_pausa(adesso_pausa, bp_publishing.resolve_destination(DB_PATH, canale).chat_id)
             if ripresa <= adesso_pausa:
                 break
             if ripresa.hour > 21 or (ripresa.hour == 21 and ripresa.minute > 30):
@@ -7356,11 +7411,27 @@ def _calcola_prossimo_invio(configurazione, riferimento):
 
 
 async def controlla_invii_automatici(app):
+    """Un errore su un canale non interrompe gli altri canali."""
     while True:
         try:
-            for canale in ("tech", "casa"):
+            records = bp_channels.channels(DB_PATH)
+        except Exception as errore:
+            print(f"Errore lettura registro canali: {errore}")
+            await asyncio.sleep(20)
+            continue
+        for record in records:
+            canale = record.get("legacy_key") or str(record["chat_id"])
+            try:
                 configurazione = leggi_config_automatica(canale)
-                if not configurazione["attiva"]:
+                # I canali dinamici richiedono ancora un'abilitazione successiva
+                # al completamento del flusso di ricerca e dei menu.
+                # Nessuno slot viene prenotato finche' la fonte offerte non e' attiva.
+                pronto, motivo, _ = bp_readiness.assess(
+                    DB_PATH, canale, configurazione,
+                    source_available=False,  # search_items e get_items sono stub nel file corrente
+                    dynamic_supported=False,
+                )
+                if not pronto:
                     continue
                 adesso = datetime.now(ROMA_TZ)
                 prossimo_testo = configurazione.get("prossimo_invio")
@@ -7374,11 +7445,9 @@ async def controlla_invii_automatici(app):
                             prossimo = prossimo.astimezone(ROMA_TZ)
                     except ValueError:
                         prossimo = None
-
                 if prossimo is None:
                     prossimo = _prossimo_inizio_fascia(configurazione, adesso)
                     salva_config_automatica("prossimo_invio", prossimo.isoformat(timespec="seconds"), canale)
-
                 if adesso >= prossimo:
                     if not _dentro_fascia_automatica(configurazione, adesso):
                         prossimo = _prossimo_inizio_fascia(configurazione, adesso)
@@ -7388,17 +7457,15 @@ async def controlla_invii_automatici(app):
                         salva_config_automatica("prossimo_invio", successivo.isoformat(timespec="seconds"), canale)
                         data_slot = adesso.date().isoformat()
                         ora_slot = adesso.strftime("%H:%M")
-                        slot_ora_db = f"{canale}:{ora_slot}"
+                        slot_ora_db = bp_scheduler.slot_key(record, adesso)
                         if not _slot_automatico_gia_gestito(data_slot, slot_ora_db):
-                            await esegui_slot_automatico(
-                                app,
-                                configurazione,
-                                data_slot,
-                                ora_slot,
-                                canale,
-                            )
-        except Exception as errore:
-            print(f"Errore controllo automazione: {errore}")
+                            await esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canale, slot_key=slot_ora_db)
+            except Exception as errore:
+                print(f"Errore automazione canale {canale}: {errore}")
+                try:
+                    bp_channels.record_event(DB_PATH, record["chat_id"], "error", str(errore)[:500])
+                except Exception:
+                    pass
         await asyncio.sleep(20)
 
 
@@ -7571,6 +7638,7 @@ def _salva_aggiornamento_offerta(invio_id, prodotto, corpo_messaggio):
 async def _aggiorna_post_offerta_attiva(
     bot, invio_id, prodotto, categoria, message_id, telegram_chat_id=None
 ):
+    destinazione = require_post_destination(DB_PATH, telegram_chat_id)
     prodotto["categoria"] = categoria
     corpo_messaggio = crea_corpo_offerta_automatica(prodotto, categoria)
     didascalia = crea_caption_con_link(
@@ -7579,13 +7647,13 @@ async def _aggiorna_post_offerta_attiva(
         messaggio_gia_html=True,
     )
     await bot.edit_message_caption(
-        chat_id=telegram_chat_id or CHANNEL_ID,
+        chat_id=destinazione,
         message_id=message_id,
         caption=didascalia,
         parse_mode="HTML",
         reply_markup=tastiera_offerta_automatica(
             prodotto["link"],
-            link_post=link_post_telegram(chat_id=telegram_chat_id or CHANNEL_ID, message_id=message_id),
+            link_post=link_post_telegram(chat_id=destinazione, message_id=message_id),
             asin=prodotto.get("asin"),
         ),
     )
@@ -7601,7 +7669,7 @@ async def _modifica_post_terminato(
     foto_file_id=None,
     telegram_chat_id=None,
 ):
-    destinazione = telegram_chat_id or CHANNEL_ID
+    destinazione = require_post_destination(DB_PATH, telegram_chat_id)
     hashtag = AUTO_HASHTAG.get(categoria, "#OfferteAmazon")
     didascalia = (
         "🔴 ⛔ <b>OFFERTA TERMINATA</b>\n\n"
@@ -7834,9 +7902,11 @@ async def _aggiorna_caption_raccolta_casa(bot, raccolta_id):
     if not raccolta or not prodotti:
         return
     tema, chat_id, message_id = raccolta
+    # Il collage storico deve avere una destinazione esplicita e valida.
+    chat_id = bp_post_safety.require_post_destination(DB_PATH, chat_id)
     caption = crea_caption_raccolta_casa(prodotti, tema)
     await bot.edit_message_caption(
-        chat_id=chat_id or CASA_CHANNEL_ID,
+        chat_id=chat_id,
         message_id=message_id,
         caption=caption,
         parse_mode="HTML",
@@ -7845,7 +7915,7 @@ async def _aggiorna_caption_raccolta_casa(bot, raccolta_id):
     db = sqlite3.connect(DB_PATH)
     db.execute(
         "UPDATE recap_offerte SET messaggio=? WHERE telegram_message_id=? AND telegram_chat_id=?",
-        (caption, message_id, chat_id or str(CASA_CHANNEL_ID)),
+        (caption, message_id, str(chat_id)),
     )
     db.commit()
     db.close()
@@ -8085,9 +8155,11 @@ async def _aggiorna_caption_raccolta_tech(bot, raccolta_id):
     if not raccolta or not prodotti:
         return
     tema, chat_id, message_id = raccolta
+    # Historical records without a channel are ambiguous: never edit TECH by default.
+    chat_id = bp_publishing.resolve_destination(DB_PATH, chat_id).chat_id
     caption = crea_caption_raccolta_tech(prodotti, tema)
     await bot.edit_message_caption(
-        chat_id=chat_id or CHANNEL_ID,
+        chat_id=chat_id,
         message_id=message_id,
         caption=caption,
         parse_mode="HTML",
@@ -8096,7 +8168,7 @@ async def _aggiorna_caption_raccolta_tech(bot, raccolta_id):
     db = sqlite3.connect(DB_PATH)
     db.execute(
         "UPDATE recap_offerte SET messaggio=? WHERE telegram_message_id=? AND telegram_chat_id=?",
-        (caption, message_id, chat_id or str(CHANNEL_ID)),
+        (caption, message_id, chat_id),
     )
     db.commit()
     db.close()
@@ -8327,11 +8399,61 @@ def _bp_selector():
     """Schermata iniziale globale: selezione canale, rubriche, impostazioni."""
     buttons = [[InlineKeyboardButton(
         ('📱 ' if c.get('legacy_key') == 'tech' else '🏠 ' if c.get('legacy_key') == 'casa' else '📢 ') + c['display_name'],
-        callback_data='bp_select_' + str(i))]
-        for i, c in enumerate(bp_channels.channels(DB_PATH))]
+        callback_data='bp_channel_' + str(c['chat_id']))]
+        for c in bp_channels.channels(DB_PATH)]
+    buttons.append([InlineKeyboardButton('➕ Aggiungi canale (istruzioni)', callback_data='bp_add_help')])
     buttons.append([InlineKeyboardButton('☕ Rubriche', callback_data='rub_menu'),
                     InlineKeyboardButton('⚙️ Impostazioni', callback_data='settings_menu')])
     return InlineKeyboardMarkup(buttons)
+
+
+async def bp_add_help(update, context):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        '➕ AGGIUNGI CANALE\n\n'
+        '1. Aggiungi il bot come amministratore del canale, con permesso di pubblicare.\n'
+        '2. Invia al bot in chat privata:\n'
+        '/aggiungicanale @nomecanale Nome visualizzato\n\n'
+        '⚠️ I nuovi canali vengono registrati, ma le pubblicazioni restano bloccate '
+        'fino alla migrazione completa.',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Indietro', callback_data='bp_home')]]))
+
+
+async def aggiungi_canale_comando(update, context):
+    """Registrazione protetta: /aggiungicanale @username Nome visualizzato.
+
+    Non abilita l'automazione: i nuovi canali richiedono ancora la migrazione
+    completa dei flussi legacy prima di pubblicare.
+    """
+    if not await controlla_autorizzazione(update):
+        return
+    args = context.args or []
+    if len(args) < 2:
+        await update.effective_message.reply_text(
+            'Uso: /aggiungicanale @username Nome del canale\n'
+            'Il bot deve essere amministratore del canale.')
+        return
+    chat_ref = args[0].strip()
+    name = ' '.join(args[1:]).strip()
+    try:
+        chat = await context.bot.get_chat(chat_ref)
+        if chat.type != 'channel':
+            raise ValueError('La destinazione non è un canale Telegram.')
+        member = await context.bot.get_chat_member(chat.id, context.bot.id)
+        if member.status not in ('administrator', 'creator', 'owner'):
+            raise ValueError('Il bot non è amministratore del canale.')
+        if member.status == 'administrator' and not getattr(member, 'can_post_messages', False):
+            raise ValueError('Il bot non ha il permesso di pubblicare messaggi.')
+        bp_channels.register_channel(DB_PATH, chat.id, name)
+        await update.effective_message.reply_text(
+            f'✅ Canale registrato: {name} ({chat.id}).\n'
+            '⚠️ Pubblicazioni e automazioni non ancora abilitate per nuovi canali.\n'
+            'Riapri /start per visualizzarlo.')
+    except Exception as exc:
+        await update.effective_message.reply_text(f'❌ Registrazione non riuscita: {exc}')
 
 
 async def bp_home(update, context):
@@ -8346,19 +8468,48 @@ async def bp_home(update, context):
         reply_markup=_bp_selector())
 
 
+async def bp_new_collage_history(update, context):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    try:
+        chat_id = _bp_required_chat(update)
+        rows = cronologia_raccolte_canale(chat_id, limit=10)
+        text = ['🕘 Cronologia collage del canale selezionato']
+        for r in rows:
+            text.append(f"• #{r['id']} — {str(r['tema'])[:60]} — {str(r['pubblicata_il'])[:16]}")
+        if not rows:
+            text.append('Nessun collage pubblicato.')
+    except (ValueError, sqlite3.Error) as exc:
+        text = [f'❌ {exc}']
+    await query.edit_message_text('\n'.join(text), reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton('⬅️ Canali', callback_data='bp_home')]]))
+
+
 async def bp_select_channel(update, context):
     if not await controlla_autorizzazione(update):
         return
     query = update.callback_query
     await query.answer()
-    index = int(query.data.rsplit('_', 1)[1])
-    available = bp_channels.channels(DB_PATH)
-    if index >= len(available):
-        return await query.edit_message_text('Elenco aggiornato. Riapri /start.')
-    channel = available[index]
-    # La logica di pubblicazione del codice originale supporta solo i due canali legacy.
-    if channel.get('legacy_key') not in ('tech','casa'):
-        return await query.edit_message_text('Canale registrato, ma le funzioni di pubblicazione richiedono ancora la migrazione completa. Non è stato selezionato.', reply_markup=_bp_selector())
+    # Stable channel identifier: list positions can change when channels are added.
+    chat_id = query.data.removeprefix('bp_channel_')
+    channel = next((c for c in bp_channels.channels(DB_PATH)
+                    if str(c['chat_id']) == chat_id), None)
+    if channel is None:
+        return await query.edit_message_text(
+            'Canale non disponibile o disattivato. Riapri /start.')
+    # Per i nuovi canali espone solo funzioni già isolate e sicure.
+    if channel.get('legacy_key') not in ('tech', 'casa'):
+        bp_channels.select_channel(DB_PATH, update.effective_user.id, channel['chat_id'])
+        return await query.edit_message_text(
+            '📢 Canale attivo: ' + channel['display_name'] +
+            '\n\nLe raccolte sono disponibili tramite il motore multicanale. '
+            'Gli invii automatici e gli altri menu legacy restano disabilitati.',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('🕘 Cronologia collage', callback_data='bp_new_collage_history')],
+                [InlineKeyboardButton('⬅️ Selezione canali', callback_data='bp_home')],
+            ]))
     bp_channels.select_channel(DB_PATH, update.effective_user.id, channel['chat_id'])
     context.user_data['auto_canale'] = channel['legacy_key']
     await query.edit_message_text('✅ Canale attivo: ' + channel['display_name'] + '\n\nScegli una funzione:', reply_markup=menu_principale())
@@ -8367,8 +8518,7 @@ async def bp_select_channel(update, context):
 def menu_principale():
     """Pannello operativo del canale selezionato; configurazioni globali nella home."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔗 Inserimento da link", callback_data="nuova"),
-         InlineKeyboardButton("🤖 Pubblicazione automatica", callback_data="auto_channels")],
+        [InlineKeyboardButton("🔗 Inserimento da link", callback_data="nuova")],
         [InlineKeyboardButton("📦 Invio multiplo", callback_data="rapido"),
          InlineKeyboardButton("🔁 Controlla e ripubblica", callback_data="repost")],
         [InlineKeyboardButton("🔎 Cerca offerte", callback_data="offer_search"),
@@ -8397,8 +8547,7 @@ async def mostra_menu_pubblicazione(update: Update, context: ContextTypes.DEFAUL
     await query.edit_message_text(
         "📤 PUBBLICA OFFERTA\n\n"
         "Scegli come vuoi inserire il prodotto.\n\n"
-        "Le offerte automatiche vengono inviate al canale corretto in base "
-        "alla categoria del prodotto.",
+        "L'invio automatico Amazon è sospeso fino all'abilitazione delle Creators API.",
         reply_markup=menu_pubblicazione(),
     )
 
@@ -9364,7 +9513,8 @@ MULTIPLO_LOCK = asyncio.Lock()
 
 
 def prodotto_inviato_ultime_24h(asin, destinazione):
-    """Confronta l'ASIN, non l'URL/tag. Conta solo pubblicazioni effettive."""
+    """Confronta l'ASIN solo per il canale abilitato; niente fallback TECH."""
+    destinazione = _chat_id_per_canale(destinazione)
     if not asin:
         return False
     adesso = datetime.now(timezone.utc)
@@ -9388,15 +9538,24 @@ def prodotto_inviato_ultime_24h(asin, destinazione):
 
 def filtra_duplicati_recenti_multiplo(draft):
     validi = []
+    visti_nel_lotto = set()
+    destinazione = _chat_id_per_canale(draft['canale'])
     for prodotto in draft['pronti']:
         asin = prodotto.get('asin') or estrai_asin_da_link(prodotto['link'])
-        if prodotto_inviato_ultime_24h(asin, _chat_id_per_canale(draft['canale'])):
+        if not asin:
+            draft['scartati'].append(f"{prodotto.get('link_originale') or prodotto['link']} — ASIN non valido")
+            continue
+        if asin in visti_nel_lotto:
+            draft['scartati'].append(f"{prodotto.get('link_originale') or prodotto['link']} — duplicato nello stesso lotto")
+            continue
+        visti_nel_lotto.add(asin)
+        if prodotto_inviato_ultime_24h(asin, destinazione):
             draft['scartati'].append(f"{prodotto.get('link_originale') or prodotto['link']} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
         else:
             validi.append(prodotto)
     if draft.get('tipo') == 'repost':
         with sqlite3.connect(DB_PATH, timeout=30) as db:
-            links_in_coda = db.execute("SELECT link FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),_chat_id_per_canale(draft['canale']))).fetchall()
+            links_in_coda = db.execute("SELECT link FROM programmazioni WHERE stato='attesa' AND CAST(telegram_chat_id AS TEXT)=?", (_chat_id_per_canale(draft['canale']),)).fetchall()
         asin_in_coda = {estrai_asin_da_link(link) for (link,) in links_in_coda}
         restanti = []
         for prodotto in validi:
@@ -9443,10 +9602,13 @@ def link_affiliato_multiplo(link, asin):
 
 def piano_multiplo(prodotti, minuti, destinazione, salva=False, origine="multiplo"):
     """Ricalcola e prenota l'intero lotto in un'unica transazione SQLite."""
+    # Validate here too: this function can be invoked outside Telegram's menu.
+    # Never persist a schedule against an unknown or disabled channel.
+    destinazione = bp_publishing.resolve_destination(DB_PATH, destinazione).chat_id
     cfg = config_fascia_manuale()
     with sqlite3.connect(DB_PATH, timeout=30) as db:
         db.execute("BEGIN IMMEDIATE")
-        righe = db.execute("SELECT invio_previsto FROM programmazioni WHERE stato='attesa' AND (telegram_chat_id=? OR (telegram_chat_id IS NULL AND ?=?))", (str(destinazione), str(destinazione), str(CHANNEL_ID))).fetchall()
+        righe = db.execute("SELECT invio_previsto FROM programmazioni WHERE stato='attesa' AND CAST(telegram_chat_id AS TEXT)=?", (str(destinazione),)).fetchall()
         occupati = [datetime.fromisoformat(r[0]).astimezone(timezone.utc) for r in righe]
         passo = timedelta(minutes=minuti)
         quando = datetime.now(timezone.utc).replace(microsecond=0)
@@ -9552,8 +9714,10 @@ async def riepilogo_multiplo(messaggio, draft, context=None):
 
 
 def asin_in_programmati(destinazione):
+    """Read only the enabled, explicitly selected channel's pending products."""
+    destinazione = _chat_id_per_canale(destinazione)
     with sqlite3.connect(DB_PATH, timeout=30) as db:
-        links = db.execute("SELECT link FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),str(destinazione))).fetchall()
+        links = db.execute("SELECT link FROM programmazioni WHERE stato='attesa' AND CAST(telegram_chat_id AS TEXT)=?", (str(destinazione),)).fetchall()
     # La funzione viene chiamata in un thread durante la ricerca dei candidati.
     return {asin for (link,) in links if (asin := risolvi_asin_da_link(link))}
 
@@ -9608,8 +9772,14 @@ async def repost_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
     await update.callback_query.answer()
+    try:
+        selected_channel = _bp_key(update)
+        _chat_id_per_canale(selected_channel)
+    except (ValueError, bp_publishing.ChannelRoutingError) as exc:
+        await update.effective_message.reply_text(f"⛔ {exc}")
+        return ConversationHandler.END
     context.user_data.clear()
-    draft = {'tipo':'repost','canale':_bp_key(update) or 'tech','minuti':intervallo_multiplo(update.effective_user.id),'pronti':[],'scartati':[],'duplicati':0,'elaborazione':False,'repost_attesa_quantita':True}
+    draft = {'tipo':'repost','canale':selected_channel,'minuti':intervallo_multiplo(update.effective_user.id),'pronti':[],'scartati':[],'duplicati':0,'elaborazione':False,'repost_attesa_quantita':True}
     context.user_data['multiplo'] = draft
     await update.effective_message.reply_text(
         "🔁 REPOST — ULTIMI 7 GIORNI\n\nScegli l’intervallo, poi scrivi quanti prodotti vuoi ripubblicare (1–50).\nEscludo prodotti già inviati nelle ultime 24 ore e già programmati nello stesso canale.\nControllo dati, prezzi, disponibilità e coupon. Dopo il riepilogo: conferma subito oppure avvio automatico tra 2 minuti. Gli invii rispettano la fascia manuale/multiplo.",
@@ -9622,8 +9792,14 @@ async def rapido_da_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     if update.callback_query:
         await update.callback_query.answer()
+    try:
+        selected_channel = _bp_key(update)
+        _chat_id_per_canale(selected_channel)
+    except (ValueError, bp_publishing.ChannelRoutingError) as exc:
+        await update.effective_message.reply_text(f"⛔ {exc}")
+        return ConversationHandler.END
     context.user_data.clear()
-    draft = {'canale': _bp_key(update) or 'tech', 'minuti': intervallo_multiplo(update.effective_user.id), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
+    draft = {'canale': selected_channel, 'minuti': intervallo_multiplo(update.effective_user.id), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
     context.user_data['multiplo'] = draft
     await update.effective_message.reply_text("📦 INVIO MULTIPLO\n\nScegli l’intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.", reply_markup=tastiera_multiplo(draft))
     return RAPIDO
@@ -10136,7 +10312,7 @@ async def ricevi_ora_programmazione(
         link,
         prezzo,
         data_locale,
-        context.user_data.get("telegram_chat_id", CHANNEL_ID),
+        context.user_data.get("telegram_chat_id"),
         origine=context.user_data.get("origine_programmazione","manuale"),
     )
 
@@ -10465,7 +10641,7 @@ async def conferma_orario_vicino(
         link,
         prezzo,
         data_locale,
-        context.user_data.get("telegram_chat_id", CHANNEL_ID),
+        context.user_data.get("telegram_chat_id"),
         origine=context.user_data.get("origine_programmazione","manuale"),
     )
 
@@ -10690,7 +10866,7 @@ async def invia_lista_programmati(
         elementi.append((data_locale or datetime.now(ROMA_TZ),
             f"#{programmazione_id} • {quando}\n📦 {nome} — {prezzo} €\n"))
     for canale in (canale_id,):
-        nome_canale = 'CASA' if str(canale) == str(CASA_CHANNEL_ID) else 'TECH'
+        nome_canale = bp_publishing.resolve_destination(DB_PATH, canale).display_name
         for inizio, descrizione in descrizione_pause_programmate(canale, giorni_lista):
             elementi.append((inizio, f"{descrizione} · {nome_canale}\n"))
     righe.extend(testo for _, testo in sorted(elementi, key=lambda r: r[0]))
@@ -12053,10 +12229,10 @@ def minuti_rimanenti_prima_del_prossimo_invio(telegram_chat_id=None):
     cur.execute("""
         SELECT pubblicata_il
         FROM recap_offerte
-        WHERE CAST(COALESCE(telegram_chat_id, ?) AS TEXT) = ?
+        WHERE CAST(telegram_chat_id AS TEXT) = ?
         ORDER BY pubblicata_il DESC
         LIMIT 1
-    """, (str(CHANNEL_ID), str(telegram_chat_id)))
+    """, (str(telegram_chat_id),))
 
     riga = cur.fetchone()
     db.close()
@@ -12300,21 +12476,13 @@ async def conferma(
             "foto_file_id"
         )
 
-        if foto_file_id:
-            messaggio_telegram = await context.bot.send_photo(
-                chat_id=target_chat,
-                photo=foto_file_id,
-                caption=messaggio_con_link,
-                parse_mode="HTML",
-                reply_markup=bottone_offerta,
-            )
-        else:
-            messaggio_telegram = await context.bot.send_message(
-                chat_id=target_chat,
-                text=messaggio_con_link,
-                parse_mode="HTML",
-                reply_markup=bottone_offerta,
-            )
+        messaggio_telegram = await bp_publishing.send_offer(
+            context.bot, DB_PATH, target_chat,
+            text=messaggio_con_link,
+            photo=foto_file_id,
+            parse_mode="HTML",
+            reply_markup=bottone_offerta,
+        )
 
         await aggiorna_pulsanti_offerta(
             context.bot, messaggio_telegram, link,
@@ -12462,18 +12630,23 @@ def righe_cronologia(filtro='tutti', periodo='7', ricerca=''):
     limite = ora.replace(hour=0,minute=0,second=0,microsecond=0) if periodo == 'oggi' else ora-timedelta(days=int(periodo)) if periodo in ('7','30') else None
     # Sort by parsed timestamps to support both old UTC and Italian-time records.
     righe.sort(key=lambda r:(_data_sqlite(r['pubblicata_il']) or datetime.min.replace(tzinfo=timezone.utc),r['id']),reverse=True)
+    from bestprice_history_routing import history_target, history_matches
+    target_id = history_target(DB_PATH, filtro, tech_id=CHANNEL_ID, casa_id=CASA_CHANNEL_ID)
     unici = []
     visti = set()
     for riga in righe:
         data = _data_sqlite(riga['pubblicata_il'])
         if not data or (limite and data < limite):
             continue
-        canale = 'casa' if str(riga['telegram_chat_id']) == str(CASA_CHANNEL_ID) else 'tech'
-        target_id = str(CASA_CHANNEL_ID if filtro == 'casa' else CHANNEL_ID if filtro == 'tech' else filtro)
-        if str(riga['telegram_chat_id']) != target_id:
+        chat_id = str(riga['telegram_chat_id'] or '').strip()
+        if not chat_id:
+            continue
+        canale = ('casa' if chat_id == str(CASA_CHANNEL_ID) else
+                  'tech' if chat_id == str(CHANNEL_ID) else chat_id)
+        if not history_matches(chat_id, target_id):
             continue
         asin = riga['asin'] or estrai_asin_da_link(riga['link'])
-        identita = (canale,asin or str(riga['link']).split('?')[0] or str(riga['nome']).casefold())
+        identita = (chat_id,asin or str(riga['link']).split('?')[0] or str(riga['nome']).casefold())
         if identita in visti:
             continue
         visti.add(identita)
@@ -12621,7 +12794,7 @@ async def mostra_scheda_archivio(update: Update, context: ContextTypes.DEFAULT_T
     if not active or str(r.get('telegram_chat_id')) != str(active['chat_id']):
         await q.message.reply_text('❌ Questo prodotto non appartiene al canale attivo.')
         return
-    canale='Casa' if str(r.get('telegram_chat_id'))==str(CASA_CHANNEL_ID) else 'Tech'
+    canale = active['display_name']
     dati_salvati=dati_template_da_corpo(r.get('messaggio'),nome=r['nome'],prezzo=r.get('prezzo'),vecchio=r.get('vecchio_prezzo'),categoria=r.get('categoria'))
     # The stored body has the exposed base price; displayed history may have a separate final price.
     testo=(f"📚 Anteprima ricostruita — {canale}\nPubblicato: {_data_archivio(r['pubblicata_il'])}\nDati salvati, non ricontrollati adesso.\n\n"
@@ -12686,7 +12859,12 @@ async def ricontrolla_da_cronologia(update: Update, context: ContextTypes.DEFAUL
         await q.message.reply_text('⚠️ Imposta AMAZON_PARTNER_TAG nelle variabili Railway.')
         return ConversationHandler.END
     link,chat_id,asin,prezzo_storico,data_storica=row
-    canale='casa' if str(chat_id)==str(CASA_CHANNEL_ID) else 'tech'
+    # Reuse the exact source channel; never silently repost third-party history to TECH.
+    try:
+        canale = _chat_id_per_canale(chat_id)
+    except (ValueError, LookupError) as exc:
+        await q.message.reply_text(f'❌ Canale originale non disponibile: {exc}')
+        return ConversationHandler.END
     context.user_data.pop('multiplo',None)
     draft={'tipo':'singolo_cronologia','prezzo_storico':prezzo_storico,'data_storica':data_storica,'canale':canale,'minuti':intervallo_multiplo(update.effective_user.id),'pronti':[],'scartati':[],'duplicati':0,'elaborazione':True,'richiesti':1,'candidati':1}
     context.user_data['multiplo']=draft
@@ -12732,7 +12910,9 @@ async def ultime(
     else:
         righe = ["🕒 ULTIME PUBBLICAZIONI\n"]
         for numero, (_, nome, _, prezzo, data, _, chat_id, origine, sconto, stato) in enumerate(offerte, 1):
-            canale = "CASA" if str(chat_id) == str(CASA_CHANNEL_ID) else "TECH"
+            canale = next((c['display_name'] for c in bp_channels.channels(DB_PATH)
+                           if str(c['chat_id']) == str(chat_id)),
+                          'Canale non identificato')
             icona = "⛔" if stato == "terminata" else "✅"
             righe.append(
                 f"{numero}. {icona} {accorcia_nome_articolo(nome)}\n"
@@ -14146,7 +14326,11 @@ async def pubblica_oroscopo_giornaliero(app, adesso=None):
             imposta_oroscopo("attivo", False)
             return
         for canale in cfg["canali"]:
-            destinazione = CHANNEL_ID if canale == "tech" else CASA_CHANNEL_ID
+            try:
+                destinazione = bp_rubriche_routing.resolve_rubric_channel(DB_PATH, canale)
+            except ValueError as errore:
+                print(f"Rubrica oroscopo: invio ignorato: {errore}")
+                continue
             # Prenotazione persistente prima dell'invio: un riavvio non ripubblica.
             with sqlite3.connect(DB_PATH, timeout=30) as db:
                 risultato = db.execute(
@@ -14471,6 +14655,7 @@ async def controlla_quiz(app):
 def main():
 
     bp_channels.initialize(DB_PATH, CHANNEL_ID, CASA_CHANNEL_ID)
+    bp_collages_multi.initialize(DB_PATH)
     inizializza_oroscopi()
     inizializza_quiz()
     inizializza_pause_caffe()
@@ -14491,8 +14676,10 @@ def main():
     # Intercetta solo la rubrica; gli altri flussi mantengono i propri handler.
     app.add_handler(TypeHandler(Update, gestisci_oroscopi), group=-1)
 
+    app.add_handler(CommandHandler("aggiungicanale", aggiungi_canale_comando))
+    app.add_handler(CallbackQueryHandler(bp_add_help, pattern=r"^bp_add_help$"))
     app.add_handler(CallbackQueryHandler(bp_home, pattern=r"^bp_home$"))
-    app.add_handler(CallbackQueryHandler(bp_select_channel, pattern=r"^bp_select_\d+$"))
+    app.add_handler(CallbackQueryHandler(bp_select_channel, pattern=r"^bp_channel_-?\d+$"))
     app.add_handler(CallbackQueryHandler(
         storico_prezzi_non_disponibile, pattern="^offer_price_unavailable$"
     ))
@@ -14900,6 +15087,9 @@ def main():
         )
     )
 
+    app.add_handler(CallbackQueryHandler(mostra_cronologia_collage, pattern=r"^collection_history_(tech|casa)$"))
+    app.add_handler(CallbackQueryHandler(bp_new_collage_history, pattern=r"^bp_new_collage_history$"))
+
     app.add_handler(
         CallbackQueryHandler(
             gestisci_raccolte_casa,
@@ -15196,4 +15386,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
