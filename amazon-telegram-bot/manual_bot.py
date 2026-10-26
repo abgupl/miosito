@@ -8304,19 +8304,18 @@ async def controlla_offerte_terminate(app):
 # =========================================================
 
 def menu_principale():
-    # Accessi rapidi in due colonne; callback originali preservati.
+    """Menu principale: disposizione confermata, callback originali invariati."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔗 Inserimento da link", callback_data="nuova"),
-         InlineKeyboardButton("📦 Invio multiplo", callback_data="rapido")],
-        [InlineKeyboardButton("🤖 Pubblicazione automatica", callback_data="auto_channels"),
-         InlineKeyboardButton("📚 Cronologia", callback_data="history_menu")],
-        [InlineKeyboardButton("🔁 Controlla e ripubblica", callback_data="repost"),
-         InlineKeyboardButton("🔎 Cerca offerte", callback_data="offer_search")],
-        [InlineKeyboardButton("☕ Rubriche", callback_data="rub_menu"),
-         InlineKeyboardButton("⚙️ Impostazioni", callback_data="settings_menu")],
-        [InlineKeyboardButton("📤 Altre pubblicazioni", callback_data="publish_menu"),
+         InlineKeyboardButton("🤖 Pubblicazione automatica", callback_data="auto_channels")],
+        [InlineKeyboardButton("📦 Invio multiplo", callback_data="rapido"),
+         InlineKeyboardButton("🔁 Controlla e ripubblica", callback_data="repost")],
+        [InlineKeyboardButton("🔎 Cerca offerte", callback_data="offer_search"),
          InlineKeyboardButton("📅 Post programmati", callback_data="programmati")],
-        [InlineKeyboardButton("🎵 Automazione TikTok", callback_data="tiktok_menu")],
+        [InlineKeyboardButton("📚 Cronologia", callback_data="history_menu"),
+         InlineKeyboardButton("☕ Rubriche", callback_data="rub_menu")],
+        [InlineKeyboardButton("🎵 Automazione TikTok", callback_data="tiktok_menu"),
+         InlineKeyboardButton("⚙️ Impostazioni", callback_data="settings_menu")],
     ])
 
 
