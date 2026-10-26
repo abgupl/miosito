@@ -36,6 +36,8 @@ def get_items(*args, **kwargs):
 def search_items(*args, **kwargs):
     return []
 
+import bestprice_channels as bp_channels
+
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -4550,27 +4552,15 @@ async def seleziona_canale_automazione(update: Update, context: ContextTypes.DEF
 
 
 async def mostra_canali_automazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Primo livello dell'invio automatico: stato dei canali collegati."""
     if not await controlla_autorizzazione(update):
         return
     query = update.callback_query
     await query.answer()
-    config_tech = leggi_config_automatica("tech")
-    config_casa = leggi_config_automatica("casa")
-    stato_tech = "🟢 ATTIVO" if config_tech["attiva"] else "🔴 DISATTIVATO"
-    stato_casa = "🟢 ATTIVO" if config_casa["attiva"] else "🔴 DISATTIVATO"
-    await query.edit_message_text(
-        "🤖 INVIO AUTOMATICO\n\n"
-        "Seleziona il canale da gestire:\n\n"
-        f"📱 TECH — {stato_tech}\n"
-        f"🏠 CASA — {stato_casa}",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"📱 TECH — {stato_tech}", callback_data="auto_channel_tech")],
-            [InlineKeyboardButton(f"🏠 CASA — {stato_casa}", callback_data="auto_channel_casa")],
-            [InlineKeyboardButton("📊 Stato generale", callback_data="auto_status")],
-            [InlineKeyboardButton("⬅️ Torna al menu principale", callback_data="menu_admin")],
-        ]),
-    )
+    key = _bp_key(update)
+    if key not in ('tech', 'casa'):
+        return await query.edit_message_text('📢 Seleziona prima un canale da /start.', reply_markup=_bp_selector())
+    context.user_data['auto_canale'] = key
+    await aggiorna_menu_automazione(query, context)
 
 
 async def mostra_stato_automazioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8303,6 +8293,41 @@ async def controlla_offerte_terminate(app):
 # MENU ADMIN
 # =========================================================
 
+def _bp_active(update):
+    return bp_channels.active_channel(DB_PATH, update.effective_user.id) if update.effective_user else None
+
+
+def _bp_key(update):
+    channel = _bp_active(update)
+    if not channel:
+        return None
+    return channel.get('legacy_key') or channel['chat_id']
+
+
+def _bp_selector():
+    buttons = [[InlineKeyboardButton(('📱 ' if c.get('legacy_key') == 'tech' else '🏠 ' if c.get('legacy_key') == 'casa' else '📢 ') + c['display_name'], callback_data='bp_select_' + str(i))] for i,c in enumerate(bp_channels.channels(DB_PATH))]
+    buttons.append([InlineKeyboardButton('⚙️ Gestione canali', callback_data='channels_manage')])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def bp_select_channel(update, context):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    index = int(query.data.rsplit('_', 1)[1])
+    available = bp_channels.channels(DB_PATH)
+    if index >= len(available):
+        return await query.edit_message_text('Elenco aggiornato. Riapri /start.')
+    channel = available[index]
+    # La logica di pubblicazione del codice originale supporta solo i due canali legacy.
+    if channel.get('legacy_key') not in ('tech','casa'):
+        return await query.edit_message_text('Canale registrato, ma le funzioni di pubblicazione richiedono ancora la migrazione completa. Non è stato selezionato.', reply_markup=_bp_selector())
+    bp_channels.select_channel(DB_PATH, update.effective_user.id, channel['chat_id'])
+    context.user_data['auto_canale'] = channel['legacy_key']
+    await query.edit_message_text('✅ Canale attivo: ' + channel['display_name'] + '\n\nScegli una funzione:', reply_markup=menu_principale())
+
+
 def menu_principale():
     """Menu principale: disposizione confermata, callback originali invariati."""
     return InlineKeyboardMarkup([
@@ -8465,18 +8490,9 @@ async def mostra_gestione_canali(update: Update, context: ContextTypes.DEFAULT_T
         return
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(
-        "📢 GESTIONE CANALI\n\n"
-        "📱 TECH — ✅ COLLEGATO\n"
-        "🏠 CASA — ✅ COLLEGATO\n\n"
-        "Casa e cucina, Elettrodomestici, Fai da te, Giardino, Arredamento "
-        "e Illuminazione vengono indirizzati a @BestPrice24hCasa.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📱 Canale TECH", callback_data="channel_info_tech")],
-            [InlineKeyboardButton("🏠 Canale Casa", callback_data="channel_info_casa")],
-            [InlineKeyboardButton("⬅️ Torna alle impostazioni", callback_data="settings_menu")],
-        ]),
-    )
+    active = _bp_active(update)
+    lines = ['📢 GESTIONE CANALI', '', 'Canale attivo: ' + (active['display_name'] if active else 'nessuno'), '', 'Seleziona un canale per cambiare il contesto:']
+    await query.edit_message_text('\n'.join(lines), reply_markup=_bp_selector())
 
 
 async def mostra_info_canale(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8541,11 +8557,10 @@ async def torna_menu_admin(
     query = update.callback_query
     await query.answer()
 
+    active = _bp_active(update)
     await query.edit_message_text(
-        "🔥 AMAZON OFFERTE BOT\n\n"
-        "🛠 Modalità amministratore\n\n"
-        "Cosa vuoi fare?",
-        reply_markup=menu_principale(),
+        ('🔥 AMAZON OFFERTE BOT\n\nCanale attivo: ' + active['display_name'] + '\n\nCosa vuoi fare?') if active else '📢 Seleziona il canale da gestire:',
+        reply_markup=menu_principale() if active else _bp_selector(),
     )
 
 
@@ -8619,11 +8634,10 @@ async def start(
     # =====================================================
     if autorizzato(update):
 
+        active = _bp_active(update)
         await update.message.reply_text(
-            "🔥 AMAZON OFFERTE BOT\n\n"
-            "🛠 Modalità amministratore\n\n"
-            "Cosa vuoi fare?",
-            reply_markup=menu_principale(),
+            ('🔥 AMAZON OFFERTE BOT\n\nCanale attivo: ' + active['display_name'] + '\n\nCosa vuoi fare?') if active else '📢 Seleziona il canale da gestire:',
+            reply_markup=menu_principale() if active else _bp_selector(),
         )
 
         return ConversationHandler.END
@@ -9388,8 +9402,6 @@ def tastiera_multiplo(draft):
     if draft.get('tipo') == 'singolo_cronologia':
         return tastiera_confronto_cronologia(bool(draft.get('pronti')) and not draft.get('elaborazione'))
     return InlineKeyboardMarkup([row for row in [
-        [InlineKeyboardButton("✅ TECH" if draft["canale"] == "TECH" else "TECH", callback_data="multi_canale_tech"),
-         InlineKeyboardButton("✅ Casa" if draft["canale"] == "Casa" else "Casa", callback_data="multi_canale_casa")],
         [InlineKeyboardButton(f"⏱ Intervallo: {draft['minuti']} min", callback_data="multi_timing")],
         [InlineKeyboardButton("🚀 Conferma e avvia", callback_data="multi_avvia")] if draft.get("pronti") and not draft.get("elaborazione") else [],
         [InlineKeyboardButton("❌ Annulla", callback_data="multi_annulla")],
@@ -9574,10 +9586,10 @@ async def repost_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
     await update.callback_query.answer()
     context.user_data.clear()
-    draft = {'tipo':'repost','canale':'tech','minuti':intervallo_multiplo(update.effective_user.id),'pronti':[],'scartati':[],'duplicati':0,'elaborazione':False,'repost_attesa_quantita':True}
+    draft = {'tipo':'repost','canale':_bp_key(update) or 'tech','minuti':intervallo_multiplo(update.effective_user.id),'pronti':[],'scartati':[],'duplicati':0,'elaborazione':False,'repost_attesa_quantita':True}
     context.user_data['multiplo'] = draft
     await update.effective_message.reply_text(
-        "🔁 REPOST — ULTIMI 7 GIORNI\n\nScegli canale e intervallo, poi scrivi quanti prodotti vuoi ripubblicare (1–50).\nEscludo prodotti già inviati nelle ultime 24 ore e già programmati nello stesso canale.\nControllo dati, prezzi, disponibilità e coupon. Dopo il riepilogo: conferma subito oppure avvio automatico tra 2 minuti. Gli invii rispettano la fascia manuale/multiplo.",
+        "🔁 REPOST — ULTIMI 7 GIORNI\n\nScegli l’intervallo, poi scrivi quanti prodotti vuoi ripubblicare (1–50).\nEscludo prodotti già inviati nelle ultime 24 ore e già programmati nello stesso canale.\nControllo dati, prezzi, disponibilità e coupon. Dopo il riepilogo: conferma subito oppure avvio automatico tra 2 minuti. Gli invii rispettano la fascia manuale/multiplo.",
         reply_markup=tastiera_multiplo(draft))
     return RAPIDO
 
@@ -9588,9 +9600,9 @@ async def rapido_da_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
     context.user_data.clear()
-    draft = {'canale': 'tech', 'minuti': intervallo_multiplo(update.effective_user.id), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
+    draft = {'canale': _bp_key(update) or 'tech', 'minuti': intervallo_multiplo(update.effective_user.id), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
     context.user_data['multiplo'] = draft
-    await update.effective_message.reply_text("📦 INVIO MULTIPLO\n\nScegli canale e intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.", reply_markup=tastiera_multiplo(draft))
+    await update.effective_message.reply_text("📦 INVIO MULTIPLO\n\nScegli l’intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.", reply_markup=tastiera_multiplo(draft))
     return RAPIDO
 
 
@@ -9607,7 +9619,7 @@ async def prepara_repost(messaggio, context, draft):
         if not links:
             draft['elaborazione'] = False
             draft['repost_attesa_quantita'] = True
-            await messaggio.reply_text('ℹ️ Nessun prodotto disponibile per Repost: servono pubblicazioni negli ultimi 7 giorni, più vecchie di 24 ore e non già in coda. Puoi cambiare canale o annullare.',reply_markup=tastiera_multiplo(draft))
+            await messaggio.reply_text('ℹ️ Nessun prodotto disponibile per Repost: servono pubblicazioni negli ultimi 7 giorni, più vecchie di 24 ore e non già in coda. Puoi annullare.',reply_markup=tastiera_multiplo(draft))
             return
         await prepara_lotto_multiplo(messaggio,context,draft,links)
     except Exception as exc:
@@ -9933,7 +9945,7 @@ async def gestisci_multiplo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.message.reply_text(f"✅ Intervallo: {draft['minuti']} minuti", reply_markup=tastiera_multiplo(draft))
     elif azione.startswith('multi_canale_'):
-        draft['canale'] = azione.rsplit('_',1)[1]
+        pass  # Selettori precedenti disattivati: il canale è fissato all'avvio del lotto
         if draft['pronti']:
             await riepilogo_multiplo(query.message, draft, context)
         else:
@@ -12474,7 +12486,7 @@ async def mostra_archivio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pagina = 0
     if azione.startswith('archive_filter_'):
         filtro = azione.replace('archive_filter_','',1)
-        context.user_data['archivio_filtro'] = filtro if filtro in ('tech','casa') else 'tutti'
+        context.user_data.pop('archivio_filtro', None)  # vecchi pulsanti ignorati
     elif azione.startswith('archive_period_'):
         context.user_data['archivio_periodo'] = azione.replace('archive_period_','',1)
     elif azione.startswith('archive_size_') and azione != 'archive_size_menu':
@@ -12483,9 +12495,9 @@ async def mostra_archivio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('archivio_ricerca',None)
     elif azione.startswith('archive_page_'):
         pagina = int(azione.rsplit('_',1)[1])
-    filtro = context.user_data.get('archivio_filtro','tutti')
+    filtro = _bp_key(update)
     if filtro not in ('tech','casa'):
-        filtro = 'tutti'
+        return await q.edit_message_text('Seleziona prima un canale con /start.', reply_markup=_bp_selector())
     periodo = context.user_data.get('archivio_periodo','7')
     if periodo not in ('oggi','7','30','tutto'):
         periodo = '7'
@@ -12503,7 +12515,6 @@ async def mostra_archivio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not visibili:
         testo += '\n\nNessun prodotto trovato.'
     controlli = [
-        [InlineKeyboardButton(('✅ ' if filtro==x else '')+label,callback_data='archive_filter_'+x) for x,label in [('tech','📱 Tech'),('casa','🏠 Casa'),('tutti','📋 Tutti')]],
         [InlineKeyboardButton('🔎 Cerca prodotto',callback_data='archive_search'),InlineKeyboardButton('📆 Periodo',callback_data='archive_period_menu')],
         [InlineKeyboardButton(f'🔢 Prodotti per pagina: {per_pagina}',callback_data='archive_size_menu')],
     ]
@@ -14400,6 +14411,7 @@ async def controlla_quiz(app):
 
 def main():
 
+    bp_channels.initialize(DB_PATH, CHANNEL_ID, CASA_CHANNEL_ID)
     inizializza_oroscopi()
     inizializza_quiz()
     inizializza_pause_caffe()
@@ -14420,6 +14432,7 @@ def main():
     # Intercetta solo la rubrica; gli altri flussi mantengono i propri handler.
     app.add_handler(TypeHandler(Update, gestisci_oroscopi), group=-1)
 
+    app.add_handler(CallbackQueryHandler(bp_select_channel, pattern=r"^bp_select_\d+$"))
     app.add_handler(CallbackQueryHandler(
         storico_prezzi_non_disponibile, pattern="^offer_price_unavailable$"
     ))
