@@ -1675,7 +1675,7 @@ async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callbac
                 if callback:
                     await callback(indice)
                 if indice < 3:
-                    await asyncio.sleep(2 if indice == 1 else 4)
+                    await asyncio.sleep(3)
                 continue
             if isinstance(risultato, dict) and risultato:
                 dati = _unisci_dati_lettura(metadati, risultato)
@@ -1701,7 +1701,7 @@ async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callbac
         if callback:
             await callback(indice)
         if indice < 3:
-            await asyncio.sleep(2 if indice < 3 else 4)
+            await asyncio.sleep(3)
     print(f'Lettura Amazon ASIN {asin}: fallita. Motivi: {"; ".join(motivi)}')
     return None
 
@@ -8535,7 +8535,7 @@ def leggi_prodotto_amazon(url):
         risposta = requests.get(
             url,
             headers=headers,
-            timeout=15,
+            timeout=10,
             allow_redirects=True,
         )
 
@@ -8716,7 +8716,7 @@ def risolvi_asin_da_link(link):
     try:
         with requests.get(
             link,
-            timeout=15,
+            timeout=10,
             allow_redirects=True,
             stream=True,
             headers={"User-Agent": "Mozilla/5.0"},
