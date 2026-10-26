@@ -8305,9 +8305,26 @@ def _bp_key(update):
 
 
 def _bp_selector():
-    buttons = [[InlineKeyboardButton(('📱 ' if c.get('legacy_key') == 'tech' else '🏠 ' if c.get('legacy_key') == 'casa' else '📢 ') + c['display_name'], callback_data='bp_select_' + str(i))] for i,c in enumerate(bp_channels.channels(DB_PATH))]
-    buttons.append([InlineKeyboardButton('⚙️ Gestione canali', callback_data='channels_manage')])
+    """Schermata iniziale globale: selezione canale, rubriche, impostazioni."""
+    buttons = [[InlineKeyboardButton(
+        ('📱 ' if c.get('legacy_key') == 'tech' else '🏠 ' if c.get('legacy_key') == 'casa' else '📢 ') + c['display_name'],
+        callback_data='bp_select_' + str(i))]
+        for i, c in enumerate(bp_channels.channels(DB_PATH))]
+    buttons.append([InlineKeyboardButton('☕ Rubriche', callback_data='rub_menu'),
+                    InlineKeyboardButton('⚙️ Impostazioni', callback_data='settings_menu')])
     return InlineKeyboardMarkup(buttons)
+
+
+async def bp_home(update, context):
+    """Ritorno alla prima pagina, senza cancellare il canale salvato."""
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        '🏠 BESTPRICE24H — PANNELLO GENERALE\n\n'
+        'Seleziona un canale oppure gestisci le impostazioni e le rubriche condivise.',
+        reply_markup=_bp_selector())
 
 
 async def bp_select_channel(update, context):
@@ -8329,7 +8346,7 @@ async def bp_select_channel(update, context):
 
 
 def menu_principale():
-    """Menu principale: disposizione confermata, callback originali invariati."""
+    """Pannello operativo del canale selezionato; configurazioni globali nella home."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔗 Inserimento da link", callback_data="nuova"),
          InlineKeyboardButton("🤖 Pubblicazione automatica", callback_data="auto_channels")],
@@ -8338,9 +8355,8 @@ def menu_principale():
         [InlineKeyboardButton("🔎 Cerca offerte", callback_data="offer_search"),
          InlineKeyboardButton("📅 Post programmati", callback_data="programmati")],
         [InlineKeyboardButton("📚 Cronologia", callback_data="history_menu"),
-         InlineKeyboardButton("☕ Rubriche", callback_data="rub_menu")],
-        [InlineKeyboardButton("🎵 Automazione TikTok", callback_data="tiktok_menu"),
-         InlineKeyboardButton("⚙️ Impostazioni", callback_data="settings_menu")],
+         InlineKeyboardButton("🎵 Automazione TikTok", callback_data="tiktok_menu")],
+        [InlineKeyboardButton("⬅️ Selezione canali", callback_data="bp_home")],
     ])
 
 
@@ -8389,7 +8405,7 @@ def menu_impostazioni():
         [InlineKeyboardButton("🌙 Orario recap serale", callback_data="recap_time_menu")],
         [InlineKeyboardButton("📊 Stato del bot", callback_data="bot_status")],
         [InlineKeyboardButton("📋 Log e diagnostica", callback_data="diag_logs_all_0")],
-        [InlineKeyboardButton("⬅️ Torna al menu principale", callback_data="menu_admin")],
+        [InlineKeyboardButton("⬅️ Pannello generale", callback_data="bp_home")],
     ])
 
 
@@ -8492,7 +8508,7 @@ async def mostra_gestione_canali(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     active = _bp_active(update)
     lines = ['📢 GESTIONE CANALI', '', 'Canale attivo: ' + (active['display_name'] if active else 'nessuno'), '', 'Seleziona un canale per cambiare il contesto:']
-    await query.edit_message_text('\n'.join(lines), reply_markup=_bp_selector())
+    await query.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(c['display_name'], callback_data='bp_select_' + str(i))] for i, c in enumerate(bp_channels.channels(DB_PATH))] + [[InlineKeyboardButton('⬅️ Impostazioni', callback_data='settings_menu')]]))
 
 
 async def mostra_info_canale(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8634,10 +8650,10 @@ async def start(
     # =====================================================
     if autorizzato(update):
 
-        active = _bp_active(update)
         await update.message.reply_text(
-            ('🔥 AMAZON OFFERTE BOT\n\nCanale attivo: ' + active['display_name'] + '\n\nCosa vuoi fare?') if active else '📢 Seleziona il canale da gestire:',
-            reply_markup=menu_principale() if active else _bp_selector(),
+            '🏠 BESTPRICE24H — PANNELLO GENERALE\n\n'
+            'Seleziona il canale da gestire oppure apri Rubriche e Impostazioni globali.',
+            reply_markup=_bp_selector(),
         )
 
         return ConversationHandler.END
@@ -10139,7 +10155,7 @@ async def ricevi_ora_programmazione(
     )
 
     if da_reinvio:
-        await invia_lista_programmati(update.message)
+        await invia_lista_programmati(update.message, _bp_active(update)["chat_id"] if _bp_active(update) else None)
 
     return ConversationHandler.END
 
@@ -10468,7 +10484,7 @@ async def conferma_orario_vicino(
     )
 
     if da_reinvio:
-        await invia_lista_programmati(query.message)
+        await invia_lista_programmati(query.message, _bp_active(update)["chat_id"] if _bp_active(update) else None)
 
     return ConversationHandler.END
 
@@ -10586,12 +10602,16 @@ def aggiorna_messaggio_programmato(
 
 
 async def invia_lista_programmati(
-    messaggio,
+    messaggio, canale_id=None,
 ):
 
     riallinea_programmati_fascia()
     db = sqlite3.connect(DB_PATH)
     cur = db.cursor()
+    if canale_id is None:
+        await messaggio.reply_text("Seleziona prima il canale con /start.")
+        db.close()
+        return
 
     cur.execute("""
         SELECT
@@ -10600,10 +10620,10 @@ async def invia_lista_programmati(
             prezzo,
             invio_previsto
         FROM programmazioni
-        WHERE stato = 'attesa'
+        WHERE stato = 'attesa' AND telegram_chat_id = ?
         ORDER BY invio_previsto ASC
         LIMIT 100
-    """)
+    """, (str(canale_id),))
 
     righe_db = cur.fetchall()
 
@@ -10615,7 +10635,7 @@ async def invia_lista_programmati(
         if dt:
             giorni_lista.add(dt.date())
     eventi_caffe = []
-    for canale in (CHANNEL_ID, CASA_CHANNEL_ID):
+    for canale in (canale_id,):
         eventi_caffe.extend(descrizione_pause_programmate(canale, giorni_lista))
     # Elenco cronologico con indicazione del canale per i post speciali.
     if not righe_db and not eventi_caffe:
@@ -10662,7 +10682,7 @@ async def invia_lista_programmati(
 
         elementi.append((data_locale or datetime.now(ROMA_TZ),
             f"#{programmazione_id} • {quando}\n📦 {nome} — {prezzo} €\n"))
-    for canale in (CHANNEL_ID, CASA_CHANNEL_ID):
+    for canale in (canale_id,):
         nome_canale = 'CASA' if str(canale) == str(CASA_CHANNEL_ID) else 'TECH'
         for inizio, descrizione in descrizione_pause_programmate(canale, giorni_lista):
             elementi.append((inizio, f"{descrizione} · {nome_canale}\n"))
@@ -10727,7 +10747,7 @@ async def mostra_programmati(
         context.user_data.pop(chiave, None)
 
     await invia_lista_programmati(
-        messaggio
+        messaggio, _bp_active(update)["chat_id"] if _bp_active(update) else None
     )
 
     return PROG_SELEZIONE
@@ -10772,6 +10792,13 @@ async def seleziona_programmato(
             "Scrivi un altro numero."
         )
 
+        return PROG_SELEZIONE
+
+    active = _bp_active(update)
+    with sqlite3.connect(DB_PATH) as db:
+        owner = db.execute("SELECT telegram_chat_id FROM programmazioni WHERE id=?", (programmazione_id,)).fetchone()
+    if not active or not owner or str(owner[0]) != str(active["chat_id"]):
+        await update.message.reply_text("❌ Questo post non appartiene al canale attivo.")
         return PROG_SELEZIONE
 
     context.user_data[
@@ -10895,7 +10922,7 @@ async def gestisci_programmato(
         )
 
         await invia_lista_programmati(
-            query.message
+            query.message, _bp_active(update)["chat_id"] if _bp_active(update) else None
         )
 
         return PROG_SELEZIONE
@@ -11041,7 +11068,7 @@ async def gestisci_programmato(
         )
 
         await invia_lista_programmati(
-            query.message
+            query.message, _bp_active(update)["chat_id"] if _bp_active(update) else None
         )
 
         return PROG_SELEZIONE
@@ -12426,7 +12453,8 @@ def righe_cronologia(filtro='tutti', periodo='7', ricerca=''):
         if not data or (limite and data < limite):
             continue
         canale = 'casa' if str(riga['telegram_chat_id']) == str(CASA_CHANNEL_ID) else 'tech'
-        if filtro in ('tech','casa') and canale != filtro:
+        target_id = str(CASA_CHANNEL_ID if filtro == 'casa' else CHANNEL_ID if filtro == 'tech' else filtro)
+        if str(riga['telegram_chat_id']) != target_id:
             continue
         asin = riga['asin'] or estrai_asin_da_link(riga['link'])
         identita = (canale,asin or str(riga['link']).split('?')[0] or str(riga['nome']).casefold())
@@ -12573,6 +12601,10 @@ async def mostra_scheda_archivio(update: Update, context: ContextTypes.DEFAULT_T
         await q.message.reply_text('❌ Prodotto non trovato.')
         return
     r=dict(row)
+    active = _bp_active(update)
+    if not active or str(r.get('telegram_chat_id')) != str(active['chat_id']):
+        await q.message.reply_text('❌ Questo prodotto non appartiene al canale attivo.')
+        return
     canale='Casa' if str(r.get('telegram_chat_id'))==str(CASA_CHANNEL_ID) else 'Tech'
     dati_salvati=dati_template_da_corpo(r.get('messaggio'),nome=r['nome'],prezzo=r.get('prezzo'),vecchio=r.get('vecchio_prezzo'),categoria=r.get('categoria'))
     # The stored body has the exposed base price; displayed history may have a separate final price.
@@ -14249,7 +14281,7 @@ async def mostra_rubrica(msg):
     await msg.reply_text(f"☕ RUBRICA — BESTPRICE24H\n\n☀️ Primo Caffè: {oc['ora']}\n🧠 Quiz TECH: {qc['ora']} ({'ON' if qc['attivo'] else 'OFF'})\n🌙 Secondo Caffè: {oc['ora2']}\n\n⏸ Pausa offerte: 30 minuti per ogni appuntamento.",reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton('♈ Oroscopo',callback_data='oro_menu'),InlineKeyboardButton('🧠 Quiz TECH',callback_data='quiz_menu')],
         [InlineKeyboardButton('🕒 Orari rubrica',callback_data='quiz_orari')],
-        [InlineKeyboardButton('⬅️ Menu principale',callback_data='menu_admin')]]))
+        [InlineKeyboardButton('⬅️ Pannello generale',callback_data='bp_home')]]))
 
 async def pannello_quiz(msg):
     c=configurazione_quiz(); oggi=datetime.now(ROMA_TZ).date().isoformat()
@@ -14432,7 +14464,10 @@ def main():
     # Intercetta solo la rubrica; gli altri flussi mantengono i propri handler.
     app.add_handler(TypeHandler(Update, gestisci_oroscopi), group=-1)
 
+    app.add_handler(CallbackQueryHandler(bp_home, pattern=r"^bp_home$"))
     app.add_handler(CallbackQueryHandler(bp_select_channel, pattern=r"^bp_select_\d+$"))
+    # Gestione canali deve precedere i ConversationHandler che possono intercettare i callback.
+    app.add_handler(CallbackQueryHandler(mostra_gestione_canali, pattern="^channels_manage$"))
     app.add_handler(CallbackQueryHandler(
         storico_prezzi_non_disponibile, pattern="^offer_price_unavailable$"
     ))
@@ -14756,9 +14791,6 @@ def main():
     )
     app.add_handler(CallbackQueryHandler(mostra_log_diagnostici, pattern=r"^diag_logs_(?:all|errors|amazon)_\d+$"))
     app.add_handler(CallbackQueryHandler(esporta_log_diagnostici, pattern=r"^diag_export_(?:all|errors|amazon)$"))
-    app.add_handler(
-        CallbackQueryHandler(mostra_gestione_canali, pattern="^channels_manage$")
-    )
     app.add_handler(
         CallbackQueryHandler(
             mostra_info_canale,
