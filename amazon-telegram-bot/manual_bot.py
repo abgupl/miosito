@@ -2252,10 +2252,9 @@ async def controlla_recap(app):
             orario_recap_raggiunto = (adesso.hour, adesso.minute) >= (ora_recap, minuto_recap)
 
             if orario_recap_raggiunto:
-                for canale, telegram_chat_id in (
-                    ("tech", CHANNEL_ID),
-                    ("casa", CASA_CHANNEL_ID),
-                ):
+                for entry in bp_channels.channels(DB_PATH):
+                    canale = entry.get("legacy_key") or str(entry["chat_id"])
+                    telegram_chat_id = str(entry["chat_id"])
                     if recap_gia_inviato(oggi, canale):
                         continue
                     inviato = await invia_recap_giornaliero(
@@ -6517,7 +6516,7 @@ async def pubblica_prodotto_ricerca_offerte(query, context, indice):
     if not prodotto:
         await query.message.reply_text("❌ Risultato scaduto. Avvia una nuova ricerca.")
         return
-    attesa_minuti = minuti_rimanenti_prima_del_prossimo_invio()
+    attesa_minuti = minuti_rimanenti_prima_del_prossimo_invio(_chat_id_per_canale(context.user_data.get("ricerca_offerte_canale")))
     if attesa_minuti:
         await query.message.reply_text(
             f"⏳ Attendi ancora {attesa_minuti} minuto/i prima di pubblicare."
@@ -6708,7 +6707,18 @@ def _aggiorna_slot_automatico(
 
 
 def _chat_id_per_canale(canale):
-    return str(CASA_CHANNEL_ID if canale == "casa" else CHANNEL_ID)
+    """Fail closed: never route an unknown channel to TECH."""
+    if canale is None:
+        raise ValueError("Canale non selezionato: pubblicazione bloccata")
+    value = str(canale).strip()
+    if value == "tech":
+        return str(CHANNEL_ID)
+    if value == "casa":
+        return str(CASA_CHANNEL_ID)
+    for entry in bp_channels.channels(DB_PATH):
+        if value == str(entry['chat_id']):
+            return value
+    raise ValueError("Canale non registrato o disattivato: pubblicazione bloccata")
 
 
 def _data_sqlite(valore):
@@ -8305,6 +8315,14 @@ def _bp_key(update):
     return channel.get('legacy_key') or channel['chat_id']
 
 
+def _bp_required_chat(update):
+    """Resolve persisted admin selection, with no implicit TECH fallback."""
+    channel = _bp_active(update)
+    if not channel:
+        raise ValueError("Seleziona prima un canale dalla schermata iniziale")
+    return _chat_id_per_canale(channel['chat_id'])
+
+
 def _bp_selector():
     """Schermata iniziale globale: selezione canale, rubriche, impostazioni."""
     buttons = [[InlineKeyboardButton(
@@ -9739,7 +9757,7 @@ async def decidi_ricontrollo_cronologia(update: Update, context: ContextTypes.DE
     async with MULTIPLO_LOCK:
         if context.user_data.get('multiplo') is not draft:
             return ConversationHandler.END
-        ora=datetime.now(ROMA_TZ)+timedelta(minutes=minuti_rimanenti_prima_del_prossimo_invio())
+        ora=datetime.now(ROMA_TZ)+timedelta(minutes=minuti_rimanenti_prima_del_prossimo_invio(destinazione))
         pid,quando=salva_programmazione(prodotto['nome'],corpo,prodotto['link'],prodotto['prezzo'],ora,destinazione,origine='cronologia')
         salva_foto_programmazione(pid,prodotto.get('foto_file_id'))
         context.user_data.pop('multiplo',None)
@@ -12025,17 +12043,20 @@ async def mostra_anteprima(
 # CONTROLLO DISTANZA INVII MANUALI
 # =========================================================
 
-def minuti_rimanenti_prima_del_prossimo_invio():
+def minuti_rimanenti_prima_del_prossimo_invio(telegram_chat_id=None):
 
     db = sqlite3.connect(DB_PATH)
     cur = db.cursor()
 
+    if telegram_chat_id is None:
+        raise ValueError("Controllo intervallo senza canale: operazione bloccata")
     cur.execute("""
         SELECT pubblicata_il
         FROM recap_offerte
+        WHERE CAST(COALESCE(telegram_chat_id, ?) AS TEXT) = ?
         ORDER BY pubblicata_il DESC
         LIMIT 1
-    """)
+    """, (str(CHANNEL_ID), str(telegram_chat_id)))
 
     riga = cur.fetchone()
     db.close()
@@ -12231,6 +12252,11 @@ async def conferma(
 
     # PUBBLICA
     if query.data == "pubblica":
+        try:
+            target_chat = _bp_required_chat(update)
+        except ValueError as exc:
+            await query.message.reply_text(f"❌ {exc}")
+            return CONFERMA
 
         ora = datetime.now(ROMA_TZ)
         if prossimo_orario_manuale(ora) != ora:
@@ -12238,13 +12264,13 @@ async def conferma(
             if not dati.get('messaggio') or not dati.get('link'):
                 await query.message.reply_text('❌ Dati dell’offerta mancanti.')
                 return CONFERMA
-            pid, quando = salva_programmazione(dati.get('nome'), dati['messaggio'], dati['link'], dati.get('prezzo'), ora, dati.get('telegram_chat_id', CHANNEL_ID))
+            pid, quando = salva_programmazione(dati.get('nome'), dati['messaggio'], dati['link'], dati.get('prezzo'), ora, target_chat)
             salva_foto_programmazione(pid, dati.get('foto_file_id'))
             context.user_data.clear()
             await query.message.reply_text(f"🌙 Fuori fascia: offerta aggiunta a Programmati per {quando:%d/%m/%Y %H:%M} (ora italiana).",reply_markup=menu_pubblicazione())
             return ConversationHandler.END
 
-        minuti_rimanenti = minuti_rimanenti_prima_del_prossimo_invio()
+        minuti_rimanenti = minuti_rimanenti_prima_del_prossimo_invio(target_chat)
 
         if minuti_rimanenti > 0:
             await query.message.reply_text(
@@ -12276,7 +12302,7 @@ async def conferma(
 
         if foto_file_id:
             messaggio_telegram = await context.bot.send_photo(
-                chat_id=CHANNEL_ID,
+                chat_id=target_chat,
                 photo=foto_file_id,
                 caption=messaggio_con_link,
                 parse_mode="HTML",
@@ -12284,7 +12310,7 @@ async def conferma(
             )
         else:
             messaggio_telegram = await context.bot.send_message(
-                chat_id=CHANNEL_ID,
+                chat_id=target_chat,
                 text=messaggio_con_link,
                 parse_mode="HTML",
                 reply_markup=bottone_offerta,
@@ -12292,7 +12318,7 @@ async def conferma(
 
         await aggiorna_pulsanti_offerta(
             context.bot, messaggio_telegram, link,
-            asin=context.user_data.get("asin"), chat_id=CHANNEL_ID,
+            asin=context.user_data.get("asin"), chat_id=target_chat,
         )
 
         foto_monitoraggio = foto_file_id
@@ -12310,6 +12336,7 @@ async def conferma(
             sconto=sconto_manuale,
             soglia_sconto=sconto_manuale,
             asin=context.user_data.get("asin"),
+            telegram_chat_id=target_chat,
         )
 
         ultime_offerte.appendleft(
@@ -12329,7 +12356,7 @@ async def conferma(
             foto_file_id=foto_file_id,
             template=context.user_data.get("template", "pulito"),
             asin=context.user_data.get("asin") or risolvi_asin_da_link(link),
-            telegram_chat_id=CHANNEL_ID,
+            telegram_chat_id=target_chat,
             origine="manuale",
             sconto=sconto_manuale,
             telegram_message_id=messaggio_telegram.message_id,
@@ -13155,6 +13182,11 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
 
+    try:
+        target_chat = _bp_required_chat(update)
+    except ValueError as exc:
+        await query.message.reply_text(f"❌ {exc}")
+        return
     draft = await _dati_reinvio(context)
     if not draft:
         await query.message.reply_text("❌ Offerta non trovata.")
@@ -13164,12 +13196,12 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
     ora = datetime.now(ROMA_TZ)
     if prossimo_orario_manuale(ora) != ora:
         corpo = ('__RICERCA_HTML__' + messaggio) if draft.get('template') == 'automatico' else messaggio
-        pid, quando = salva_programmazione(draft.get('nome'),corpo,draft['link'],draft.get('prezzo'),ora,CHANNEL_ID)
+        pid, quando = salva_programmazione(draft.get('nome'),corpo,draft['link'],draft.get('prezzo'),ora,target_chat)
         salva_foto_programmazione(pid,draft.get('foto_file_id'))
         await query.message.reply_text(f"🌙 Fuori fascia: reinvio programmato per {quando:%d/%m/%Y %H:%M} (ora italiana).")
         return
 
-    minuti_rimanenti = minuti_rimanenti_prima_del_prossimo_invio()
+    minuti_rimanenti = minuti_rimanenti_prima_del_prossimo_invio(target_chat)
     if minuti_rimanenti > 0:
         await query.message.reply_text(
             f"⏳ Attendi ancora {minuti_rimanenti} minuto/i.\n\n"
@@ -13186,7 +13218,7 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
 
     if draft.get("foto_file_id"):
         messaggio_telegram = await context.bot.send_photo(
-            chat_id=CHANNEL_ID,
+            chat_id=target_chat,
             photo=draft["foto_file_id"],
             caption=messaggio_con_link,
             parse_mode="HTML",
@@ -13194,7 +13226,7 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
         )
     else:
         messaggio_telegram = await context.bot.send_message(
-            chat_id=CHANNEL_ID,
+            chat_id=target_chat,
             text=messaggio_con_link,
             parse_mode="HTML",
             reply_markup=bottoni,
@@ -13202,7 +13234,7 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
 
     await aggiorna_pulsanti_offerta(
         context.bot, messaggio_telegram, draft["link"],
-        asin=draft.get("asin"), chat_id=CHANNEL_ID,
+        asin=draft.get("asin"), chat_id=target_chat,
     )
 
     foto_monitoraggio = draft.get("foto_file_id")
@@ -13219,6 +13251,7 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
         foto_file_id=foto_monitoraggio,
         sconto=sconto_reinvio,
         soglia_sconto=sconto_reinvio,
+        telegram_chat_id=target_chat,
     )
 
     salva_offerta_recap(
@@ -13227,7 +13260,7 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
         foto_file_id=draft.get("foto_file_id"),
         template=draft.get("template", "pulito"),
         asin=risolvi_asin_da_link(draft["link"]),
-        telegram_chat_id=CHANNEL_ID,
+        telegram_chat_id=target_chat,
         origine="reinvio",
         sconto=sconto_reinvio,
         telegram_message_id=messaggio_telegram.message_id,
@@ -13345,8 +13378,13 @@ async def ricevi_ora_reinvio(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     messaggio = _messaggio_reinvio(draft)
+    try:
+        target_chat = _bp_required_chat(update)
+    except ValueError as exc:
+        await update.message.reply_text(f"❌ {exc}")
+        return
     programmazione_id, invio_previsto = salva_programmazione(
-        draft["nome"], messaggio, draft["link"], draft["prezzo"], data_locale
+        draft["nome"], messaggio, draft["link"], draft["prezzo"], data_locale, target_chat
     )
     salva_foto_programmazione(programmazione_id, draft.get("foto_file_id"))
 
