@@ -1053,7 +1053,7 @@ async def gestisci_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
         salva_config_tiktok("orari", ",".join(x[:2] + ":" + x[2:] for x in orari))
     elif azione.startswith("tiktok_discount_"):
         salva_config_tiktok("sconto", azione.rsplit("_", 1)[1])
-    ritorno = [InlineKeyboardButton("⬅️ TORNA A TIKTOK", callback_data="tiktok_menu")]
+    ritorno = [InlineKeyboardButton("⬅️ Torna a TikTok", callback_data="tiktok_menu")]
     if azione == "tiktok_times":
         return await query.edit_message_text(
             "🕒 DUE POST AL GIORNO — ORA ITALIANA\nScegli gli orari. I post già inviati a Buffer restano programmati.",
@@ -1097,12 +1097,12 @@ async def gestisci_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "La pausa ferma i prossimi invii. Un invio già in corso o già consegnato a Buffer va controllato su Buffer."
     )
     await query.edit_message_text(testo, reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔴 METTI IN PAUSA" if attiva else "🟢 ATTIVA", callback_data="tiktok_toggle")],
-        [InlineKeyboardButton("🧪 ANTEPRIMA COMPLETA", callback_data="tiktok_test")],
-        [InlineKeyboardButton("🕒 ORARI", callback_data="tiktok_times"), InlineKeyboardButton("🎯 FILTRI", callback_data="tiktok_discount")],
-        [InlineKeyboardButton("📋 STORICO E STATO", callback_data="tiktok_history")],
-        [InlineKeyboardButton("APRI BUFFER", url="https://publish.buffer.com")],
-        [InlineKeyboardButton("⬅️ MENU PRINCIPALE", callback_data="menu_admin")],
+        [InlineKeyboardButton("🔴 Metti in pausa" if attiva else "🟢 attiva", callback_data="tiktok_toggle")],
+        [InlineKeyboardButton("🧪 Anteprima completa", callback_data="tiktok_test")],
+        [InlineKeyboardButton("🕒 Orari", callback_data="tiktok_times"), InlineKeyboardButton("🎯 Filtri", callback_data="tiktok_discount")],
+        [InlineKeyboardButton("📋 Storico e stato", callback_data="tiktok_history")],
+        [InlineKeyboardButton("Apri buffer", url="https://publish.buffer.com")],
+        [InlineKeyboardButton("⬅️ Menu principale", callback_data="menu_admin")],
     ]))
 
 
@@ -1528,7 +1528,7 @@ async def testa_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await messaggio.delete()
     await destinazione.reply_photo(photo=immagine, caption=f"🧪 ANTEPRIMA TIKTOK\n{titolo}")
     await destinazione.reply_text(descrizione, reply_markup=InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎵 MENU TIKTOK", callback_data="tiktok_menu")
+        InlineKeyboardButton("🎵 Menu TikTok", callback_data="tiktok_menu")
     ]]))
 
 
@@ -2183,8 +2183,8 @@ def tastiera_orario_recap():
          InlineKeyboardButton('22:01', callback_data='recap_time_2201')],
         [InlineKeyboardButton('22:30', callback_data='recap_time_2230'),
          InlineKeyboardButton('23:00', callback_data='recap_time_2300')],
-        [InlineKeyboardButton('✏️ INSERISCI UN ORARIO', callback_data='recap_time_custom')],
-        [InlineKeyboardButton('⬅️ IMPOSTAZIONI', callback_data='settings_menu')],
+        [InlineKeyboardButton('✏️ Inserisci un orario', callback_data='recap_time_custom')],
+        [InlineKeyboardButton('⬅️ Impostazioni', callback_data='settings_menu')],
     ])
 
 
@@ -2442,8 +2442,8 @@ async def menu_fascia_manuale(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"🕒 FASCIA MANUALE E MULTIPLO\n\nStato: {'🟢 ATTIVA' if cfg['attiva'] else '🔴 DISATTIVATA'}\nInizio: {cfg['inizio']}\nFine: {cfg['fine']}\nOra italiana. Fuori fascia gli invii passano al primo spazio consentito. La fascia automatica resta nel suo menu.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton('🟢/🔴 Attiva/disattiva',callback_data='mf_toggle')],
-            [InlineKeyboardButton('🌅 Inizio: '+cfg['inizio'],callback_data='mf_inizio'),InlineKeyboardButton('🌙 Fine: '+cfg['fine'],callback_data='mf_fine')],
-            [InlineKeyboardButton('⬅️ Pubblica offerta',callback_data='publish_menu')]
+            [InlineKeyboardButton('🌅 Inizio: '+cfg['inizio'],callback_data='mf_inizio'),inlinekeyboardbutton('🌙 fine: '+cfg['fine'],callback_data='mf_fine')],
+            [inlinekeyboardbutton('⬅️ pubblica offerta',callback_data='publish_menu')]
         ]))
     return ConversationHandler.END
 
@@ -3611,9 +3611,9 @@ async def mostra_menu_filtri(query):
     configurazione = leggi_config_automatica()
     priorita = "ATTIVA" if configurazione["priorita_amazon"] else "DISATTIVATA"
     tastiera = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏷 MARCHI AUTORIZZATI", callback_data="filter_brands")],
-        [InlineKeyboardButton("🚫 PAROLE ESCLUSE", callback_data="filter_words")],
-        [InlineKeyboardButton("🚀 PRODOTTI PRIORITARI", callback_data="priority_menu")],
+        [InlineKeyboardButton("🏷 Marchi autorizzati", callback_data="filter_brands")],
+        [InlineKeyboardButton("🚫 Parole escluse", callback_data="filter_words")],
+        [InlineKeyboardButton("🚀 Prodotti prioritari", callback_data="priority_menu")],
         [InlineKeyboardButton(
             f"⭐ PUNTEGGIO MINIMO: {configurazione['punteggio_minimo']}",
             callback_data="filter_score",
@@ -3626,9 +3626,9 @@ async def mostra_menu_filtri(query):
             f"🏪 PRIORITÀ AMAZON: {priorita}",
             callback_data="filter_amazon",
         )],
-        [InlineKeyboardButton("📊 RIEPILOGO FILTRI", callback_data="filter_summary")],
-        [InlineKeyboardButton("♻️ RIPRISTINA PREDEFINITI", callback_data="filter_reset")],
-        [InlineKeyboardButton("⬅️ TORNA ALLE IMPOSTAZIONI", callback_data="settings_menu")],
+        [InlineKeyboardButton("📊 Riepilogo filtri", callback_data="filter_summary")],
+        [InlineKeyboardButton("♻️ Ripristina predefiniti", callback_data="filter_reset")],
+        [InlineKeyboardButton("⬅️ Torna alle impostazioni", callback_data="settings_menu")],
     ])
     await query.edit_message_text(
         "⚙️ Filtri della modalità selettiva\n\n"
@@ -3660,7 +3660,7 @@ async def mostra_categorie_marchi(query, context):
         for codice, (etichetta, _) in AUTO_CATEGORIE.items()
         if codice in _categorie_filtri_context(context)
     ]
-    tastiera.append([InlineKeyboardButton("⬅️ INDIETRO", callback_data=_callback_ritorno_filtri(context))])
+    tastiera.append([InlineKeyboardButton("⬅️ Indietro", callback_data=_callback_ritorno_filtri(context))])
     await query.edit_message_text(
         "🏷 Scegli la categoria di cui vuoi gestire i marchi:",
         reply_markup=InlineKeyboardMarkup(tastiera),
@@ -3680,10 +3680,10 @@ async def mostra_gestione_marchi(query, context, categoria=None):
         f"Totale: {len(marchi)}"
     )
     tastiera = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ AGGIUNGI MARCHIO", callback_data="filter_brand_add")],
-        [InlineKeyboardButton("➖ RIMUOVI MARCHIO", callback_data="filter_brand_remove")],
-        [InlineKeyboardButton("⬅️ CAMBIA CATEGORIA", callback_data="filter_brands")],
-        [InlineKeyboardButton("⚙️ MENU FILTRI", callback_data=_callback_ritorno_filtri(context))],
+        [InlineKeyboardButton("➕ Aggiungi marchio", callback_data="filter_brand_add")],
+        [InlineKeyboardButton("➖ Rimuovi marchio", callback_data="filter_brand_remove")],
+        [InlineKeyboardButton("⬅️ Cambia categoria", callback_data="filter_brands")],
+        [InlineKeyboardButton("⚙️ Menu filtri", callback_data=_callback_ritorno_filtri(context))],
     ])
     await query.edit_message_text(testo[:4000], reply_markup=tastiera)
 
@@ -3695,9 +3695,9 @@ async def mostra_gestione_parole(query, context):
         f"{_testo_elenco(parole)}\n\n"
         "Se una di queste espressioni compare nel titolo, il prodotto perde 3 punti.",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ AGGIUNGI PAROLA", callback_data="filter_word_add")],
-            [InlineKeyboardButton("➖ RIMUOVI PAROLA", callback_data="filter_word_remove")],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data=_callback_ritorno_filtri(context))],
+            [InlineKeyboardButton("➕ Aggiungi parola", callback_data="filter_word_add")],
+            [InlineKeyboardButton("➖ Rimuovi parola", callback_data="filter_word_remove")],
+            [InlineKeyboardButton("⬅️ Indietro", callback_data=_callback_ritorno_filtri(context))],
         ]),
     )
 
@@ -3727,7 +3727,7 @@ async def gestisci_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tastiera = [
             [InlineKeyboardButton(str(v), callback_data=f"filter_score_{v}") for v in range(3, 7)],
             [InlineKeyboardButton(str(v), callback_data=f"filter_score_{v}") for v in range(7, 9)],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_filtri")],
+            [InlineKeyboardButton("⬅️ Indietro", callback_data="auto_filtri")],
         ]
         return await query.edit_message_text(
             "⭐ Punteggio minimo\n\nPiù è alto, più la selezione è severa. Consigliato: 5.",
@@ -3742,7 +3742,7 @@ async def gestisci_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE):
         valori = (20, 25, 30, 35, 40)
         tastiera = [[
             InlineKeyboardButton(f"{v}%", callback_data=f"filter_bonus_{v}") for v in valori
-        ], [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_filtri")]]
+        ], [InlineKeyboardButton("⬅️ Indietro", callback_data="auto_filtri")]]
         return await query.edit_message_text(
             "📉 Da quale sconto assegnare +2 punti?\n\nConsigliato: 30%.",
             reply_markup=InlineKeyboardMarkup(tastiera),
@@ -3773,15 +3773,15 @@ async def gestisci_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Parole escluse: {conteggio_parole}\n"
             f"Prodotti prioritari: {conteggio_priorita}",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_filtri")
+                InlineKeyboardButton("⬅️ Indietro", callback_data="auto_filtri")
             ]]),
         )
     if azione == "filter_reset":
         return await query.edit_message_text(
             "♻️ Vuoi ripristinare tutti i marchi, le parole escluse e i punteggi predefiniti?",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ SÌ, RIPRISTINA", callback_data="filter_reset_yes")],
-                [InlineKeyboardButton("❌ ANNULLA", callback_data="auto_filtri")],
+                [InlineKeyboardButton("✅ Sì, ripristina", callback_data="filter_reset_yes")],
+                [InlineKeyboardButton("❌ Annulla", callback_data="auto_filtri")],
             ]),
         )
     if azione == "filter_reset_yes":
@@ -3876,7 +3876,7 @@ async def ricevi_modifica_filtro(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(
         messaggio + "\n\nL’automazione è stata disattivata: riattivala dopo le modifiche.",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⚙️ TORNA AI FILTRI", callback_data=_callback_ritorno_filtri(context))
+            InlineKeyboardButton("⚙️ Torna ai filtri", callback_data=_callback_ritorno_filtri(context))
         ]]),
     )
     context.user_data.pop("stato_filtro_corrente", None)
@@ -3898,10 +3898,10 @@ async def mostra_menu_priorita(query, context):
         "Le priorità servono a far emergere prodotti importanti prima delle offerte comuni.\n"
         f"Regole attive: {len(regole)}",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📂 PRIORITÀ PER CATEGORIA", callback_data="priority_categories")],
-            [InlineKeyboardButton("🚫 PAROLE ANTI-ACCESSORIO", callback_data="priority_accessories")],
-            [InlineKeyboardButton("♻️ RIPRISTINA PRIORITÀ", callback_data="priority_reset")],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data=_callback_ritorno_filtri(context))],
+            [InlineKeyboardButton("📂 Priorità per categoria", callback_data="priority_categories")],
+            [InlineKeyboardButton("🚫 Parole anti-accessorio", callback_data="priority_accessories")],
+            [InlineKeyboardButton("♻️ Ripristina priorità", callback_data="priority_reset")],
+            [InlineKeyboardButton("⬅️ Indietro", callback_data=_callback_ritorno_filtri(context))],
         ]),
     )
 
@@ -3915,7 +3915,7 @@ async def mostra_categorie_priorita(query, context):
         callback_data=f"priority_cat_{codice}",
     )] for codice, (etichetta, _) in AUTO_CATEGORIE.items()
        if codice in _categorie_filtri_context(context)]
-    tastiera.append([InlineKeyboardButton("⬅️ INDIETRO", callback_data="priority_menu")])
+    tastiera.append([InlineKeyboardButton("⬅️ Indietro", callback_data="priority_menu")])
     await query.edit_message_text(
         "🚀 Scegli la categoria:", reply_markup=InlineKeyboardMarkup(tastiera)
     )
@@ -3935,10 +3935,10 @@ async def mostra_regole_priorita(query, context, categoria=None):
     await query.edit_message_text(
         "\n".join(righe)[:3900],
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ AGGIUNGI PRIORITÀ", callback_data="priority_add")],
-            [InlineKeyboardButton("➖ RIMUOVI PRIORITÀ", callback_data="priority_remove")],
-            [InlineKeyboardButton("⬅️ CAMBIA CATEGORIA", callback_data="priority_categories")],
-            [InlineKeyboardButton("🚀 MENU PRIORITÀ", callback_data="priority_menu")],
+            [InlineKeyboardButton("➕ Aggiungi priorità", callback_data="priority_add")],
+            [InlineKeyboardButton("➖ Rimuovi priorità", callback_data="priority_remove")],
+            [InlineKeyboardButton("⬅️ Cambia categoria", callback_data="priority_categories")],
+            [InlineKeyboardButton("🚀 Menu priorità", callback_data="priority_menu")],
         ]),
     )
 
@@ -3950,9 +3950,9 @@ async def mostra_accessori_priorita(query):
         f"{_testo_elenco(parole)}\n\n"
         "Se una di queste parole compare nel titolo, il prodotto non riceve il bonus priorità.",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ AGGIUNGI PAROLA", callback_data="priority_access_add")],
-            [InlineKeyboardButton("➖ RIMUOVI PAROLA", callback_data="priority_access_remove")],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="priority_menu")],
+            [InlineKeyboardButton("➕ Aggiungi parola", callback_data="priority_access_add")],
+            [InlineKeyboardButton("➖ Rimuovi parola", callback_data="priority_access_remove")],
+            [InlineKeyboardButton("⬅️ Indietro", callback_data="priority_menu")],
         ]),
     )
 
@@ -3977,8 +3977,8 @@ async def gestisci_priorita(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await query.edit_message_text(
             "♻️ Ripristinare tutte le priorità e le parole anti-accessorio predefinite?",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ SÌ, RIPRISTINA", callback_data="priority_reset_yes")],
-                [InlineKeyboardButton("❌ ANNULLA", callback_data="priority_menu")],
+                [InlineKeyboardButton("✅ Sì, ripristina", callback_data="priority_reset_yes")],
+                [InlineKeyboardButton("❌ Annulla", callback_data="priority_menu")],
             ]),
         )
     if azione == "priority_reset_yes":
@@ -4098,7 +4098,7 @@ async def ricevi_modifica_priorita(update: Update, context: ContextTypes.DEFAULT
     await update.message.reply_text(
         messaggio + "\n\nL’automazione è stata disattivata: riattivala dopo le modifiche.",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🚀 TORNA ALLE PRIORITÀ", callback_data="priority_menu")
+            InlineKeyboardButton("🚀 Torna alle priorità", callback_data="priority_menu")
         ]]),
     )
     return ConversationHandler.END
@@ -4121,7 +4121,7 @@ def tastiera_automazione(configurazione, canale):
             f"🕒 DALLE {configurazione['ora_inizio']} ALLE {configurazione['ora_fine']}",
             callback_data="auto_fascia",
         )],
-        [InlineKeyboardButton("🗂 CATEGORIE PRODOTTI", callback_data="auto_categorie")],
+        [InlineKeyboardButton("🗂 Categorie prodotti", callback_data="auto_categorie")],
         [InlineKeyboardButton(
             f"📉 SCONTO MINIMO: {configurazione['sconto_minimo']}%",
             callback_data="auto_sconto",
@@ -4137,20 +4137,20 @@ def tastiera_automazione(configurazione, canale):
     ]
     if configurazione["qualita_prodotti"] == "selettiva":
         righe.append([
-            InlineKeyboardButton("⚙️ PERSONALIZZA SELETTIVA", callback_data="selective_menu")
+            InlineKeyboardButton("⚙️ Personalizza selettiva", callback_data="selective_menu")
         ])
     if canale == "casa":
         righe.append([
-            InlineKeyboardButton("🧺 RACCOLTE CASA", callback_data="casa_collections")
+            InlineKeyboardButton("🧺 Raccolte Casa", callback_data="casa_collections")
         ])
     else:
         righe.append([
-            InlineKeyboardButton("📦 RACCOLTE TECH", callback_data="tech_collections")
+            InlineKeyboardButton("📦 Raccolte TECH", callback_data="tech_collections")
         ])
     righe.extend([
-        [InlineKeyboardButton("🔎 CERCA OFFERTE", callback_data=f"offer_search_{canale}")],
-        [InlineKeyboardButton("🧪 TESTA RICERCA", callback_data="auto_test")],
-        [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="auto_channels")],
+        [InlineKeyboardButton("🔎 Cerca offerte", callback_data=f"offer_search_{canale}")],
+        [InlineKeyboardButton("🧪 Testa ricerca", callback_data="auto_test")],
+        [InlineKeyboardButton("⬅️ Torna ai canali", callback_data="auto_channels")],
     ])
     return InlineKeyboardMarkup(righe)
 
@@ -4195,9 +4195,9 @@ async def mostra_menu_raccolte_casa(query):
             [InlineKeyboardButton(
                 f"🎯 QUALITÀ: {qualita}", callback_data="casa_bundle_quality"
             )],
-            [InlineKeyboardButton("🗂 SCEGLI TEMI", callback_data="casa_bundle_themes")],
-            [InlineKeyboardButton("🧪 TESTA RACCOLTA", callback_data="casa_bundle_test")],
-            [InlineKeyboardButton("⬅️ TORNA ALL'AUTOMAZIONE CASA", callback_data="auto_menu")],
+            [InlineKeyboardButton("🗂 Scegli temi", callback_data="casa_bundle_themes")],
+            [InlineKeyboardButton("🧪 Testa raccolta", callback_data="casa_bundle_test")],
+            [InlineKeyboardButton("⬅️ Torna all'automazione Casa", callback_data="auto_menu")],
         ]),
     )
 
@@ -4210,7 +4210,7 @@ async def mostra_temi_raccolte_casa(query):
         tastiera.append([InlineKeyboardButton(
             f"{segno} {dati['etichetta']}", callback_data=f"casa_bundle_theme_{tema}"
         )])
-    tastiera.append([InlineKeyboardButton("✅ FATTO", callback_data="casa_collections")])
+    tastiera.append([InlineKeyboardButton("✅ Fatto", callback_data="casa_collections")])
     await query.edit_message_text(
         "🗂 Scegli i temi delle raccolte. Ogni post conterrà prodotti dello stesso tema:",
         reply_markup=InlineKeyboardMarkup(tastiera),
@@ -4247,7 +4247,7 @@ async def gestisci_raccolte_casa(update: Update, context: ContextTypes.DEFAULT_T
                 [InlineKeyboardButton(
                     f"{valore}{suffisso}", callback_data=f"casa_bundle_{prefisso}_{valore}"
                 ) for valore in valori],
-                [InlineKeyboardButton("⬅️ INDIETRO", callback_data="casa_collections")],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data="casa_collections")],
             ]),
         )
     impostazioni = {
@@ -4264,9 +4264,9 @@ async def gestisci_raccolte_casa(update: Update, context: ContextTypes.DEFAULT_T
         return await query.edit_message_text(
             "🎯 Qualità delle raccolte",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("SELETTIVA", callback_data="casa_bundle_quality_selettiva")],
-                [InlineKeyboardButton("STANDARD", callback_data="casa_bundle_quality_standard")],
-                [InlineKeyboardButton("⬅️ INDIETRO", callback_data="casa_collections")],
+                [InlineKeyboardButton("Selettiva", callback_data="casa_bundle_quality_selettiva")],
+                [InlineKeyboardButton("Standard", callback_data="casa_bundle_quality_standard")],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data="casa_collections")],
             ]),
         )
     if azione.startswith("casa_bundle_quality_"):
@@ -4316,9 +4316,9 @@ async def mostra_menu_raccolte_tech(query):
             [InlineKeyboardButton(
                 f"🎯 QUALITÀ: {qualita}", callback_data="tech_bundle_quality"
             )],
-            [InlineKeyboardButton("🗂 SCEGLI TEMI", callback_data="tech_bundle_themes")],
-            [InlineKeyboardButton("🧪 TESTA RACCOLTA", callback_data="tech_bundle_test")],
-            [InlineKeyboardButton("⬅️ TORNA ALL'AUTOMAZIONE TECH", callback_data="auto_menu")],
+            [InlineKeyboardButton("🗂 Scegli temi", callback_data="tech_bundle_themes")],
+            [InlineKeyboardButton("🧪 Testa raccolta", callback_data="tech_bundle_test")],
+            [InlineKeyboardButton("⬅️ Torna all'automazione TECH", callback_data="auto_menu")],
         ]),
     )
 
@@ -4331,7 +4331,7 @@ async def mostra_temi_raccolte_tech(query):
         tastiera.append([InlineKeyboardButton(
             f"{segno} {dati['etichetta']}", callback_data=f"tech_bundle_theme_{tema}"
         )])
-    tastiera.append([InlineKeyboardButton("✅ FATTO", callback_data="tech_collections")])
+    tastiera.append([InlineKeyboardButton("✅ Fatto", callback_data="tech_collections")])
     await query.edit_message_text(
         "🗂 Scegli i temi delle raccolte. Ogni post conterrà prodotti dello stesso tema:",
         reply_markup=InlineKeyboardMarkup(tastiera),
@@ -4368,7 +4368,7 @@ async def gestisci_raccolte_tech(update: Update, context: ContextTypes.DEFAULT_T
                 [InlineKeyboardButton(
                     f"{valore}{suffisso}", callback_data=f"tech_bundle_{prefisso}_{valore}"
                 ) for valore in valori],
-                [InlineKeyboardButton("⬅️ INDIETRO", callback_data="tech_collections")],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data="tech_collections")],
             ]),
         )
     impostazioni = {
@@ -4385,9 +4385,9 @@ async def gestisci_raccolte_tech(update: Update, context: ContextTypes.DEFAULT_T
         return await query.edit_message_text(
             "🎯 Qualità delle raccolte",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("SELETTIVA", callback_data="tech_bundle_quality_selettiva")],
-                [InlineKeyboardButton("STANDARD", callback_data="tech_bundle_quality_standard")],
-                [InlineKeyboardButton("⬅️ INDIETRO", callback_data="tech_collections")],
+                [InlineKeyboardButton("Selettiva", callback_data="tech_bundle_quality_selettiva")],
+                [InlineKeyboardButton("Standard", callback_data="tech_bundle_quality_standard")],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data="tech_collections")],
             ]),
         )
     if azione.startswith("tech_bundle_quality_"):
@@ -4416,9 +4416,9 @@ async def mostra_menu_selettiva(query, context):
         "Il punteggio ordina i prodotti migliori; un articolo affidabile e pertinente "
         "può essere usato come riserva se non ci sono candidati sopra soglia.",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏷 MARCHI AUTORIZZATI", callback_data="filter_brands")],
-            [InlineKeyboardButton("🚫 PAROLE ESCLUSE", callback_data="filter_words")],
-            [InlineKeyboardButton("🚀 PRODOTTI PRIORITARI", callback_data="priority_menu")],
+            [InlineKeyboardButton("🏷 Marchi autorizzati", callback_data="filter_brands")],
+            [InlineKeyboardButton("🚫 Parole escluse", callback_data="filter_words")],
+            [InlineKeyboardButton("🚀 Prodotti prioritari", callback_data="priority_menu")],
             [InlineKeyboardButton(
                 f"⭐ PUNTEGGIO PREFERITO: {configurazione['punteggio_minimo']}",
                 callback_data="selective_score",
@@ -4437,8 +4437,8 @@ async def mostra_menu_selettiva(query, context):
             [InlineKeyboardButton(
                 f"🧩 RAGGRUPPA VARIANTI: {varianti}", callback_data="selective_variants"
             )],
-            [InlineKeyboardButton("♻️ RIPRISTINA CONSIGLIATI", callback_data="selective_reset")],
-            [InlineKeyboardButton("⬅️ TORNA ALL'AUTOMAZIONE", callback_data="auto_menu")],
+            [InlineKeyboardButton("♻️ Ripristina consigliati", callback_data="selective_reset")],
+            [InlineKeyboardButton("⬅️ Torna all'automazione", callback_data="auto_menu")],
         ]),
     )
 
@@ -4468,7 +4468,7 @@ async def gestisci_selettiva(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 InlineKeyboardButton(f"{valore}{suffisso}", callback_data=f"{prefisso}_{valore}")
                 for valore in valori[indice:indice + 3]
             ])
-        righe.append([InlineKeyboardButton("⬅️ INDIETRO", callback_data="selective_menu")])
+        righe.append([InlineKeyboardButton("⬅️ Indietro", callback_data="selective_menu")])
         return await query.edit_message_text(titolo, reply_markup=InlineKeyboardMarkup(righe))
 
     modificata = False
@@ -4492,8 +4492,8 @@ async def gestisci_selettiva(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await query.edit_message_text(
             "Ripristinare i valori consigliati per questo canale?",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ SÌ", callback_data="selective_reset_yes")],
-                [InlineKeyboardButton("❌ ANNULLA", callback_data="selective_menu")],
+                [InlineKeyboardButton("✅ Sì", callback_data="selective_reset_yes")],
+                [InlineKeyboardButton("❌ Annulla", callback_data="selective_menu")],
             ]),
         )
     elif azione == "selective_reset_yes":
@@ -4567,8 +4567,8 @@ async def mostra_canali_automazione(update: Update, context: ContextTypes.DEFAUL
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton(f"📱 TECH — {stato_tech}", callback_data="auto_channel_tech")],
             [InlineKeyboardButton(f"🏠 CASA — {stato_casa}", callback_data="auto_channel_casa")],
-            [InlineKeyboardButton("📊 STATO GENERALE", callback_data="auto_status")],
-            [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
+            [InlineKeyboardButton("📊 Stato generale", callback_data="auto_status")],
+            [InlineKeyboardButton("⬅️ Torna al menu principale", callback_data="menu_admin")],
         ]),
     )
 
@@ -4593,7 +4593,7 @@ async def mostra_stato_automazioni(update: Update, context: ContextTypes.DEFAULT
         f"{casa['ora_inizio']}–{casa['ora_fine']}\n"
         f"Categorie: {', '.join(categorie_casa) if categorie_casa else 'nessuna'}",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="auto_channels")]
+            [InlineKeyboardButton("⬅️ Torna ai canali", callback_data="auto_channels")]
         ]),
     )
 
@@ -4615,7 +4615,7 @@ async def mostra_stato_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Automazione CASA: {'🟢 ATTIVA' if casa['attiva'] else '🔴 DISATTIVATA'}\n\n"
         "Le due automazioni hanno impostazioni indipendenti.",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ TORNA ALLE IMPOSTAZIONI", callback_data="settings_menu")]
+            [InlineKeyboardButton("⬅️ Torna alle impostazioni", callback_data="settings_menu")]
         ]),
     )
 
@@ -4644,7 +4644,7 @@ async def mostra_categorie_automatiche(query, context):
                 callback_data=f"auto_cat_{codice}",
             )
         ])
-    tastiera.append([InlineKeyboardButton("✅ FATTO", callback_data="auto_menu")])
+    tastiera.append([InlineKeyboardButton("✅ Fatto", callback_data="auto_menu")])
     await query.edit_message_text(
         "🗂 Seleziona le categorie da pubblicare:",
         reply_markup=InlineKeyboardMarkup(tastiera),
@@ -4701,7 +4701,7 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
         tastiera = [
             [InlineKeyboardButton(f"{v} GIORNI", callback_data=f"auto_duplicates_{v}") for v in valori[:3]],
             [InlineKeyboardButton(f"{v} GIORNI", callback_data=f"auto_duplicates_{v}") for v in valori[3:]],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
+            [InlineKeyboardButton("⬅️ Indietro", callback_data="auto_menu")],
         ]
         await query.edit_message_text(
             "🔁 BLOCCO DUPLICATI\n\n"
@@ -4728,17 +4728,17 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
         tastiera = [
             [InlineKeyboardButton(f"{v}%", callback_data=f"auto_disc_{v}") for v in valori[:4]],
             [InlineKeyboardButton(f"{v}%", callback_data=f"auto_disc_{v}") for v in valori[4:]],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
+            [InlineKeyboardButton("⬅️ Indietro", callback_data="auto_menu")],
         ]
         await query.edit_message_text("📉 Seleziona lo sconto minimo:", reply_markup=InlineKeyboardMarkup(tastiera))
         return
 
     if azione == "auto_qualita":
         tastiera = InlineKeyboardMarkup([
-            [InlineKeyboardButton("STANDARD", callback_data="auto_quality_standard")],
-            [InlineKeyboardButton("SELETTIVA", callback_data="auto_quality_selettiva")],
-            [InlineKeyboardButton("SOLO MARCHE", callback_data="auto_quality_marche")],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data="auto_menu")],
+            [InlineKeyboardButton("Standard", callback_data="auto_quality_standard")],
+            [InlineKeyboardButton("Selettiva", callback_data="auto_quality_selettiva")],
+            [InlineKeyboardButton("Solo marche", callback_data="auto_quality_marche")],
+            [InlineKeyboardButton("⬅️ Indietro", callback_data="auto_menu")],
         ])
         await query.edit_message_text(
             "🎯 Seleziona la qualità dei prodotti:\n\n"
@@ -6249,7 +6249,7 @@ async def menu_ricerca_offerte(query, context, canale=None):
                 InlineKeyboardButton("40%", callback_data="os_disc_40"),
                 InlineKeyboardButton("50%", callback_data="os_disc_50"),
             ],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data=indietro)],
+            [InlineKeyboardButton("⬅️ Indietro", callback_data=indietro)],
         ]),
     )
 
@@ -6272,9 +6272,9 @@ async def menu_categoria_ricerca_offerte(query, context, sconto):
         AUTO_CATEGORIE[codice][0].upper(),
         callback_data=f"os_cat_{codice}",
     )] for codice in categorie]
-    tastiera.insert(0, [InlineKeyboardButton("🌐 TUTTE LE CATEGORIE", callback_data="os_cat_tutte")])
+    tastiera.insert(0, [InlineKeyboardButton("🌐 Tutte le categorie", callback_data="os_cat_tutte")])
     ritorno = f"offer_search_{canale}" if canale else "offer_search"
-    tastiera.append([InlineKeyboardButton("⬅️ INDIETRO", callback_data=ritorno)])
+    tastiera.append([InlineKeyboardButton("⬅️ Indietro", callback_data=ritorno)])
     await query.edit_message_text(
         f"🔎 Sconto selezionato: dal {sconto}%\n\nScegli dove cercare:",
         reply_markup=InlineKeyboardMarkup(tastiera),
@@ -6295,7 +6295,7 @@ async def menu_quantita_ricerca_offerte(query, context, categoria):
                 InlineKeyboardButton("10", callback_data="os_count_10"),
                 InlineKeyboardButton("20", callback_data="os_count_20"),
             ],
-            [InlineKeyboardButton("⬅️ INDIETRO", callback_data=f"os_disc_{context.user_data['ricerca_offerte_sconto']}")],
+            [InlineKeyboardButton("⬅️ Indietro", callback_data=f"os_disc_{context.user_data['ricerca_offerte_sconto']}")],
         ]),
     )
 
@@ -6415,8 +6415,8 @@ async def esegui_ricerca_offerte(query, context, quantita):
             f"ℹ️ Nessun prodotto nuovo con almeno il {sconto}% ha superato i filtri."
             f"{dettaglio}",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 CAMBIA RICERCA", callback_data=callback_ricerca)],
-                [InlineKeyboardButton("⬅️ MENU AUTOMATICO", callback_data="auto_menu")],
+                [InlineKeyboardButton("🔄 Cambia ricerca", callback_data=callback_ricerca)],
+                [InlineKeyboardButton("⬅️ Menu automatico", callback_data="auto_menu")],
             ]),
         )
         return
@@ -6443,8 +6443,8 @@ async def mostra_lista_ricerca_offerte(messaggio, context):
     canale = context.user_data.get("ricerca_offerte_canale")
     callback_ricerca = f"offer_search_{canale}" if canale else "offer_search"
     tastiera.extend([
-        [InlineKeyboardButton("🔄 NUOVA RICERCA", callback_data=callback_ricerca)],
-        [InlineKeyboardButton("⬅️ MENU AUTOMATICO", callback_data="auto_menu")],
+        [InlineKeyboardButton("🔄 Nuova ricerca", callback_data=callback_ricerca)],
+        [InlineKeyboardButton("⬅️ Menu automatico", callback_data="auto_menu")],
     ])
     await messaggio.reply_text(
         "\n\n".join(righe) + "\n\nTocca un prodotto per gestirlo.",
@@ -6483,10 +6483,10 @@ async def mostra_prodotto_ricerca_offerte(query, context, indice):
     )
     testo = '👁 <b>ANTEPRIMA</b>\n\n' + crea_caption_con_link(crea_corpo_offerta_automatica(prodotto),prodotto['link'])
     tastiera = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📤 PUBBLICA ORA", callback_data=f"os_publish_{indice}")],
-        [InlineKeyboardButton("🕒 PROGRAMMA", callback_data=f"os_program_{indice}")],
+        [InlineKeyboardButton("📤 Pubblica ora", callback_data=f"os_publish_{indice}")],
+        [InlineKeyboardButton("🕒 Programma", callback_data=f"os_program_{indice}")],
         *tastiera_offerta_automatica(prodotto["link"], asin=prodotto.get("asin")).inline_keyboard,
-        [InlineKeyboardButton("⬅️ TORNA ALLA LISTA", callback_data="os_back")],
+        [InlineKeyboardButton("⬅️ Torna alla lista", callback_data="os_back")],
     ])
     foto = await prepara_foto_automatica(prodotto["immagine"])
     inviato = await query.message.reply_photo(
@@ -6617,10 +6617,10 @@ async def prepara_programmazione_ricerca_offerte(update: Update, context: Contex
     await query.message.reply_text(
         "📅 PROGRAMMA INVIO\n\nScegli il giorno:",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📅 OGGI", callback_data="prog_giorno_0")],
-            [InlineKeyboardButton("📅 DOMANI", callback_data="prog_giorno_1")],
-            [InlineKeyboardButton("📅 TRA 2 GIORNI", callback_data="prog_giorno_2")],
-            [InlineKeyboardButton("❌ ANNULLA", callback_data="annulla")],
+            [InlineKeyboardButton("📅 Oggi", callback_data="prog_giorno_0")],
+            [InlineKeyboardButton("📅 Domani", callback_data="prog_giorno_1")],
+            [InlineKeyboardButton("📅 Tra 2 giorni", callback_data="prog_giorno_2")],
+            [InlineKeyboardButton("❌ Annulla", callback_data="annulla")],
         ]),
     )
     return CONFERMA
@@ -8180,6 +8180,9 @@ async def _prodotti_monitorati_da_pagina(asins):
         risultati[asin] = dati
     return risultati
 
+# Evita di terminare post sulla base di una singola lettura incerta.
+_conferme_sconto_zero_monitoraggio = {}
+
 async def controlla_offerte_terminate(app):
     while True:
         try:
@@ -8215,7 +8218,16 @@ async def controlla_offerte_terminate(app):
                         continue
 
                     sconto_attuale = int(prodotto.get("sconto") or 0)
+                    chiave_monitoraggio = (invio_id, asin)
                     if prodotto.get('sconto') is not None and sconto_attuale == 0:
+                        # Una singola lettura con prezzo/listino uguali puo' essere
+                        # temporanea o inesatta. Richiedi una conferma nel ciclo
+                        # successivo (30 minuti), senza segnare il post come terminato.
+                        conferme = _conferme_sconto_zero_monitoraggio.get(chiave_monitoraggio, 0) + 1
+                        _conferme_sconto_zero_monitoraggio[chiave_monitoraggio] = conferme
+                        if conferme < 2:
+                            print(f'Monitoraggio {asin}: sconto 0% rilevato, attendo seconda verifica prima di modificare il post.')
+                            continue
                         try:
                             await _modifica_post_terminato(
                                 app.bot,
@@ -8236,6 +8248,7 @@ async def controlla_offerte_terminate(app):
                             print(f"Errore modifica post terminato: {errore}")
                         continue
 
+                    _conferme_sconto_zero_monitoraggio.pop(chiave_monitoraggio, None)
                     valori_cambiati = (
                         prodotto.get('sconto') is not None and (
                         sconto_attuale != int(sconto_iniziale or 0)
@@ -8247,6 +8260,16 @@ async def controlla_offerte_terminate(app):
                     )
                     if valori_cambiati:
                         try:
+                            if not prodotto.get('link'):
+                                with sqlite3.connect(DB_PATH, timeout=30) as db:
+                                    record_link = db.execute(
+                                        'SELECT link FROM recap_offerte WHERE asin=? AND telegram_message_id=? LIMIT 1',
+                                        (asin, message_id),
+                                    ).fetchone()
+                                prodotto['link'] = record_link[0] if record_link and record_link[0] else None
+                                if not prodotto['link']:
+                                    print(f'Monitoraggio {asin}: link affiliato originale non disponibile, aggiornamento saltato.')
+                                    continue
                             await _aggiorna_post_offerta_attiva(
                                 app.bot,
                                 invio_id,
@@ -8281,28 +8304,29 @@ async def controlla_offerte_terminate(app):
 # =========================================================
 
 def menu_principale():
-
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("📤 PUBBLICA OFFERTA", callback_data="publish_menu")],
-            [InlineKeyboardButton("🔎 CERCA OFFERTE", callback_data="offer_search")],
-            [InlineKeyboardButton("🤖 INVIO AUTOMATICO", callback_data="auto_channels")],
-            [InlineKeyboardButton("📅 POST PROGRAMMATI", callback_data="programmati")],
-            [InlineKeyboardButton("📚 CRONOLOGIA", callback_data="history_menu")],
-            [InlineKeyboardButton("🎵 AUTOMAZIONE TIKTOK", callback_data="tiktok_menu")],
-            [InlineKeyboardButton("☕ RUBRICA", callback_data="rub_menu")],
-            [InlineKeyboardButton("⚙️ IMPOSTAZIONI", callback_data="settings_menu")],
-        ]
-    )
+    # Accessi rapidi in due colonne; callback originali preservati.
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔗 Inserimento da link", callback_data="nuova"),
+         InlineKeyboardButton("📦 Invio multiplo", callback_data="rapido")],
+        [InlineKeyboardButton("🤖 Pubblicazione automatica", callback_data="auto_channels"),
+         InlineKeyboardButton("📚 Cronologia", callback_data="history_menu")],
+        [InlineKeyboardButton("🔁 Controlla e ripubblica", callback_data="repost"),
+         InlineKeyboardButton("🔎 Cerca offerte", callback_data="offer_search")],
+        [InlineKeyboardButton("☕ Rubriche", callback_data="rub_menu"),
+         InlineKeyboardButton("⚙️ Impostazioni", callback_data="settings_menu")],
+        [InlineKeyboardButton("📤 Altre pubblicazioni", callback_data="publish_menu"),
+         InlineKeyboardButton("📅 Post programmati", callback_data="programmati")],
+        [InlineKeyboardButton("🎵 Automazione TikTok", callback_data="tiktok_menu")],
+    ])
 
 
 def menu_pubblicazione():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔗 INSERIMENTO DA LINK", callback_data="nuova")],
-        [InlineKeyboardButton("📦 INVIO MULTIPLO", callback_data="rapido")],
-        [InlineKeyboardButton("🔁 REPOST", callback_data="repost")],
-        [InlineKeyboardButton("🕒 FASCIA ORARIA MANUALE E MULTIPLO", callback_data="mf_menu")],
-        [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
+        [InlineKeyboardButton("🔗 Inserimento da link", callback_data="nuova")],
+        [InlineKeyboardButton("📦 Invio multiplo", callback_data="rapido")],
+        [InlineKeyboardButton("🔁 Repost", callback_data="repost")],
+        [InlineKeyboardButton("🕒 Fascia oraria manuale e multiplo", callback_data="mf_menu")],
+        [InlineKeyboardButton("⬅️ Torna al menu principale", callback_data="menu_admin")],
     ])
 
 
@@ -8322,10 +8346,10 @@ async def mostra_menu_pubblicazione(update: Update, context: ContextTypes.DEFAUL
 
 def menu_storico():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗂 TUTTI I PRODOTTI", callback_data="archive_all")],
-        [InlineKeyboardButton("🕒 ULTIME PUBBLICAZIONI", callback_data="ultime")],
-        [InlineKeyboardButton("🔁 INVIA DI NUOVO", callback_data="reinvia_menu")],
-        [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
+        [InlineKeyboardButton("🗂 Tutti i prodotti", callback_data="archive_all")],
+        [InlineKeyboardButton("🕒 Ultime pubblicazioni", callback_data="ultime")],
+        [InlineKeyboardButton("🔁 Invia di nuovo", callback_data="reinvia_menu")],
+        [InlineKeyboardButton("⬅️ Torna al menu principale", callback_data="menu_admin")],
     ])
 
 
@@ -8335,13 +8359,13 @@ async def mostra_menu_storico(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 def menu_impostazioni():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 GESTIONE CANALI", callback_data="channels_manage")],
-        [InlineKeyboardButton("🎨 GRAFICA E TEMPLATE", callback_data="template")],
-        [InlineKeyboardButton("🎯 FILTRI E PRIORITÀ", callback_data="auto_filtri")],
-        [InlineKeyboardButton("🌙 ORARIO RECAP SERALE", callback_data="recap_time_menu")],
-        [InlineKeyboardButton("📊 STATO DEL BOT", callback_data="bot_status")],
-        [InlineKeyboardButton("📋 LOG E DIAGNOSTICA", callback_data="diag_logs_all_0")],
-        [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
+        [InlineKeyboardButton("📢 Gestione canali", callback_data="channels_manage")],
+        [InlineKeyboardButton("🎨 Grafica e template", callback_data="template")],
+        [InlineKeyboardButton("🎯 Filtri e priorità", callback_data="auto_filtri")],
+        [InlineKeyboardButton("🌙 Orario recap serale", callback_data="recap_time_menu")],
+        [InlineKeyboardButton("📊 Stato del bot", callback_data="bot_status")],
+        [InlineKeyboardButton("📋 Log e diagnostica", callback_data="diag_logs_all_0")],
+        [InlineKeyboardButton("⬅️ Torna al menu principale", callback_data="menu_admin")],
     ])
 
 
@@ -8449,9 +8473,9 @@ async def mostra_gestione_canali(update: Update, context: ContextTypes.DEFAULT_T
         "Casa e cucina, Elettrodomestici, Fai da te, Giardino, Arredamento "
         "e Illuminazione vengono indirizzati a @BestPrice24hCasa.",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📱 CANALE TECH", callback_data="channel_info_tech")],
-            [InlineKeyboardButton("🏠 CANALE CASA", callback_data="channel_info_casa")],
-            [InlineKeyboardButton("⬅️ TORNA ALLE IMPOSTAZIONI", callback_data="settings_menu")],
+            [InlineKeyboardButton("📱 Canale TECH", callback_data="channel_info_tech")],
+            [InlineKeyboardButton("🏠 Canale Casa", callback_data="channel_info_casa")],
+            [InlineKeyboardButton("⬅️ Torna alle impostazioni", callback_data="settings_menu")],
         ]),
     )
 
@@ -8480,9 +8504,9 @@ async def mostra_info_canale(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text(
         testo,
         reply_markup=InlineKeyboardMarkup([
-            *([[InlineKeyboardButton("🔗 APRI IL CANALE", url=CASA_CHANNEL_URL)]]
+            *([[InlineKeyboardButton("🔗 Apri il canale", url=CASA_CHANNEL_URL)]]
               if query.data == "channel_info_casa" else []),
-            [InlineKeyboardButton("⬅️ TORNA AI CANALI", callback_data="channels_manage")]
+            [InlineKeyboardButton("⬅️ Torna ai canali", callback_data="channels_manage")]
         ]),
     )
 
@@ -8493,13 +8517,13 @@ def menu_dopo_pubblicazione():
         [
             [
                 InlineKeyboardButton(
-                    "➕ INVIA UN NUOVO POST",
+                    "➕ Invia un nuovo post",
                     callback_data="publish_menu",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "⬅️ TORNA AL MENU PRINCIPALE",
+                    "⬅️ Torna al menu principale",
                     callback_data="menu_admin",
                 )
             ],
@@ -8529,13 +8553,13 @@ async def torna_menu_admin(
 
 def menu_utente_principale():
     righe = [
-        [InlineKeyboardButton("📱 OFFERTE TECH", url=TECH_CHANNEL_URL)],
-        [InlineKeyboardButton("🏠 OFFERTE CASA — 🚧 IN COSTRUZIONE", callback_data="casa_costruzione")],
+        [InlineKeyboardButton("📱 Offerte TECH", url=TECH_CHANNEL_URL)],
+        [InlineKeyboardButton("🏠 Offerte Casa — 🚧 in costruzione", callback_data="casa_costruzione")],
     ]
     if COMMUNITY_URL:
-        righe.append([InlineKeyboardButton("👥 COMMUNITY", url=COMMUNITY_URL)])
+        righe.append([InlineKeyboardButton("👥 Community", url=COMMUNITY_URL)])
     else:
-        righe.append([InlineKeyboardButton("👥 COMMUNITY", callback_data="community_info")])
+        righe.append([InlineKeyboardButton("👥 Community", callback_data="community_info")])
     return InlineKeyboardMarkup(righe)
 
 
@@ -8546,7 +8570,7 @@ async def casa_in_costruzione(update: Update, context: ContextTypes.DEFAULT_TYPE
         "🏠 OFFERTE CASA\n\n"
         "🚧 Sezione in costruzione. Sarà disponibile prossimamente.",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⬅️ TORNA AL MENU", callback_data="menu_utente")
+            InlineKeyboardButton("⬅️ Torna al menu", callback_data="menu_utente")
         ]]),
     )
 
@@ -8558,7 +8582,7 @@ async def community_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👥 COMMUNITY BESTPRICE24H\n\n"
         "Il collegamento alla Community non è ancora configurato nel bot.",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⬅️ TORNA AL MENU", callback_data="menu_utente")
+            InlineKeyboardButton("⬅️ Torna al menu", callback_data="menu_utente")
         ]]),
     )
 
@@ -9037,13 +9061,13 @@ async def ricevi_link(
         [
             [
                 InlineKeyboardButton(
-                    "✅ USA QUESTI DATI",
+                    "✅ Usa questi dati",
                     callback_data="dati_ok",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "✏️ INSERISCI MANUALMENTE",
+                    "✏️ Inserisci manualmente",
                     callback_data="dati_manual",
                 )
             ],
@@ -9358,18 +9382,18 @@ def intervallo_multiplo(utente, valore=None):
 
 
 def tastiera_annulla_elaborazione():
-    return InlineKeyboardMarkup([[InlineKeyboardButton('🛑 ANNULLA REPOST / LETTURA', callback_data='multi_annulla')]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton('🛑 Annulla repost / lettura', callback_data='multi_annulla')]])
 
 
 def tastiera_multiplo(draft):
     if draft.get('tipo') == 'singolo_cronologia':
         return tastiera_confronto_cronologia(bool(draft.get('pronti')) and not draft.get('elaborazione'))
     return InlineKeyboardMarkup([row for row in [
-        [InlineKeyboardButton("✅ Tech" if draft["canale"] == "tech" else "Tech", callback_data="multi_canale_tech"),
-         InlineKeyboardButton("✅ Casa" if draft["canale"] == "casa" else "Casa", callback_data="multi_canale_casa")],
+        [InlineKeyboardButton("✅ TECH" if draft["canale"] == "TECH" else "TECH", callback_data="multi_canale_tech"),
+         InlineKeyboardButton("✅ Casa" if draft["canale"] == "Casa" else "Casa", callback_data="multi_canale_casa")],
         [InlineKeyboardButton(f"⏱ Intervallo: {draft['minuti']} min", callback_data="multi_timing")],
-        [InlineKeyboardButton("🚀 CONFERMA E AVVIA", callback_data="multi_avvia")] if draft.get("pronti") and not draft.get("elaborazione") else [],
-        [InlineKeyboardButton("❌ ANNULLA", callback_data="multi_annulla")],
+        [InlineKeyboardButton("🚀 Conferma e avvia", callback_data="multi_avvia")] if draft.get("pronti") and not draft.get("elaborazione") else [],
+        [InlineKeyboardButton("❌ Annulla", callback_data="multi_annulla")],
     ] if row])
 
 
@@ -9707,8 +9731,9 @@ async def decidi_ricontrollo_cronologia(update: Update, context: ContextTypes.DE
     return ConversationHandler.END
 
 
-async def prepara_lotto_multiplo(messaggio, context, draft, links):
+async def prepara_lotto_multiplo(messaggio, context, draft, links, seconda_passata=False):
     visti = set()
+    da_riprovare = []
     try:
         for indice, candidato in enumerate(links, 1):
             storico = candidato if isinstance(candidato, dict) else {}
@@ -9748,7 +9773,11 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
             if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
                 return
             if not dati:
-                draft['scartati'].append(f'{link} — {motivo_repost or "lettura non completata (vedi log Railway)"}')
+                if not seconda_passata:
+                    da_riprovare.append(candidato)
+                    print(f'Invio multiplo: {link} in coda per seconda passata dopo 20 secondi.')
+                else:
+                    draft['scartati'].append(f'{link} — {motivo_repost or "lettura non completata dopo 6 tentativi (vedi log Railway)"}')
                 continue
             tipo = tipo_o_fallback(link, dati)
             dati['tipologia_amazon'] = tipo
@@ -9780,6 +9809,19 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                 draft['pronti'].append({'nome': ' '.join(str(dati['nome']).split())[:500], 'prezzo': pulisci_prezzo(dati['prezzo']), 'vecchio_prezzo': pulisci_prezzo(dati['vecchio_prezzo']) if dati.get('vecchio_prezzo') else 'NO', 'link': affiliato, 'foto_file_id': anteprima.photo[-1].file_id, 'categoria': dati.get('categoria'), 'asin': asin, 'link_originale': link, 'coupon': dati.get('coupon')})
             except Exception as exc:
                 draft['scartati'].append(f"{link} — {str(exc)[:120]}")
+        if da_riprovare and not seconda_passata and context.user_data.get('multiplo') is draft and not draft.get('annullato'):
+            try:
+                await messaggio.edit_text(
+                    f'⏳ Prima passata terminata. {len(da_riprovare)} prodotti in attesa: riprovo tra 20 secondi (3 tentativi ciascuno).',
+                    reply_markup=tastiera_annulla_elaborazione(),
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(20)
+            if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
+                return
+            await prepara_lotto_multiplo(messaggio, context, draft, da_riprovare, seconda_passata=True)
+            return
         if context.user_data.get('multiplo') is draft and not draft.get('annullato'):
             draft['elaborazione'] = False
             if draft.get('tipo') == 'singolo_cronologia':
@@ -10002,13 +10044,13 @@ async def ricevi_ora_programmazione(
         tastiera = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    "✅ SÌ, PROGRAMMA",
+                    "✅ Sì, programma",
                     callback_data="conferma_orario_vicino",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🔄 CAMBIA ORARIO",
+                    "🔄 Cambia orario",
                     callback_data="cambia_orario",
                 )
             ],
@@ -10574,7 +10616,7 @@ async def invia_lista_programmati(
                 [
                     [
                         InlineKeyboardButton(
-                            "⬅️ TORNA AL MENU PRINCIPALE",
+                            "⬅️ Torna al menu principale",
                             callback_data="prog_esci",
                         )
                     ]
@@ -10627,7 +10669,7 @@ async def invia_lista_programmati(
             [
                 [
                     InlineKeyboardButton(
-                        "⬅️ TORNA AL MENU PRINCIPALE",
+                        "⬅️ Torna al menu principale",
                         callback_data="prog_esci",
                     )
                 ]
@@ -10777,17 +10819,17 @@ async def invia_scheda_programmato(
             *tastiera_offerta_automatica(post["link"]).inline_keyboard,
             [
                 InlineKeyboardButton(
-                    "✏️ MODIFICA",
+                    "✏️ Modifica",
                     callback_data="prog_modifica",
                 ),
                 InlineKeyboardButton(
-                    "🗑 ELIMINA",
+                    "🗑 Elimina",
                     callback_data="prog_elimina",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    "⬅️ TORNA AI PROGRAMMATI",
+                    "⬅️ Torna ai programmati",
                     callback_data="prog_indietro",
                 )
             ],
@@ -10860,13 +10902,13 @@ async def gestisci_programmato(
             [
                 [
                     InlineKeyboardButton(
-                        "✅ SÌ, ELIMINA",
+                        "✅ Sì, elimina",
                         callback_data="prog_elimina_si",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "❌ ANNULLA",
+                        "❌ Annulla",
                         callback_data="prog_elimina_no",
                     )
                 ],
@@ -10889,45 +10931,45 @@ async def gestisci_programmato(
             [
                 [
                     InlineKeyboardButton(
-                        "📦 NOME",
+                        "📦 Nome",
                         callback_data="prog_edit_nome",
                     ),
                     InlineKeyboardButton(
-                        "💰 PREZZO",
+                        "💰 Prezzo",
                         callback_data="prog_edit_prezzo",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        "🏷 PREZZO PRIMA",
+                        "🏷 Prezzo prima",
                         callback_data="prog_edit_vecchio",
                     ),
                     InlineKeyboardButton(
-                        "🔗 LINK",
+                        "🔗 Link",
                         callback_data="prog_edit_link",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        "🖼 IMMAGINE",
+                        "🖼 Immagine",
                         callback_data="prog_edit_immagine",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "🕒 DATA E ORA",
+                        "🕒 Data e ora",
                         callback_data="prog_edit_dataora",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "🎨 TEMPLATE",
+                        "🎨 Template",
                         callback_data="prog_edit_template",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "⬅️ INDIETRO",
+                        "⬅️ Indietro",
                         callback_data="prog_torna_scheda",
                     )
                 ],
@@ -11073,19 +11115,19 @@ async def menu_modifica_programmato(
                 [
                     [
                         InlineKeyboardButton(
-                            "🔄 SOSTITUISCI IMMAGINE",
+                            "🔄 Sostituisci immagine",
                             callback_data="prog_img_sostituisci",
                         )
                     ],
                     [
                         InlineKeyboardButton(
-                            "🗑 RIMUOVI IMMAGINE",
+                            "🗑 Rimuovi immagine",
                             callback_data="prog_img_rimuovi",
                         )
                     ],
                     [
                         InlineKeyboardButton(
-                            "⬅️ INDIETRO",
+                            "⬅️ Indietro",
                             callback_data="prog_img_indietro",
                         )
                     ],
@@ -11098,13 +11140,13 @@ async def menu_modifica_programmato(
                 [
                     [
                         InlineKeyboardButton(
-                            "📷 AGGIUNGI IMMAGINE",
+                            "📷 Aggiungi immagine",
                             callback_data="prog_img_aggiungi",
                         )
                     ],
                     [
                         InlineKeyboardButton(
-                            "⬅️ INDIETRO",
+                            "⬅️ Indietro",
                             callback_data="prog_img_indietro",
                         )
                     ],
@@ -11133,13 +11175,13 @@ async def menu_modifica_programmato(
             [
                 [
                     InlineKeyboardButton(
-                        "✨ PULITO",
+                        "✨ Pulito",
                         callback_data="prog_tpl_pulito",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "🚨 AGGRESSIVO",
+                        "🚨 Aggressivo",
                         callback_data="prog_tpl_aggressivo",
                     )
                 ],
@@ -11523,7 +11565,7 @@ async def gestisci_immagine_programmata(
                 [
                     [
                         InlineKeyboardButton(
-                            "⬅️ MODIFICA POST",
+                            "⬅️ Modifica post",
                             callback_data="prog_modifica",
                         )
                     ]
@@ -11761,13 +11803,13 @@ async def chiedi_immagine(
         [
             [
                 InlineKeyboardButton(
-                    "📷 AGGIUNGI IMMAGINE",
+                    "📷 Aggiungi immagine",
                     callback_data="foto_aggiungi",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "➡️ CONTINUA SENZA IMMAGINE",
+                    "➡️ Continua senza immagine",
                     callback_data="foto_salta",
                 )
             ],
@@ -11878,25 +11920,25 @@ async def mostra_anteprima(
         [
             [
                 InlineKeyboardButton(
-                    "📤 PUBBLICA ORA",
+                    "📤 Pubblica ora",
                     callback_data="pubblica",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🕒 PROGRAMMA INVIO",
+                    "🕒 Programma invio",
                     callback_data="programma",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🎨 FORMATO AUTOMATICO",
+                    "🎨 Formato automatico",
                     callback_data="cambia_template",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "❌ ANNULLA",
+                    "❌ Annulla",
                     callback_data="annulla",
                 )
             ],
@@ -12021,25 +12063,25 @@ async def conferma(
             [
                 [
                     InlineKeyboardButton(
-                        "📅 OGGI",
+                        "📅 Oggi",
                         callback_data="prog_giorno_0",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "📅 DOMANI",
+                        "📅 Domani",
                         callback_data="prog_giorno_1",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "📅 TRA 2 GIORNI",
+                        "📅 Tra 2 giorni",
                         callback_data="prog_giorno_2",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "❌ ANNULLA",
+                        "❌ Annulla",
                         callback_data="annulla",
                     )
                 ],
@@ -12798,7 +12840,7 @@ async def mostra_reinvio_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     tastiera.append(nav)
     tastiera.append([
-        InlineKeyboardButton("⬅️ TORNA AL MENU", callback_data="menu_admin")
+        InlineKeyboardButton("⬅️ Torna al menu", callback_data="menu_admin")
     ])
 
     await query.message.reply_text(
@@ -12871,15 +12913,15 @@ async def mostra_anteprima_reinvio(messaggio, context):
 
     tastiera = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📤 RIPUBBLICA ORA", callback_data="reinvia_ora"),
-            InlineKeyboardButton("🕒 PROGRAMMA", callback_data="reinvia_programma"),
+            InlineKeyboardButton("📤 Ripubblica ora", callback_data="reinvia_ora"),
+            InlineKeyboardButton("🕒 Programma", callback_data="reinvia_programma"),
         ],
         [
-            InlineKeyboardButton("✏️ MODIFICA", callback_data="reinvia_modifica"),
+            InlineKeyboardButton("✏️ Modifica", callback_data="reinvia_modifica"),
         ],
         *tastiera_offerta_automatica(draft["link"], asin=draft.get("asin")).inline_keyboard,
         [
-            InlineKeyboardButton("⬅️ TORNA ALLO STORICO", callback_data="reinvia_pagina_0"),
+            InlineKeyboardButton("⬅️ Torna allo storico", callback_data="reinvia_pagina_0"),
         ],
     ])
 
@@ -12932,16 +12974,16 @@ async def menu_modifica_reinvio(update: Update, context: ContextTypes.DEFAULT_TY
         "✏️ COSA VUOI MODIFICARE?",
         reply_markup=InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("📦 NOME", callback_data="reinvia_edit_nome"),
-                InlineKeyboardButton("💰 PREZZO", callback_data="reinvia_edit_prezzo"),
+                InlineKeyboardButton("📦 Nome", callback_data="reinvia_edit_nome"),
+                InlineKeyboardButton("💰 Prezzo", callback_data="reinvia_edit_prezzo"),
             ],
             [
-                InlineKeyboardButton("🏷 PREZZO PRIMA", callback_data="reinvia_edit_vecchio"),
-                InlineKeyboardButton("🔗 LINK", callback_data="reinvia_edit_link"),
+                InlineKeyboardButton("🏷 Prezzo prima", callback_data="reinvia_edit_vecchio"),
+                InlineKeyboardButton("🔗 Link", callback_data="reinvia_edit_link"),
             ],
-            [InlineKeyboardButton("🖼 IMMAGINE", callback_data="reinvia_edit_immagine")],
-            [InlineKeyboardButton("🎨 TEMPLATE", callback_data="reinvia_edit_template")],
-            [InlineKeyboardButton("⬅️ TORNA ALL'ANTEPRIMA", callback_data="reinvia_anteprima")],
+            [InlineKeyboardButton("🖼 Immagine", callback_data="reinvia_edit_immagine")],
+            [InlineKeyboardButton("🎨 Template", callback_data="reinvia_edit_template")],
+            [InlineKeyboardButton("⬅️ Torna all'anteprima", callback_data="reinvia_anteprima")],
         ]),
     )
 
@@ -12982,14 +13024,14 @@ async def gestisci_modifica_reinvio(update: Update, context: ContextTypes.DEFAUL
     if data == "reinvia_edit_immagine":
         if draft.get("foto_file_id"):
             kb = [
-                [InlineKeyboardButton("🔄 SOSTITUISCI IMMAGINE", callback_data="reinvia_img_sostituisci")],
-                [InlineKeyboardButton("🗑 RIMUOVI IMMAGINE", callback_data="reinvia_img_rimuovi")],
-                [InlineKeyboardButton("⬅️ INDIETRO", callback_data="reinvia_modifica")],
+                [InlineKeyboardButton("🔄 Sostituisci immagine", callback_data="reinvia_img_sostituisci")],
+                [InlineKeyboardButton("🗑 Rimuovi immagine", callback_data="reinvia_img_rimuovi")],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data="reinvia_modifica")],
             ]
         else:
             kb = [
-                [InlineKeyboardButton("📷 AGGIUNGI IMMAGINE", callback_data="reinvia_img_aggiungi")],
-                [InlineKeyboardButton("⬅️ INDIETRO", callback_data="reinvia_modifica")],
+                [InlineKeyboardButton("📷 Aggiungi immagine", callback_data="reinvia_img_aggiungi")],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data="reinvia_modifica")],
             ]
         await query.message.reply_text("🖼 GESTIONE IMMAGINE", reply_markup=InlineKeyboardMarkup(kb))
         return
@@ -13010,8 +13052,8 @@ async def gestisci_modifica_reinvio(update: Update, context: ContextTypes.DEFAUL
         await query.message.reply_text(
             "🎨 Scegli il nuovo template:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✨ PULITO", callback_data="reinvia_tpl_pulito")],
-                [InlineKeyboardButton("🚨 AGGRESSIVO", callback_data="reinvia_tpl_aggressivo")],
+                [InlineKeyboardButton("✨ Pulito", callback_data="reinvia_tpl_pulito")],
+                [InlineKeyboardButton("🚨 Aggressivo", callback_data="reinvia_tpl_aggressivo")],
                 [InlineKeyboardButton("⚡ TECH", callback_data="reinvia_tpl_tech")],
             ]),
         )
@@ -13195,10 +13237,10 @@ async def prepara_programmazione_reinvio(update: Update, context: ContextTypes.D
 
     tastiera = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("📅 OGGI", callback_data="prog_giorno_0")],
-            [InlineKeyboardButton("📅 DOMANI", callback_data="prog_giorno_1")],
-            [InlineKeyboardButton("📅 TRA 2 GIORNI", callback_data="prog_giorno_2")],
-            [InlineKeyboardButton("❌ ANNULLA", callback_data="annulla")],
+            [InlineKeyboardButton("📅 Oggi", callback_data="prog_giorno_0")],
+            [InlineKeyboardButton("📅 Domani", callback_data="prog_giorno_1")],
+            [InlineKeyboardButton("📅 Tra 2 giorni", callback_data="prog_giorno_2")],
+            [InlineKeyboardButton("❌ Annulla", callback_data="annulla")],
         ]
     )
 
@@ -13326,7 +13368,7 @@ async def scegli_template_menu(
     await query.edit_message_text(
         f"✅ Template impostato: {template.upper()}",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⬅️ TORNA ALLE IMPOSTAZIONI", callback_data="settings_menu")
+            InlineKeyboardButton("⬅️ Torna alle impostazioni", callback_data="settings_menu")
         ]]),
     )
 
@@ -13590,7 +13632,7 @@ async def mostra_pannello_oroscopo(messaggio, context):
         [InlineKeyboardButton("🖼 Imposta foto", callback_data="oro_foto")],
         [InlineKeyboardButton("⚙️ Impostazioni rubrica", callback_data="oro_impostazioni")],
         [InlineKeyboardButton("📊 Statistiche", callback_data="oro_stats:oggi")],
-        [InlineKeyboardButton("⏸ Sospendi" if cfg["attivo"] else "▶️ Attiva", callback_data="oro_attiva")],
+        [InlineKeyboardButton("⏸ Sospendi" if cfg["attivo"] else "▶️ attiva", callback_data="oro_attiva")],
         [InlineKeyboardButton("⬅️ Rubrica", callback_data="rub_menu")],
     ]))
 
@@ -13867,14 +13909,14 @@ async def azione_oroscopo(dato, msg, context):
             "I due post usano gli stessi testi della giornata.\n"
             f"Canali: {', '.join(cfg['canali'])}\n\nScegli dove pubblicare:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📱 Tech", callback_data="oro_canali:tech"),
+                [InlineKeyboardButton("📱 TECH", callback_data="oro_canali:tech"),
                  InlineKeyboardButton("🏠 Casa", callback_data="oro_canali:casa"),
                  InlineKeyboardButton("📢 Entrambi", callback_data="oro_canali:entrambi")],
                 [InlineKeyboardButton("🕒 Primo orario", callback_data="oro_ora"),
                  InlineKeyboardButton("🕕 Secondo orario", callback_data="oro_ora2")],
-                [InlineKeyboardButton("🔔 Secondo invio: " + ("ON" if cfg['secondo_attivo'] else "OFF"),
+                [InlineKeyboardButton("🔔 Secondo invio: " + ("on" if cfg['secondo_attivo'] else "off"),
                                       callback_data="oro_secondo_toggle")],
-                [InlineKeyboardButton("⬅️ Rubrica", callback_data="oro_menu")]]))
+                [inlinekeyboardbutton("⬅️ rubrica", callback_data="oro_menu")]]))
     elif dato == "oro_secondo_toggle":
         if not cfg["secondo_attivo"]:
             valida_orari_oroscopo(cfg["ora"], cfg["ora2"])
@@ -14197,7 +14239,6 @@ async def mostra_rubrica(msg):
     await msg.reply_text(f"☕ RUBRICA — BESTPRICE24H\n\n☀️ Primo Caffè: {oc['ora']}\n🧠 Quiz TECH: {qc['ora']} ({'ON' if qc['attivo'] else 'OFF'})\n🌙 Secondo Caffè: {oc['ora2']}\n\n⏸ Pausa offerte: 30 minuti per ogni appuntamento.",reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton('♈ Oroscopo',callback_data='oro_menu'),InlineKeyboardButton('🧠 Quiz TECH',callback_data='quiz_menu')],
         [InlineKeyboardButton('🕒 Orari rubrica',callback_data='quiz_orari')],
-        [InlineKeyboardButton('📅 Post programmati',callback_data='programmati')],
         [InlineKeyboardButton('⬅️ Menu principale',callback_data='menu_admin')]]))
 
 async def pannello_quiz(msg):
@@ -14208,7 +14249,7 @@ async def pannello_quiz(msg):
         [InlineKeyboardButton('📥 Carica quiz',callback_data='quiz_carica'),InlineKeyboardButton('🖼 Imposta foto',callback_data='quiz_foto')],
         [InlineKeyboardButton('🕒 Cambia orario',callback_data='quiz_ora'),InlineKeyboardButton('📅 Calendario quiz',callback_data='quiz_cal:0')],
         [InlineKeyboardButton('👁 Anteprima di oggi',callback_data='quiz_preview')],
-        [InlineKeyboardButton('📊 Statistiche',callback_data='quiz_stats'),InlineKeyboardButton('▶️ Attiva' if not c['attivo'] else '⏸ Sospendi',callback_data='quiz_toggle')],
+        [InlineKeyboardButton('📊 Statistiche',callback_data='quiz_stats'),InlineKeyboardButton('▶️ Attiva' if not c['attivo'] else '⏸ sospendi',callback_data='quiz_toggle')],
         [InlineKeyboardButton('⬅️ Rubrica',callback_data='rub_menu')]]))
 
 async def azione_quiz(dato,msg,context):
@@ -14218,8 +14259,8 @@ async def azione_quiz(dato,msg,context):
     if dato=='quiz_orari':
         c=configurazione_oroscopo(); q=configurazione_quiz()
         await msg.reply_text(f"🕒 ORARI RUBRICA\n☀️ Primo Caffè: {c['ora']}\n🧠 Quiz TECH: {q['ora']}\n🌙 Secondo Caffè: {c['ora2']}\n\nLe modifiche aggiornano subito la lista Programmati e le pause di 30 minuti.",reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton('☀️ Primo Caffè',callback_data='oro_ora'),InlineKeyboardButton('🧠 Quiz',callback_data='quiz_ora')],
-            [InlineKeyboardButton('🌙 Secondo Caffè',callback_data='oro_ora2')],
+            [InlineKeyboardButton('☀️ Primo caffè',callback_data='oro_ora'),InlineKeyboardButton('🧠 Quiz',callback_data='quiz_ora')],
+            [InlineKeyboardButton('🌙 Secondo caffè',callback_data='oro_ora2')],
             [InlineKeyboardButton('⬅️ Rubrica',callback_data='rub_menu')]])); return
     if dato in ('quiz_carica','quiz_foto','quiz_ora'):
         context.user_data['oroscopo_modalita']=dato
@@ -14250,7 +14291,7 @@ async def azione_quiz(dato,msg,context):
         if pagina: nav.append(InlineKeyboardButton('⬅️ Precedenti', callback_data=f'quiz_cal:{pagina-1}'))
         if pagina + 1 < pagine: nav.append(InlineKeyboardButton('Successivi ➡️', callback_data=f'quiz_cal:{pagina+1}'))
         if nav: bottoni.append(nav)
-        bottoni.append([InlineKeyboardButton('⬅️ Menu Quiz', callback_data='quiz_menu')])
+        bottoni.append([InlineKeyboardButton('⬅️ Menu quiz', callback_data='quiz_menu')])
         await msg.reply_text(f'📅 CALENDARIO QUIZ TECH\nPagina {pagina+1}/{pagine} · {len(righe)} quiz\n\n👁 Da pubblicare · ✅ Pubblicato · ⚠️ Da verificare\n\nSeleziona una data per leggere domanda, risposte e spiegazione in privato.', reply_markup=InlineKeyboardMarkup(bottoni))
         return
     if dato.startswith('quiz_det:'):
@@ -14269,7 +14310,7 @@ async def azione_quiz(dato,msg,context):
                       '📢 Stato: ' + (uscita[0] if uscita else 'non ancora pubblicato')])
         await msg.reply_text('\n'.join(righe), reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton('⬅️ Calendario quiz', callback_data=f'quiz_cal:{pagina}')],
-            [InlineKeyboardButton('🧠 Menu Quiz', callback_data='quiz_menu')]]))
+            [InlineKeyboardButton('🧠 Menu quiz', callback_data='quiz_menu')]]))
         return
     if dato=='quiz_preview':
         oggi=datetime.now(ROMA_TZ).date().isoformat()
