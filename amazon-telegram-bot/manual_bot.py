@@ -1650,17 +1650,16 @@ def _unisci_dati_lettura(base, nuovo):
 
 
 async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callback=None):
-    """Tre passaggi massimi sulle due fonti, con integrazione prudente dei metadati.
+    """Lettura diretta della pagina Amazon: non interroga Creators API.
 
-    Mai mescolare prezzi, coupon, condizioni o disponibilita' di letture diverse.
+    Tre tentativi massimi, senza mescolare dati economici di letture diverse.
     """
     asin = await asyncio.to_thread(risolvi_asin_da_link, link)
     if not asin:
         print('Lettura Amazon: ASIN non rilevato dal link (anche dopo redirect).')
         return None
     url_canonico = f'https://www.amazon.it/dp/{asin}'
-    lettori = (('Creators API', leggi_prodotto_creators_da_link),
-               ('pagina Amazon', leggi_prodotto_amazon)) * 3
+    lettori = (('pagina Amazon', leggi_prodotto_amazon),) * 3
     metadati = {}
     motivi = []
     for indice, (fonte, lettore) in enumerate(lettori, 1):
@@ -1671,7 +1670,13 @@ async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callbac
             risultato = await asyncio.to_thread(lettore, url_lettura)
             if risultato and risultato.get('disponibile') is False:
                 print(f'Lettura Amazon ASIN {asin}: prodotto non disponibile ({fonte}).')
-                return None
+                motivo = 'disponibilita non confermata'
+                motivi.append(f'{fonte}: {motivo}')
+                if callback:
+                    await callback(indice)
+                if indice < 3:
+                    await asyncio.sleep(2 if indice == 1 else 4)
+                continue
             if isinstance(risultato, dict) and risultato:
                 dati = _unisci_dati_lettura(metadati, risultato)
                 dati['_link_originale'] = link
@@ -1689,13 +1694,13 @@ async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callbac
             else:
                 motivo = 'nessuna risposta utilizzabile'
             motivi.append(f'{fonte}: {motivo}')
-            print(f'Lettura Amazon ASIN {asin} tentativo {indice}/6 ({fonte}): {motivo}')
+            print(f'Lettura Amazon ASIN {asin} tentativo {indice}/3 ({fonte}): {motivo}')
         except Exception as errore:
             motivi.append(f'{fonte}: {type(errore).__name__}')
-            print(f'Lettura Amazon ASIN {asin} tentativo {indice}/6 ({fonte}): {type(errore).__name__}: {errore}')
+            print(f'Lettura Amazon ASIN {asin} tentativo {indice}/3 ({fonte}): {type(errore).__name__}: {errore}')
         if callback:
             await callback(indice)
-        if indice < 6:
+        if indice < 3:
             await asyncio.sleep(2 if indice < 3 else 4)
     print(f'Lettura Amazon ASIN {asin}: fallita. Motivi: {"; ".join(motivi)}')
     return None
@@ -2994,7 +2999,7 @@ def inizializza_automazione():
         "punteggio_minimo": "5",
         "bonus_sconto_da": "30",
         "priorita_amazon": "1",
-        "tentativi_ricerca": "6",
+        "tentativi_ricerca": "3",
         "giorni_blocco_duplicati": "10",
         "raggruppa_varianti": "1",
         "indice_categoria_automatica": "0",
@@ -3300,7 +3305,7 @@ def leggi_config_automatica(canale="tech"):
         "punteggio_minimo": int(valori.get("punteggio_minimo", "4")),
         "bonus_sconto_da": int(valori.get("bonus_sconto_da", "30")),
         "priorita_amazon": valori.get("priorita_amazon", "1") == "1",
-        "tentativi_ricerca": int(valori.get("tentativi_ricerca", "6")),
+        "tentativi_ricerca": 3,
         "giorni_blocco_duplicati": int(valori.get("giorni_blocco_duplicati", "10")),
         "raggruppa_varianti": valori.get("raggruppa_varianti", "1") == "1",
         "categorie": categorie,
@@ -4402,7 +4407,7 @@ async def gestisci_selettiva(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "punteggio_minimo": 4,
             "bonus_sconto_da": 30,
             "priorita_amazon": 1,
-            "tentativi_ricerca": 6,
+            "tentativi_ricerca": 3,
             "raggruppa_varianti": 1,
         }.items():
             salva_config_automatica(chiave, valore, canale)
@@ -6827,7 +6832,7 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale, canale="t
 
     snapshot_filtri = carica_snapshot_filtri(configurazione=configurazione)
 
-    massimo = max(3, min(9, int(configurazione.get("tentativi_ricerca", 6))))
+    massimo = 3  # Limite fisso per ciclo di ricerca automatica
     tentativi = []
     visti = set()
     indice = 0
@@ -6913,7 +6918,7 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale, canale="t
         except Exception as errore:
             statistiche["errori"] += 1
             print(f"Errore tentativo automatico {numero}: {errore}")
-        # Strategia 3+3: se i primi tre tentativi bastano, non consumiamo altre richieste.
+        # Ricerca automatica limitata a tre tentativi per ciclo.
         if numero == 3 and candidati:
             break
         if numero < len(tentativi):
@@ -7054,7 +7059,7 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
         # seconda lettura viene eseguita al momento del suo invio.
         recuperato = await leggi_offerta_con_sei_tentativi(prodotto.get('link'), richiedi_immagine=True)
         if not recuperato:
-            raise ValueError('Offerta non leggibile dopo 6 tentativi: prodotto saltato')
+            raise ValueError('Offerta non leggibile dopo 3 tentativi: prodotto saltato')
         prodotto.update(recuperato)
         tipo = tipo_o_fallback(prodotto.get('link'), prodotto)
     elif tipo == 'sconosciuto':
@@ -8814,9 +8819,9 @@ async def ricevi_link(
     )
 
     async def mostra_tentativo(numero):
-        if numero < 6:
+        if numero < 3:
             try:
-                await messaggio_attesa.edit_text(f'🔎 Lettura offerta Amazon: tentativo {numero}/6 incompleto. Riprovo automaticamente…')
+                await messaggio_attesa.edit_text(f'🔎 Lettura offerta Amazon: tentativo {numero}/3 incompleto. Riprovo automaticamente…')
             except Exception:
                 pass
 
@@ -9382,7 +9387,7 @@ async def rapido_da_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     draft = {'canale': 'tech', 'minuti': intervallo_multiplo(update.effective_user.id), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
     context.user_data['multiplo'] = draft
-    await update.effective_message.reply_text("📦 INVIO MULTIPLO\n\nScegli canale e intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi + altri 3 automatici.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.", reply_markup=tastiera_multiplo(draft))
+    await update.effective_message.reply_text("📦 INVIO MULTIPLO\n\nScegli canale e intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.", reply_markup=tastiera_multiplo(draft))
     return RAPIDO
 
 
@@ -9549,10 +9554,10 @@ async def prepara_lotto_multiplo(messaggio, context, draft, links):
                 draft['scartati'].append(f"{link} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
                 continue
             async def mostra_tentativo_multiplo(numero):
-                if numero < 6:
+                if numero < 3:
                     try:
                         if context.user_data.get('multiplo') is draft and not draft.get('annullato'):
-                            await messaggio.edit_text(f'🔎 Tentativo {numero}/6 — {len(draft["pronti"])}/{draft.get("richiesti", len(links))} post pronti. Riprovo…', reply_markup=tastiera_annulla_elaborazione())
+                            await messaggio.edit_text(f'🔎 Tentativo {numero}/3 — {len(draft["pronti"])}/{draft.get("richiesti", len(links))} post pronti. Riprovo…', reply_markup=tastiera_annulla_elaborazione())
                     except Exception:
                         pass
             if draft.get('tipo') == 'repost':
@@ -11540,9 +11545,9 @@ async def prova_foto_automatica_o_chiedi(update, context):
     if not foto_url:
         link = context.user_data.get("link")
         try:
-            prodotto = await asyncio.to_thread(leggi_prodotto_creators_da_link, link)
+            prodotto = await asyncio.to_thread(leggi_prodotto_amazon, link)
         except Exception as errore:
-            print(f"Errore ricerca foto Creator API: {errore}")
+            print(f"Errore ricerca foto pagina Amazon: {errore}")
             prodotto = None
         if prodotto:
             foto_url = prodotto.get("immagine")
