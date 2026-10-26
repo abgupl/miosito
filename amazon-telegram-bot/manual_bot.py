@@ -3630,7 +3630,7 @@ async def mostra_menu_filtri(query):
         )],
         [InlineKeyboardButton("📊 Riepilogo filtri", callback_data="filter_summary")],
         [InlineKeyboardButton("♻️ Ripristina predefiniti", callback_data="filter_reset")],
-        [InlineKeyboardButton("⬅️ Torna alle impostazioni", callback_data="settings_menu")],
+        [InlineKeyboardButton("⬅️ Torna all’automazione", callback_data="selective_menu")],
     ])
     await query.edit_message_text(
         "⚙️ Filtri della modalità selettiva\n\n"
@@ -4593,20 +4593,21 @@ async def mostra_stato_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     query = update.callback_query
     await query.answer()
-    tech = leggi_config_automatica("tech")
-    casa = leggi_config_automatica("casa")
+    righe = ["📊 STATO DEL BOT", "", "Bot Telegram: 🟢 IN ESECUZIONE", "Database: 🟢 ACCESSIBILE", "", "📢 Canali registrati:"]
+    for canale in bp_channels.channels(DB_PATH):
+        nome = canale["display_name"]
+        legacy = canale.get("legacy_key")
+        if legacy in ("tech", "casa"):
+            configurazione = leggi_config_automatica(legacy)
+            stato = "🟢 ATTIVA" if configurazione["attiva"] else "🔴 DISATTIVATA"
+            righe.append(f"• {nome}: automazione {stato}")
+        else:
+            righe.append(f"• {nome}: registrato, pubblicazione non ancora integrata")
     await query.edit_message_text(
-        "📊 STATO DEL BOT\n\n"
-        "Bot Telegram: ✅ AVVIATO\n"
-        "Database: ✅ COLLEGATO\n"
-        "Canale TECH: ✅ COLLEGATO\n"
-        "Canale CASA: ✅ COLLEGATO\n"
-        f"Automazione TECH: {'🟢 ATTIVA' if tech['attiva'] else '🔴 DISATTIVATA'}\n"
-        f"Automazione CASA: {'🟢 ATTIVA' if casa['attiva'] else '🔴 DISATTIVATA'}\n\n"
-        "Le due automazioni hanno impostazioni indipendenti.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Torna alle impostazioni", callback_data="settings_menu")]
-        ]),
+        "\n".join(righe),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ Torna alle impostazioni", callback_data="settings_menu")
+        ]]),
     )
 
 
@@ -8399,9 +8400,7 @@ async def mostra_menu_storico(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 def menu_impostazioni():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Gestione canali", callback_data="channels_manage")],
         [InlineKeyboardButton("🎨 Grafica e template", callback_data="template")],
-        [InlineKeyboardButton("🎯 Filtri e priorità", callback_data="auto_filtri")],
         [InlineKeyboardButton("🌙 Orario recap serale", callback_data="recap_time_menu")],
         [InlineKeyboardButton("📊 Stato del bot", callback_data="bot_status")],
         [InlineKeyboardButton("📋 Log e diagnostica", callback_data="diag_logs_all_0")],
@@ -8496,19 +8495,9 @@ async def mostra_menu_impostazioni(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     await query.edit_message_text(
         "⚙️ IMPOSTAZIONI\n\n"
-        "Gestisci canali, grafica, filtri e stato generale del bot.",
+        "Impostazioni comuni: grafica, recap, stato del bot e diagnostica.\nI filtri di pubblicazione si configurano dentro ogni canale.",
         reply_markup=menu_impostazioni(),
     )
-
-
-async def mostra_gestione_canali(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await controlla_autorizzazione(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    active = _bp_active(update)
-    lines = ['📢 GESTIONE CANALI', '', 'Canale attivo: ' + (active['display_name'] if active else 'nessuno'), '', 'Seleziona un canale per cambiare il contesto:']
-    await query.edit_message_text('\n'.join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(c['display_name'], callback_data='bp_select_' + str(i))] for i, c in enumerate(bp_channels.channels(DB_PATH))] + [[InlineKeyboardButton('⬅️ Impostazioni', callback_data='settings_menu')]]))
 
 
 async def mostra_info_canale(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -14466,8 +14455,6 @@ def main():
 
     app.add_handler(CallbackQueryHandler(bp_home, pattern=r"^bp_home$"))
     app.add_handler(CallbackQueryHandler(bp_select_channel, pattern=r"^bp_select_\d+$"))
-    # Gestione canali deve precedere i ConversationHandler che possono intercettare i callback.
-    app.add_handler(CallbackQueryHandler(mostra_gestione_canali, pattern="^channels_manage$"))
     app.add_handler(CallbackQueryHandler(
         storico_prezzi_non_disponibile, pattern="^offer_price_unavailable$"
     ))
