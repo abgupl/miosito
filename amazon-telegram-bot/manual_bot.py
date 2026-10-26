@@ -1675,7 +1675,7 @@ async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callbac
                 if callback:
                     await callback(indice)
                 if indice < 3:
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(2 if indice == 1 else 4)
                 continue
             if isinstance(risultato, dict) and risultato:
                 dati = _unisci_dati_lettura(metadati, risultato)
@@ -1701,7 +1701,7 @@ async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callbac
         if callback:
             await callback(indice)
         if indice < 3:
-            await asyncio.sleep(3)
+            await asyncio.sleep(2 if indice < 3 else 4)
     print(f'Lettura Amazon ASIN {asin}: fallita. Motivi: {"; ".join(motivi)}')
     return None
 
@@ -2999,7 +2999,7 @@ def inizializza_automazione():
         "punteggio_minimo": "5",
         "bonus_sconto_da": "30",
         "priorita_amazon": "1",
-        "tentativi_ricerca": "3",
+        "tentativi_ricerca": "6",
         "giorni_blocco_duplicati": "10",
         "raggruppa_varianti": "1",
         "indice_categoria_automatica": "0",
@@ -3305,7 +3305,7 @@ def leggi_config_automatica(canale="tech"):
         "punteggio_minimo": int(valori.get("punteggio_minimo", "4")),
         "bonus_sconto_da": int(valori.get("bonus_sconto_da", "30")),
         "priorita_amazon": valori.get("priorita_amazon", "1") == "1",
-        "tentativi_ricerca": 3,
+        "tentativi_ricerca": int(valori.get("tentativi_ricerca", "6")),
         "giorni_blocco_duplicati": int(valori.get("giorni_blocco_duplicati", "10")),
         "raggruppa_varianti": valori.get("raggruppa_varianti", "1") == "1",
         "categorie": categorie,
@@ -4407,7 +4407,7 @@ async def gestisci_selettiva(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "punteggio_minimo": 4,
             "bonus_sconto_da": 30,
             "priorita_amazon": 1,
-            "tentativi_ricerca": 3,
+            "tentativi_ricerca": 6,
             "raggruppa_varianti": 1,
         }.items():
             salva_config_automatica(chiave, valore, canale)
@@ -6832,7 +6832,7 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale, canale="t
 
     snapshot_filtri = carica_snapshot_filtri(configurazione=configurazione)
 
-    massimo = 3  # Limite fisso per ciclo di ricerca automatica
+    massimo = max(3, min(9, int(configurazione.get("tentativi_ricerca", 6))))
     tentativi = []
     visti = set()
     indice = 0
@@ -6918,7 +6918,7 @@ async def cerca_offerta_automatica(configurazione, categoria_iniziale, canale="t
         except Exception as errore:
             statistiche["errori"] += 1
             print(f"Errore tentativo automatico {numero}: {errore}")
-        # Ricerca automatica limitata a tre tentativi per ciclo.
+        # Strategia 3+3: se i primi tre tentativi bastano, non consumiamo altre richieste.
         if numero == 3 and candidati:
             break
         if numero < len(tentativi):
@@ -7059,7 +7059,7 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
         # seconda lettura viene eseguita al momento del suo invio.
         recuperato = await leggi_offerta_con_sei_tentativi(prodotto.get('link'), richiedi_immagine=True)
         if not recuperato:
-            raise ValueError('Offerta non leggibile dopo 3 tentativi: prodotto saltato')
+            raise ValueError('Offerta non leggibile dopo 6 tentativi: prodotto saltato')
         prodotto.update(recuperato)
         tipo = tipo_o_fallback(prodotto.get('link'), prodotto)
     elif tipo == 'sconosciuto':
@@ -8535,7 +8535,7 @@ def leggi_prodotto_amazon(url):
         risposta = requests.get(
             url,
             headers=headers,
-            timeout=10,
+            timeout=15,
             allow_redirects=True,
         )
 
@@ -8716,7 +8716,7 @@ def risolvi_asin_da_link(link):
     try:
         with requests.get(
             link,
-            timeout=10,
+            timeout=15,
             allow_redirects=True,
             stream=True,
             headers={"User-Agent": "Mozilla/5.0"},
@@ -9387,7 +9387,7 @@ async def rapido_da_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     draft = {'canale': 'tech', 'minuti': intervallo_multiplo(update.effective_user.id), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
     context.user_data['multiplo'] = draft
-    await update.effective_message.reply_text("📦 INVIO MULTIPLO\n\nScegli canale e intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.", reply_markup=tastiera_multiplo(draft))
+    await update.effective_message.reply_text("📦 INVIO MULTIPLO\n\nScegli canale e intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi + altri 3 automatici.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.", reply_markup=tastiera_multiplo(draft))
     return RAPIDO
 
 
