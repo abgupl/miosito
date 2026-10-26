@@ -8515,6 +8515,12 @@ async def bp_select_channel(update, context):
     await query.edit_message_text('✅ Canale attivo: ' + channel['display_name'] + '\n\nScegli una funzione:', reply_markup=menu_principale())
 
 
+async def bp_select_channel_priority(update, context):
+    """Callback prioritario per la selezione; risponde anche durante una conversazione."""
+    await bp_select_channel(update, context)
+    raise ApplicationHandlerStop
+
+
 def menu_principale():
     """Pannello operativo del canale selezionato; configurazioni globali nella home."""
     return InlineKeyboardMarkup([
@@ -14158,9 +14164,10 @@ async def azione_oroscopo(dato, msg, context):
             "I due post usano gli stessi testi della giornata.\n"
             f"Canali: {', '.join(cfg['canali'])}\n\nScegli dove pubblicare:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📱 TECH", callback_data="oro_canali:tech"),
-                 InlineKeyboardButton("🏠 Casa", callback_data="oro_canali:casa"),
-                 InlineKeyboardButton("📢 Entrambi", callback_data="oro_canali:entrambi")],
+                *[[InlineKeyboardButton(
+                    ("✅ " if (c['legacy_key'] or c['chat_id']) in cfg['canali'] else "⬜ ") + c['display_name'],
+                    callback_data="oro_canali:" + str(c['chat_id']))]
+                  for c in bp_channels.channels(DB_PATH)],
                 [InlineKeyboardButton("🕒 Primo orario", callback_data="oro_ora"),
                  InlineKeyboardButton("🕕 Secondo orario", callback_data="oro_ora2")],
                 [InlineKeyboardButton("🔔 Secondo invio: " + ("on" if cfg['secondo_attivo'] else "off"),
@@ -14180,10 +14187,21 @@ async def azione_oroscopo(dato, msg, context):
         await esporta_clic_oroscopo(msg, dato.split(":")[1])
     elif dato.startswith("oro_canali:"):
         valore = dato.split(":")[1]
-        if valore not in {"tech", "casa", "entrambi"}:
-            raise ValueError("Canale non valido.")
-        imposta_oroscopo("canali", ["tech", "casa"] if valore == "entrambi" else [valore])
-        await mostra_pannello_oroscopo(msg, context)
+        registered = bp_channels.channels(DB_PATH)
+        row = next((c for c in registered if str(c['chat_id']) == valore), None)
+        if row is None:
+            raise ValueError("Canale non registrato o disattivato.")
+        key = row['legacy_key'] or str(row['chat_id'])
+        selected = list(cfg.get('canali', []))
+        if key in selected:
+            selected.remove(key)
+        else:
+            selected.append(key)
+        # Preserve existing legacy selections, but never allow empty destinations.
+        if not selected:
+            raise ValueError("Seleziona almeno un canale per l'oroscopo.")
+        imposta_oroscopo("canali", selected)
+        await azione_oroscopo("oro_impostazioni", msg, context)
     elif dato == "oro_attiva":
         if not cfg["attivo"]:
             oggi = datetime.now(ROMA_TZ).date().isoformat()
@@ -14379,7 +14397,15 @@ def inizializza_quiz():
         CREATE TABLE IF NOT EXISTS quiz_voti (giorno TEXT NOT NULL, user_id INTEGER NOT NULL, username TEXT, scelta INTEGER NOT NULL, corretta INTEGER NOT NULL, votato_il TEXT NOT NULL, PRIMARY KEY(giorno,user_id));
         CREATE TABLE IF NOT EXISTS quiz_voti_test (giorno TEXT NOT NULL, user_id INTEGER NOT NULL, scelta INTEGER NOT NULL, votato_il TEXT NOT NULL, PRIMARY KEY(giorno,user_id));
         """)
-        defaults={'attivo':False,'ora':'17:00','foto':'','promemoria':'','esaurimento':''}
+        db.execute("""CREATE TABLE IF NOT EXISTS quiz_uscite_canali (
+            giorno TEXT NOT NULL, canale TEXT NOT NULL, stato TEXT NOT NULL,
+            message_id INTEGER, pubblicato_il TEXT, errore TEXT,
+            PRIMARY KEY(giorno,canale))""")
+        db.execute("""CREATE TABLE IF NOT EXISTS quiz_voti_canali (
+            giorno TEXT NOT NULL, canale TEXT NOT NULL, user_id INTEGER NOT NULL,
+            username TEXT, scelta INTEGER NOT NULL, corretta INTEGER NOT NULL,
+            votato_il TEXT NOT NULL, PRIMARY KEY(giorno,canale,user_id))""")
+        defaults={'attivo':False,'ora':'17:00','foto':'','promemoria':'','esaurimento':'','canali':['tech']}
         db.executemany('INSERT OR IGNORE INTO quiz_config VALUES (?,?)',[(k,json.dumps(v)) for k,v in defaults.items()])
 
 def configurazione_quiz():
@@ -14438,12 +14464,19 @@ async def risposta_quiz(query):
             valido = db.execute(
                 "SELECT message_id FROM quiz_uscite WHERE giorno=? AND stato='inviato'", (g,)
             ).fetchone()
-            ufficiale = bool(
-                valido and query.message
-                and query.message.message_id == valido[0]
-                and str(query.message.chat_id) == str(CHANNEL_ID)
-            )
-            if ufficiale:
+            canale_voto = str(query.message.chat_id) if query.message else ''
+            valido_canale = db.execute(
+                "SELECT message_id FROM quiz_uscite_canali WHERE giorno=? AND canale=? AND stato='inviato'",
+                (g,canale_voto)).fetchone()
+            ufficiale = bool(query.message and (
+                (valido_canale and query.message.message_id == valido_canale[0]) or
+                (valido and query.message.message_id == valido[0] and canale_voto == str(CHANNEL_ID))))
+            if ufficiale and canale_voto != str(CHANNEL_ID):
+                inserito = db.execute(
+                    'INSERT OR IGNORE INTO quiz_voti_canali VALUES (?,?,?,?,?,?,?)',
+                    (g,canale_voto,uid,query.from_user.username,scelta,int(scelta==giusta),
+                     datetime.now(timezone.utc).isoformat())).rowcount
+            elif ufficiale:
                 # Il voto ufficiale viene registrato una sola volta per utente e data.
                 inserito = db.execute(
                     'INSERT OR IGNORE INTO quiz_voti VALUES (?,?,?,?,?,?)',
@@ -14498,9 +14531,10 @@ async def pannello_quiz(msg):
     c=configurazione_quiz(); oggi=datetime.now(ROMA_TZ).date().isoformat()
     with sqlite3.connect(DB_PATH,timeout=30) as db:
         gg=[r[0] for r in db.execute('SELECT giorno FROM quiz_giorni WHERE giorno>=? ORDER BY giorno',(oggi,))]
-    await msg.reply_text(f"🧠 QUIZ DEL CAFFÈ — TECH\n\nStato: {'ATTIVO' if c['attivo'] else 'SOSPESO'}\n🕒 Orario: {c['ora']} (Italia)\n🖼 Foto: {'caricata' if c['foto'] else 'da caricare'}\n📅 Quiz disponibili: {len(gg)}\nUltima data: {gg[-1] if gg else 'nessuna'}\n⏸ Pausa offerte: 30 minuti",reply_markup=InlineKeyboardMarkup([
+    await msg.reply_text(f"🧠 QUIZ DEL CAFFÈ\n\nStato: {'ATTIVO' if c['attivo'] else 'SOSPESO'}\n🕒 Orario: {c['ora']} (Italia)\n🖼 Foto: {'caricata' if c['foto'] else 'da caricare'}\n📅 Quiz disponibili: {len(gg)}\nUltima data: {gg[-1] if gg else 'nessuna'}\n⏸ Pausa offerte: 30 minuti",reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton('📥 Carica quiz',callback_data='quiz_carica'),InlineKeyboardButton('🖼 Imposta foto',callback_data='quiz_foto')],
         [InlineKeyboardButton('🕒 Cambia orario',callback_data='quiz_ora'),InlineKeyboardButton('📅 Calendario quiz',callback_data='quiz_cal:0')],
+        [InlineKeyboardButton('📢 Canali di pubblicazione',callback_data='quiz_canali')],
         [InlineKeyboardButton('👁 Anteprima di oggi',callback_data='quiz_preview')],
         [InlineKeyboardButton('📊 Statistiche',callback_data='quiz_stats'),InlineKeyboardButton('▶️ Attiva' if not c['attivo'] else '⏸ sospendi',callback_data='quiz_toggle')],
         [InlineKeyboardButton('⬅️ Rubrica',callback_data='rub_menu')]]))
@@ -14509,6 +14543,23 @@ async def azione_quiz(dato,msg,context):
     context.user_data.pop('oroscopo_modalita',None)
     if dato=='rub_menu': await mostra_rubrica(msg); return
     if dato=='quiz_menu': await pannello_quiz(msg); return
+    if dato=='quiz_canali':
+        cfg=configurazione_quiz(); selected=cfg.get('canali',['tech'])
+        rows=[[InlineKeyboardButton(('✅ ' if (c['legacy_key'] or c['chat_id']) in selected else '⬜ ')+c['display_name'],
+                  callback_data='quiz_canale:'+str(c['chat_id']))] for c in bp_channels.channels(DB_PATH)]
+        rows.append([InlineKeyboardButton('⬅️ Quiz',callback_data='quiz_menu')])
+        await msg.reply_text('📢 Scegli i canali per il quiz. Ogni canale ha il proprio invio.',reply_markup=InlineKeyboardMarkup(rows)); return
+    if dato.startswith('quiz_canale:'):
+        channel_id=dato.split(':',1)[1]
+        row=next((c for c in bp_channels.channels(DB_PATH) if str(c['chat_id'])==channel_id),None)
+        if row is None: raise ValueError('Canale non disponibile')
+        key=row['legacy_key'] or str(row['chat_id'])
+        selected=list(configurazione_quiz().get('canali',['tech']))
+        if key in selected: selected.remove(key)
+        else: selected.append(key)
+        if not selected: raise ValueError('Seleziona almeno un canale')
+        imposta_quiz('canali',selected)
+        await azione_quiz('quiz_canali',msg,context); return
     if dato=='quiz_orari':
         c=configurazione_oroscopo(); q=configurazione_quiz()
         await msg.reply_text(f"🕒 ORARI RUBRICA\n☀️ Primo Caffè: {c['ora']}\n🧠 Quiz TECH: {q['ora']}\n🌙 Secondo Caffè: {c['ora2']}\n\nLe modifiche aggiornano subito la lista Programmati e le pause di 30 minuti.",reply_markup=InlineKeyboardMarkup([
@@ -14607,7 +14658,7 @@ async def invia_quiz(bot,chat_id,g,anteprima=False):
         row=db.execute('SELECT contenuto FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
     if not row: raise ValueError('Quiz mancante per '+g)
     item=json.loads(row[0])
-    return await bot.send_photo(chat_id=chat_id,photo=c['foto'],caption=f"🧠 QUIZ TECH\n📅 {datetime.strptime(g, '%Y-%m-%d').strftime('%d/%m/%Y')}\n\n⚡ La sfida del giorno!\nQuattro risposte, una sola corretta. Riuscirai a indovinarla?\n\n❓ {item['domanda']}",reply_markup=tastiera_quiz(g))
+    return await bot.send_photo(chat_id=chat_id,photo=c['foto'],caption=f"🧠 QUIZ DEL CAFFÈ\n📅 {datetime.strptime(g, '%Y-%m-%d').strftime('%d/%m/%Y')}\n\n⚡ La sfida del giorno!\nQuattro risposte, una sola corretta. Riuscirai a indovinarla?\n\n❓ {item['domanda']}",reply_markup=tastiera_quiz(g))
 
 async def pubblica_quiz(app,adesso=None):
     adesso=adesso or datetime.now(ROMA_TZ)
@@ -14618,21 +14669,33 @@ async def pubblica_quiz(app,adesso=None):
         if adesso.strftime('%H:%M')<c['ora']: return
         with sqlite3.connect(DB_PATH,timeout=30) as db:
             row=db.execute('SELECT 1 FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
-            if not row:
-                if c.get('esaurimento')!=g and ADMIN_ID:
-                    await app.bot.send_message(chat_id=ADMIN_ID,text=f'⚠️ Quiz TECH: nessuna domanda caricata per {g}. Carica il prossimo file da ☕ Rubrica → Quiz.')
-                    imposta_quiz('esaurimento',g)
-                return
-            result=db.execute("INSERT OR IGNORE INTO quiz_uscite(giorno,stato) VALUES (?,'in_invio')",(g,))
-            if not result.rowcount: return
-        try:
-            post=await invia_quiz(app.bot,CHANNEL_ID,g)
+        if not row:
+            if c.get('esaurimento')!=g and ADMIN_ID:
+                await app.bot.send_message(chat_id=ADMIN_ID,text=f'⚠️ Quiz: nessuna domanda caricata per {g}.')
+                imposta_quiz('esaurimento',g)
+            return
+        for channel_key in c.get('canali',['tech']):
+            try:
+                destination=bp_rubriche_routing.resolve_rubric_channel(DB_PATH,channel_key)
+            except ValueError as error:
+                print(f'Quiz: canale ignorato: {error}')
+                continue
             with sqlite3.connect(DB_PATH,timeout=30) as db:
-                db.execute("UPDATE quiz_uscite SET stato='inviato',message_id=?,pubblicato_il=? WHERE giorno=?",(post.message_id,datetime.now(ROMA_TZ).isoformat(timespec='seconds'),g))
-        except Exception as e:
-            with sqlite3.connect(DB_PATH,timeout=30) as db:
-                db.execute("UPDATE quiz_uscite SET stato='da_verificare',errore=? WHERE giorno=?",(str(e)[:500],g))
-            if ADMIN_ID: await app.bot.send_message(chat_id=ADMIN_ID,text=f'⚠️ Invio quiz {g} da verificare: {str(e)[:180]}. Nessun reinvio automatico per evitare doppioni.')
+                if channel_key == 'tech' and db.execute('SELECT 1 FROM quiz_uscite WHERE giorno=?',(g,)).fetchone():
+                    continue  # Legacy post: preserve old delivery state and avoid duplicates.
+                result=db.execute("INSERT OR IGNORE INTO quiz_uscite_canali(giorno,canale,stato) VALUES (?,?,'in_invio')",(g,destination))
+                if not result.rowcount: continue
+            try:
+                post=await invia_quiz(app.bot,destination,g)
+                with sqlite3.connect(DB_PATH,timeout=30) as db:
+                    db.execute("UPDATE quiz_uscite_canali SET stato='inviato',message_id=?,pubblicato_il=? WHERE giorno=? AND canale=?",(post.message_id,datetime.now(ROMA_TZ).isoformat(timespec='seconds'),g,destination))
+                    if channel_key=='tech':
+                        db.execute("INSERT OR REPLACE INTO quiz_uscite(giorno,stato,message_id,pubblicato_il) VALUES (?,'inviato',?,?)",(g,post.message_id,datetime.now(ROMA_TZ).isoformat(timespec='seconds')))
+            except Exception as error:
+                with sqlite3.connect(DB_PATH,timeout=30) as db:
+                    db.execute("UPDATE quiz_uscite_canali SET stato='da_verificare',errore=? WHERE giorno=? AND canale=?",(str(error)[:500],g,destination))
+                if ADMIN_ID:
+                    await app.bot.send_message(chat_id=ADMIN_ID,text=f'⚠️ Quiz {g}, canale {channel_key}: invio da verificare. Nessun reinvio automatico.')
 
 async def controlla_quiz(app):
     while True:
@@ -14679,7 +14742,8 @@ def main():
     app.add_handler(CommandHandler("aggiungicanale", aggiungi_canale_comando))
     app.add_handler(CallbackQueryHandler(bp_add_help, pattern=r"^bp_add_help$"))
     app.add_handler(CallbackQueryHandler(bp_home, pattern=r"^bp_home$"))
-    app.add_handler(CallbackQueryHandler(bp_select_channel, pattern=r"^bp_channel_-?\d+$"))
+    # Canale: handler prioritario, non intercettato dai ConversationHandler.
+    app.add_handler(CallbackQueryHandler(bp_select_channel_priority, pattern=r"^bp_channel_-?\d+$"), group=-2)
     app.add_handler(CallbackQueryHandler(
         storico_prezzi_non_disponibile, pattern="^offer_price_unavailable$"
     ))
