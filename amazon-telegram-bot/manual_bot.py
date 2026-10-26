@@ -24,7 +24,14 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
-from amazon_client import get_items, search_items
+# Accesso Creators API temporaneamente disabilitato: nessuna chiamata remota.
+# La ricerca automatica basata esclusivamente sull'API non puo' trovare nuovi candidati
+# finche' non viene implementata una fonte alternativa autorizzata.
+def get_items(*args, **kwargs):
+    return []
+
+def search_items(*args, **kwargs):
+    return []
 
 from telegram import (
     Update,
@@ -7766,26 +7773,18 @@ async def controlla_raccolte_casa_terminate(app):
         asins = [riga[2] for riga in gruppo if riga[2]]
         if not asins:
             continue
-        try:
-            items = await asyncio.to_thread(get_items, asins)
-        except Exception as errore:
-            print(f"Errore verifica raccolte CASA: {errore}")
-            continue
-        prodotti_api = {
-            getattr(item, "asin", None): estrai_prodotto_creators(item)
-            for item in items if getattr(item, "asin", None)
-        }
+        prodotti_api = await _prodotti_monitorati_da_pagina(asins)
         for (
             prodotto_id, raccolta_id, asin, nome, _,
             prezzo_memorizzato, vecchio_memorizzato, sconto_memorizzato,
         ) in gruppo:
             prodotto = prodotti_api.get(asin)
-            non_disponibile = not prodotto
-            _aggiorna_verifica_prodotto_raccolta(prodotto_id, non_disponibile)
+            if prodotto:
+                _aggiorna_verifica_prodotto_raccolta(prodotto_id, False)
             if not prodotto:
                 # Un risultato API mancante non dimostra che lo sconto sia finito.
                 continue
-            sconto_azzerato = bool(prodotto and int(prodotto.get("sconto") or 0) == 0)
+            sconto_azzerato = bool(prodotto and prodotto.get("sconto") is not None and int(prodotto["sconto"]) == 0)
             if sconto_azzerato:
                 raccolta_modificata = _segna_prodotto_raccolta_terminato(prodotto_id)
                 if raccolta_modificata:
@@ -7793,11 +7792,13 @@ async def controlla_raccolte_casa_terminate(app):
                     nomi_terminati.append(nome)
                 continue
             valori_cambiati = (
+                prodotto.get('sconto') is not None and (
                 int(prodotto.get("sconto") or 0) != int(sconto_memorizzato or 0)
                 or _normalizza_valore_monitorato(prodotto.get("prezzo"))
                 != _normalizza_valore_monitorato(prezzo_memorizzato)
                 or _normalizza_valore_monitorato(prodotto.get("vecchio_prezzo"))
                 != _normalizza_valore_monitorato(vecchio_memorizzato)
+                )
             )
             if valori_cambiati:
                 raccolta_modificata = _aggiorna_prodotto_raccolta(prodotto_id, prodotto)
@@ -8023,26 +8024,18 @@ async def controlla_raccolte_tech_terminate(app):
         asins = [riga[2] for riga in gruppo if riga[2]]
         if not asins:
             continue
-        try:
-            items = await asyncio.to_thread(get_items, asins)
-        except Exception as errore:
-            print(f"Errore verifica raccolte TECH: {errore}")
-            continue
-        prodotti_api = {
-            getattr(item, "asin", None): estrai_prodotto_creators(item)
-            for item in items if getattr(item, "asin", None)
-        }
+        prodotti_api = await _prodotti_monitorati_da_pagina(asins)
         for (
             prodotto_id, raccolta_id, asin, nome, _,
             prezzo_memorizzato, vecchio_memorizzato, sconto_memorizzato,
         ) in gruppo:
             prodotto = prodotti_api.get(asin)
-            non_disponibile = not prodotto
-            _aggiorna_verifica_prodotto_raccolta_tech(prodotto_id, non_disponibile)
+            if prodotto:
+                _aggiorna_verifica_prodotto_raccolta_tech(prodotto_id, False)
             if not prodotto:
                 # Un risultato API mancante non dimostra che lo sconto sia finito.
                 continue
-            sconto_azzerato = bool(prodotto and int(prodotto.get("sconto") or 0) == 0)
+            sconto_azzerato = bool(prodotto and prodotto.get("sconto") is not None and int(prodotto["sconto"]) == 0)
             if sconto_azzerato:
                 raccolta_modificata = _segna_prodotto_raccolta_tech_terminato(prodotto_id)
                 if raccolta_modificata:
@@ -8050,11 +8043,13 @@ async def controlla_raccolte_tech_terminate(app):
                     nomi_terminati.append(nome)
                 continue
             valori_cambiati = (
+                prodotto.get('sconto') is not None and (
                 int(prodotto.get("sconto") or 0) != int(sconto_memorizzato or 0)
                 or _normalizza_valore_monitorato(prodotto.get("prezzo"))
                 != _normalizza_valore_monitorato(prezzo_memorizzato)
                 or _normalizza_valore_monitorato(prodotto.get("vecchio_prezzo"))
                 != _normalizza_valore_monitorato(vecchio_memorizzato)
+                )
             )
             if valori_cambiati:
                 raccolta_modificata = _aggiorna_prodotto_raccolta_tech(prodotto_id, prodotto)
@@ -8075,6 +8070,29 @@ async def controlla_raccolte_tech_terminate(app):
         )
 
 
+
+async def _prodotti_monitorati_da_pagina(asins):
+    """Legge ASIN dal sito senza API; non equipara errore di lettura a prodotto terminato."""
+    risultati = {}
+    for asin in dict.fromkeys(a for a in asins if a):
+        dati = await leggi_offerta_con_sei_tentativi(f'https://www.amazon.it/dp/{asin}')
+        if not dati or dati.get('disponibile') is False:
+            print(f'Monitoraggio {asin}: dati non verificabili, post lasciato invariato')
+            continue
+        prezzo = numero_da_prezzo(str(dati.get('prezzo') or ''))
+        vecchio = numero_da_prezzo(str(dati.get('vecchio_prezzo') or ''))
+        if not prezzo or prezzo <= 0:
+            continue
+        # Zero solo quando c'e' evidenza esplicita; senza prezzo precedente
+        # lo sconto e' sconosciuto e non va dichiarato terminato.
+        if vecchio and vecchio > 0:
+            dati['sconto'] = max(0, round((1 - prezzo / vecchio) * 100))
+        else:
+            dati['sconto'] = None
+        dati['asin'] = asin
+        risultati[asin] = dati
+    return risultati
+
 async def controlla_offerte_terminate(app):
     while True:
         try:
@@ -8084,17 +8102,7 @@ async def controlla_offerte_terminate(app):
                 asins = [riga[1] for riga in gruppo if riga[1]]
                 if not asins:
                     continue
-                try:
-                    items = await asyncio.to_thread(get_items, asins)
-                except Exception as errore:
-                    print(f"Errore verifica disponibilità Creator API: {errore}")
-                    continue
-
-                prodotti = {}
-                for item in items:
-                    asin = getattr(item, "asin", None)
-                    if asin:
-                        prodotti[asin] = estrai_prodotto_creators(item)
+                prodotti = await _prodotti_monitorati_da_pagina(asins)
 
                 for (
                     invio_id,
@@ -8112,15 +8120,15 @@ async def controlla_offerte_terminate(app):
                     vecchio_memorizzato,
                 ) in gruppo:
                     prodotto = prodotti.get(asin)
-                    non_disponibile = not prodotto
-                    _aggiorna_verifica_offerta(invio_id, non_disponibile)
+                    if prodotto:
+                        _aggiorna_verifica_offerta(invio_id, False)
                     if not prodotto:
                         # Le API possono omettere temporaneamente un ASIN:
                         # senza uno sconto certo allo 0% il post resta invariato.
                         continue
 
                     sconto_attuale = int(prodotto.get("sconto") or 0)
-                    if sconto_attuale == 0:
+                    if prodotto.get('sconto') is not None and sconto_attuale == 0:
                         try:
                             await _modifica_post_terminato(
                                 app.bot,
@@ -8142,11 +8150,13 @@ async def controlla_offerte_terminate(app):
                         continue
 
                     valori_cambiati = (
+                        prodotto.get('sconto') is not None and (
                         sconto_attuale != int(sconto_iniziale or 0)
                         or _normalizza_valore_monitorato(prodotto.get("prezzo"))
                         != _normalizza_valore_monitorato(prezzo_memorizzato)
                         or _normalizza_valore_monitorato(prodotto.get("vecchio_prezzo"))
                         != _normalizza_valore_monitorato(vecchio_memorizzato)
+                        )
                     )
                     if valori_cambiati:
                         try:
@@ -8540,6 +8550,13 @@ def leggi_prodotto_amazon(url):
         )
 
         if risposta.status_code != 200:
+            print(f"Amazon pagina HTTP {risposta.status_code}: {risposta.url}")
+            return None
+        if not risposta.content:
+            print(f"Amazon pagina vuota: {risposta.url}")
+            return None
+        if any(m in risposta.text.lower() for m in ('captcha', 'enter the characters you see below', 'robot check')):
+            print(f"Amazon pagina di verifica anti-bot: {risposta.url}")
             return None
 
         soup = BeautifulSoup(
@@ -8641,6 +8658,7 @@ def leggi_prodotto_amazon(url):
                 immagine = og.get('content')
 
         if not titolo and not prezzo:
+            print(f"Amazon pagina HTTP 200 ma senza titolo e prezzo: {risposta.url}")
             return None
 
         categorie_pagina = [el.get_text(" ", strip=True) for el in soup.select(
@@ -8661,14 +8679,16 @@ def leggi_prodotto_amazon(url):
             "disponibile": not bool(re.search(r'non (?:è )?disponibile|attualmente non disponibile|temporaneamente esaurito', (soup.select_one('#availability').get_text(' ',strip=True) if soup.select_one('#availability') else ''),flags=re.IGNORECASE)),
         }
 
-    except requests.RequestException:
+    except requests.Timeout as errore:
+        print(f"Amazon timeout HTTP (10s): {type(errore).__name__}: {errore}")
+        return None
+    except requests.RequestException as errore:
+        print(f"Amazon errore HTTP: {type(errore).__name__}: {errore}")
         return None
 
     except Exception as errore:
 
-        print(
-            f"Errore lettura Amazon: {errore}"
-        )
+        print(f"Errore lettura Amazon: {type(errore).__name__}: {errore}")
 
         return None
 
@@ -8731,17 +8751,9 @@ def leggi_prodotto_creators_da_link(link):
     asin = risolvi_asin_da_link(link)
     if not asin:
         return None
-    items = get_items([asin])
-    if not items:
-        return None
-    prodotto = estrai_prodotto_creators(items[0])
-    if prodotto:
-        pagina = leggi_prodotto_amazon(link)
-        if pagina:
-            prodotto['coupon'] = pagina.get('coupon')
-            prodotto['disponibile'] = pagina.get('disponibile', prodotto.get('disponibile'))
-            prodotto['categoria'] = prodotto.get('categoria') or pagina.get('categoria')
-    return prodotto
+    # Compatibilita' con chiamanti esistenti: lettura esclusivamente pagina.
+    return leggi_prodotto_amazon(f'https://www.amazon.it/dp/{asin}')
+
 
 
 # =========================================================
