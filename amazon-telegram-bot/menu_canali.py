@@ -93,11 +93,13 @@ async def gestisci(s, update, context, data_override=None):
                                   [('📋 Log e diagnostica', 'diag_logs_all_0')],
                                   [('⬅️ Scelta canale', 'v2_home')]]))
         return s.ConversationHandler.END
-    if data in ('v2_channels', 'v2_status'):
+    if data == 'v2_status' or re.fullmatch(r'v2_status_[0-9]+', data):
+        import stato_bot
+        await stato_bot.apri(s, update, update.effective_user.id, int(data.rsplit('_',1)[1]) if data != 'v2_status' else 0)
+        return s.ConversationHandler.END
+    if data == 'v2_channels':
         rows = [c for c in s.CANALI.values() if c.accessibile(update.effective_user.id)]
         text = '📢 CANALI CONFIGURATI\n\n' + '\n'.join(c.nome + ' → ' + c.chat_id for c in rows)
-        if data == 'v2_status':
-            text = '📊 Bot in esecuzione\nFuso orario: Europe/Rome\n\n' + text
         text += '\n\nLa configurazione non certifica i permessi Telegram: usa Verifica collegamento dentro il canale.'
         await mostra(s, update, text, tastiera(s, [[('⬅️ Impostazioni generali', 'v2_settings')]]))
         return s.ConversationHandler.END

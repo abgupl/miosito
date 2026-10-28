@@ -60,6 +60,11 @@ with tempfile.TemporaryDirectory() as tmp:
              patch.object(type(app.bot),'edit_message_text',new=AsyncMock(return_value=sent)) as edit:
             await click('v2_home')
             await click('v2_settings')
+            await click('v2_status')
+            assert 'DISABILITATA' in send.call_args.kwargs['text']
+            assert 'Versione:' in send.call_args.kwargs['text']
+            await click('v2_status_0')
+            assert 'Monitoraggio post globale: DISATTIVATO' in send.call_args.kwargs['text']
             await click('v2_monitor')
             assert 'DISATTIVATO' in send.call_args.kwargs['text']
             await click('v2_monitor_on')
