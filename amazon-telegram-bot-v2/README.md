@@ -4,6 +4,14 @@ Il punto di ingresso del progetto è `manual_bot.py`. Gestisce pubblicazione
 manuale, post programmati, automazioni, raccolte, cronologia, immagini e
 integrazione TikTok. Le funzioni sono contenute nello stesso file.
 
+## Riorganizzazione V2
+
+Le modalità operative sono estratte in `invio_singolo.py`,
+`invio_multiplo.py` e `repost.py`; il punto di avvio resta
+`manual_bot.py`. I callback delegano ai moduli mantenendo il comportamento
+preesistente. Menu iniziale per canale e isolamento delle impostazioni sono
+ancora da implementare. Dettagli e verifiche in [SVILUPPO.md](SVILUPPO.md).
+
 ## Struttura
 
 - `manual_bot.py`: bot Telegram e API HTTP delle offerte.

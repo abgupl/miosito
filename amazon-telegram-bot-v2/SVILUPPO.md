@@ -2,22 +2,32 @@
 
 ## Stato attuale
 
-Questa cartella è una copia indipendente dei file del progetto originale
-`../amazon-telegram-bot/`, creata come base per la riorganizzazione.
-Il codice originale non è stato modificato. Il README copiato descrive
-il funzionamento ereditato; la separazione in moduli non è ancora implementata.
+Questa cartella contiene la V2, separata dal progetto originale
+`../amazon-telegram-bot/`, che rimane invariato.
 
-## Struttura prevista
+Prima fase completata: 34 funzioni operative sono state estratte in tre moduli:
+13 in `invio_singolo.py`, 15 in `invio_multiplo.py`, 6 in `repost.py`.
+`manual_bot.py` conserva i callback pubblici con le firme originali e delega ai
+moduli. I moduli ricevono esplicitamente il coordinatore come parametro
+`servizi`: nessun import circolare e nessun avvio di Telegram durante l'import.
+
+Database, pianificazione condivisa, pubblicazione e altre funzioni storiche
+restano nel coordinatore in questa fase. Il menu è ancora quello originale.
+La selezione iniziale del canale e l'isolamento delle impostazioni devono
+ancora essere implementati. Non considerare questa fase una migrazione
+multicanale completa.
+
+## Struttura attuale e prevista
 
 | File | Responsabilità |
 |---|---|
-| manual_bot.py | Avvio, autorizzazioni, selezione canale e menu |
+| manual_bot.py | Coordinatore e callback compatibili; selezione iniziale canale da implementare |
 | invio_singolo.py | Preparazione e invio del singolo post |
 | invio_multiplo.py | Preparazione e gestione delle sequenze |
 | repost.py | Candidati dalla cronologia del solo canale selezionato |
-| canali.py | Canali e accessi autorizzati |
-| database.py | Persistenza e migrazioni, isolamento per canale |
-| pubblicazione.py | Invio condiviso e registrazione dell'esito |
+| canali.py (previsto) | Canali e accessi autorizzati |
+| database.py (previsto) | Persistenza e migrazioni, isolamento per canale |
+| pubblicazione.py (previsto) | Invio condiviso e registrazione dell'esito |
 
 Non creare moduli vuoti: estrarre le funzioni effettive e aggiornare i
 collegamenti durante la riorganizzazione.
@@ -46,3 +56,21 @@ riutilizzare il percorso del database di produzione.
 Il database non è presente nel repository: la copia dei file non trasferisce
 cronologia e impostazioni del servizio. La migrazione dei dati e il passaggio
 in produzione saranno gestiti separatamente.
+
+## Verifica della prima fase
+
+Dalla cartella V2:
+
+```bash
+python -m compileall -q manual_bot.py invio_singolo.py invio_multiplo.py repost.py
+python -m unittest discover -s tests -v
+```
+
+I 10 test usano un database temporaneo e simulano Telegram/Amazon:
+non richiedono token e non effettuano chiamate di rete.
+Coprono isolamento della cronologia e delle code repost, esclusioni temporali,
+priorità dei metadati, verifica delle offerte attuali, autorizzazioni,
+deleghe dei callback e conservazione della destinazione del lotto.
+
+I comportamenti ereditati restano invariati, compreso l'avvio automatico del
+lotto dopo due minuti dal riepilogo. Nessun test live o deploy è stato eseguito.

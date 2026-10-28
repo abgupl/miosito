@@ -8947,290 +8947,62 @@ def leggi_prodotto_creators_da_link(link):
 
 
 
+# Adattatori espliciti: i moduli non importano il coordinatore.
+import invio_singolo
+import invio_multiplo
+import repost
+_servizi_invii = sys.modules[__name__]
+
+
 # =========================================================
 # NUOVA OFFERTA
 # =========================================================
 
-async def nuova_da_comando(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-
-    context.user_data.clear()
-
-    await update.message.reply_text(
-        "🔗 Inviami il link Amazon del prodotto:"
-    )
-
-    return LINK
+async def nuova_da_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.nuova_da_comando(_servizi_invii, update, context)
 
 
-async def nuova_da_pulsante(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-
-    query = update.callback_query
-
-    await query.answer()
-
-    context.user_data.clear()
-
-    await query.message.reply_text(
-        "🔗 Inviami il link Amazon del prodotto:"
-    )
-
-    return LINK
+async def nuova_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.nuova_da_pulsante(_servizi_invii, update, context)
 
 
 # =========================================================
 # RICEZIONE LINK
 # =========================================================
 
-async def ricevi_link(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-
-    link = update.message.text.strip()
-
-    if not link_amazon_valido(link):
-
-        await update.message.reply_text(
-            "❌ Non sembra un link Amazon.\n\n"
-            "Inviami un link Amazon valido:"
-        )
-
-        return LINK
-
-    context.user_data["link"] = link
-
-    messaggio_attesa = (
-        await update.message.reply_text(
-            "🔎 Sto provando a leggere automaticamente "
-            "i dati del prodotto..."
-        )
-    )
-
-    async def mostra_tentativo(numero):
-        if numero < 3:
-            try:
-                await messaggio_attesa.edit_text(f'🔎 Lettura offerta Amazon: tentativo {numero}/3 incompleto. Riprovo automaticamente…')
-            except Exception:
-                pass
-
-    dati = await leggi_offerta_con_sei_tentativi(link, callback=mostra_tentativo)
-    if not dati:
-        await messaggio_attesa.edit_text('⏭️ PRODOTTO SALTATO\n\nLettura non completata: prezzo, disponibilità o condizione non verificabili. Controlla i log Railway e riprova con un link Amazon diretto.')
-        context.user_data.clear()
-        return LINK
-    if dati.get('immagine'):
-        context.user_data['foto_url_automatica'] = dati['immagine']
-    if dati.get('asin'):
-        context.user_data['asin'] = dati['asin']
-    tipo = tipo_o_fallback(link, dati)
-    context.user_data['tipologia_amazon'] = tipo
-    context.user_data['condizione'] = dati.get('condizione')
-    context.user_data["categoria"] = dati.get("categoria")
-    context.user_data["coupon"] = dati.get("coupon")
-    nome = dati.get("nome")
-    prezzo = dati.get("prezzo")
-    vecchio = dati.get("vecchio_prezzo")
-
-    context.user_data["nome"] = " ".join(str(nome).split()).strip()
-    context.user_data["prezzo"] = pulisci_prezzo(prezzo)
-
-    if vecchio:
-        context.user_data["vecchio_prezzo"] = pulisci_prezzo(vecchio)
-    else:
-        context.user_data["vecchio_prezzo"] = "NO"
-
-    vecchio_testo = context.user_data["vecchio_prezzo"]
-
-    tastiera = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "✅ USA QUESTI DATI",
-                    callback_data="dati_ok",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "✏️ INSERISCI MANUALMENTE",
-                    callback_data="dati_manual",
-                )
-            ],
-        ]
-    )
-
-    await messaggio_attesa.edit_text(
-        "✅ DATI TROVATI\n\n"
-        f"📦 {context.user_data['nome']}\n\n"
-        f"💰 Prezzo: {context.user_data['prezzo']} €\n"
-        f"🏷️ Prima: {vecchio_testo}"
-        f"{' €' if vecchio_testo != 'NO' else ''}\n\n"
-        "Controlla che prezzo e prodotto siano corretti.",
-        reply_markup=tastiera,
-    )
-
-    return DATI_AUTOMATICI
+async def ricevi_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.ricevi_link(_servizi_invii, update, context)
 
 
 # =========================================================
 # CONFERMA DATI AUTOMATICI
 # =========================================================
 
-async def conferma_dati_automatici(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-
-    query = update.callback_query
-
-    await query.answer()
-
-    if query.data == "dati_riprova":
-        link = context.user_data.get("link")
-        if not link:
-            await query.edit_message_text(
-                "❌ Non trovo più il link del prodotto. Invia nuovamente l'offerta."
-            )
-            return ConversationHandler.END
-
-        await query.edit_message_text(
-            "🔄 Riprovo la ricerca del prodotto: eseguirò fino a 3 nuovi tentativi..."
-        )
-
-        # Riutilizza la stessa procedura dell'invio manuale senza chiedere di nuovo il link.
-        class _MessaggioRiprova:
-            def __init__(self, message, testo):
-                self._message = message
-                self.text = testo
-
-            async def reply_text(self, *args, **kwargs):
-                return await self._message.reply_text(*args, **kwargs)
-
-        class _UpdateRiprova:
-            def __init__(self, update_originale, message):
-                self.effective_user = update_originale.effective_user
-                self.effective_chat = update_originale.effective_chat
-                self.message = _MessaggioRiprova(message, link)
-
-        return await ricevi_link(
-            _UpdateRiprova(update, query.message),
-            context,
-        )
-
-    if query.data == "dati_ok":
-
-        await query.edit_message_text(
-            "✅ Dati confermati."
-        )
-
-        return await prova_foto_automatica_o_chiedi(update, context)
-
-    if query.data == "dati_manual":
-
-        link = context.user_data.get("link")
-        foto_url_automatica = context.user_data.get("foto_url_automatica")
-        asin = context.user_data.get("asin")
-
-        context.user_data.clear()
-
-        context.user_data["link"] = link
-        if foto_url_automatica:
-            context.user_data["foto_url_automatica"] = foto_url_automatica
-        if asin:
-            context.user_data["asin"] = asin
-
-        await query.edit_message_text(
-            "✏️ Inserimento manuale selezionato."
-        )
-
-        await query.message.reply_text(
-            "📦 Scrivi il nome del prodotto:"
-        )
-
-        return NOME
+async def conferma_dati_automatici(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.conferma_dati_automatici(_servizi_invii, update, context)
 
 
 # =========================================================
 # INSERIMENTO MANUALE
 # =========================================================
 
-async def ricevi_nome(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-
-    context.user_data["nome"] = " ".join(
-        update.message.text.strip().split()
-    )
-
-    await update.message.reply_text(
-        "💰 Qual è il prezzo attuale?"
-    )
-
-    return PREZZO
+async def ricevi_nome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.ricevi_nome(_servizi_invii, update, context)
 
 
-async def ricevi_prezzo(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-
-    context.user_data["prezzo"] = pulisci_prezzo(
-        update.message.text.strip()
-    )
-
-    await update.message.reply_text(
-        "🏷️ Qual era il prezzo precedente?\n\n"
-        "Oppure scrivi: NO"
-    )
-
-    return VECCHIO_PREZZO
+async def ricevi_prezzo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.ricevi_prezzo(_servizi_invii, update, context)
 
 
-async def ricevi_vecchio_prezzo(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-
-    valore = update.message.text.strip()
-
-    if valore.upper() == "NO":
-
-        context.user_data["vecchio_prezzo"] = "NO"
-
-    else:
-
-        context.user_data["vecchio_prezzo"] = pulisci_prezzo(
-            valore
-        )
-
-    return await prova_foto_automatica_o_chiedi(update, context)
+async def ricevi_vecchio_prezzo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.ricevi_vecchio_prezzo(_servizi_invii, update, context)
 
 
 # =========================================================
@@ -9350,278 +9122,93 @@ def prodotto_inviato_ultime_24h(asin, destinazione):
 
 
 def filtra_duplicati_recenti_multiplo(draft):
-    validi = []
-    for prodotto in draft['pronti']:
-        asin = prodotto.get('asin') or estrai_asin_da_link(prodotto['link'])
-        if prodotto_inviato_ultime_24h(asin, _chat_id_per_canale(draft['canale'])):
-            draft['scartati'].append(f"{prodotto.get('link_originale') or prodotto['link']} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
-        else:
-            validi.append(prodotto)
-    if draft.get('tipo') == 'repost':
-        with sqlite3.connect(DB_PATH, timeout=30) as db:
-            links_in_coda = db.execute("SELECT link FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),_chat_id_per_canale(draft['canale']))).fetchall()
-        asin_in_coda = {estrai_asin_da_link(link) for (link,) in links_in_coda}
-        restanti = []
-        for prodotto in validi:
-            if (prodotto.get('asin') or estrai_asin_da_link(prodotto['link'])) in asin_in_coda:
-                draft['scartati'].append(f"{prodotto.get('link_originale') or prodotto['link']} — prodotto già in Programmati")
-            else:
-                restanti.append(prodotto)
-        validi = restanti
-    draft['pronti'] = validi
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return invio_multiplo.filtra_duplicati_recenti_multiplo(_servizi_invii, draft)
 
 
 def intervallo_multiplo(utente, valore=None):
-    with sqlite3.connect(DB_PATH) as db:
-        db.execute("CREATE TABLE IF NOT EXISTS impostazioni_multiplo (utente TEXT PRIMARY KEY, minuti INTEGER NOT NULL)")
-        if valore is not None:
-            db.execute("INSERT OR REPLACE INTO impostazioni_multiplo VALUES (?, ?)", (str(utente), valore))
-        row = db.execute("SELECT minuti FROM impostazioni_multiplo WHERE utente=?", (str(utente),)).fetchone()
-    return row[0] if row else 30
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return invio_multiplo.intervallo_multiplo(_servizi_invii, utente, valore)
 
 
 def tastiera_annulla_elaborazione():
-    return InlineKeyboardMarkup([[InlineKeyboardButton('🛑 ANNULLA REPOST / LETTURA', callback_data='multi_annulla')]])
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return invio_multiplo.tastiera_annulla_elaborazione(_servizi_invii)
 
 
 def tastiera_multiplo(draft):
-    if draft.get('tipo') == 'singolo_cronologia':
-        return tastiera_confronto_cronologia(bool(draft.get('pronti')) and not draft.get('elaborazione'))
-    return InlineKeyboardMarkup([row for row in [
-        [InlineKeyboardButton("✅ Tech" if draft["canale"] == "tech" else "Tech", callback_data="multi_canale_tech"),
-         InlineKeyboardButton("✅ Casa" if draft["canale"] == "casa" else "Casa", callback_data="multi_canale_casa")],
-        [InlineKeyboardButton(f"⏱ Intervallo: {draft['minuti']} min", callback_data="multi_timing")],
-        [InlineKeyboardButton("🚀 CONFERMA E AVVIA", callback_data="multi_avvia")] if draft.get("pronti") and not draft.get("elaborazione") else [],
-        [InlineKeyboardButton("❌ ANNULLA", callback_data="multi_annulla")],
-    ] if row])
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return invio_multiplo.tastiera_multiplo(_servizi_invii, draft)
 
 
 def link_affiliato_multiplo(link, asin):
-    # Non ereditare mai il tag di un altro inserzionista.
-    tag = (os.environ.get("AMAZON_PARTNER_TAG") or os.environ.get("AMAZON_ASSOCIATE_TAG") or "").strip()
-    if not tag:
-        raise ValueError("Imposta AMAZON_PARTNER_TAG su Railway con il tuo tag affiliato Amazon")
-    if not asin:
-        raise ValueError("ASIN del prodotto non trovato")
-    return "https://www.amazon.it/dp/" + asin + "?" + urlencode({"tag": tag})
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return invio_multiplo.link_affiliato_multiplo(_servizi_invii, link, asin)
 
 
-def piano_multiplo(prodotti, minuti, destinazione, salva=False, origine="multiplo"):
-    """Ricalcola e prenota l'intero lotto in un'unica transazione SQLite."""
-    cfg = config_fascia_manuale()
-    with sqlite3.connect(DB_PATH, timeout=30) as db:
-        db.execute("BEGIN IMMEDIATE")
-        righe = db.execute("SELECT invio_previsto FROM programmazioni WHERE stato='attesa' AND (telegram_chat_id=? OR (telegram_chat_id IS NULL AND ?=?))", (str(destinazione), str(destinazione), str(CHANNEL_ID))).fetchall()
-        occupati = [datetime.fromisoformat(r[0]).astimezone(timezone.utc) for r in righe]
-        passo = timedelta(minutes=minuti)
-        quando = datetime.now(timezone.utc).replace(microsecond=0)
-        piano = []
-        for prodotto in prodotti:
-            quando = slot_manuale_libero(quando, occupati, minuti, dict(cfg, _canale=str(destinazione)))
-            pid = None
-            if salva:
-                corpo = crea_messaggio_programmato(prodotto['nome'], prodotto['prezzo'], prodotto['vecchio_prezzo'], 'pulito', prodotto.get('categoria'), prodotto.get('coupon'))
-                cur = db.execute("""INSERT INTO programmazioni
-                    (nome,messaggio,link,prezzo,vecchio_prezzo,template,foto_file_id,telegram_chat_id,invio_previsto,stato,data_creazione,origine)
-                    VALUES (?,?,?,?,?,'pulito',?,?,?,'attesa',?,'multiplo')""",
-                    (prodotto['nome'],corpo,prodotto['link'],prodotto['prezzo'],prodotto['vecchio_prezzo'],prodotto.get('foto_file_id'),str(destinazione),quando.isoformat(timespec='seconds'),datetime.now(timezone.utc).isoformat(timespec='seconds')))
-                pid = cur.lastrowid
-                db.execute("UPDATE programmazioni SET intervallo_minuti=?,origine=? WHERE id=?", (minuti,'repost' if origine == 'repost' else 'multiplo',pid))
-            piano.append((pid, quando))
-            occupati.append(quando)
-            quando += passo
-    return piano
+def piano_multiplo(prodotti, minuti, destinazione, salva=False, origine='multiplo'):
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return invio_multiplo.piano_multiplo(_servizi_invii, prodotti, minuti, destinazione, salva, origine)
 
 
 def arma_avvio_multiplo(messaggio, context, draft):
-    # Un token invalida i timer precedenti; conferma e timer usano lo stesso lock.
-    token = object()
-    draft['timer_token'] = token
-    context.application.create_task(avvio_multiplo_differito(messaggio, context, draft, token))
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return invio_multiplo.arma_avvio_multiplo(_servizi_invii, messaggio, context, draft)
 
 
 async def avvio_multiplo_differito(messaggio, context, draft, token):
-    await asyncio.sleep(120)
-    if (context.user_data.get('multiplo') is draft
-            and draft.get('timer_token') is token
-            and not draft.get('elaborazione')):
-        await avvia_lotto_multiplo(messaggio, context, draft, automatico=True)
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return await invio_multiplo.avvio_multiplo_differito(_servizi_invii, messaggio, context, draft, token)
 
 
 async def avvia_lotto_multiplo(messaggio, context, draft, automatico=False):
-    if draft.get('tipo') == 'singolo_cronologia':
-        return False
-    async with MULTIPLO_LOCK:
-        if (context.user_data.get('multiplo') is not draft
-                or draft.get('conferma_in_corso') or not draft.get('pronti')):
-            return False
-        draft['conferma_in_corso'] = True
-        draft.pop('timer_token', None)
-        try:
-            filtra_duplicati_recenti_multiplo(draft)
-            piano = piano_multiplo(draft['pronti'], draft['minuti'], _chat_id_per_canale(draft['canale']), salva=True, origine=draft.get('tipo','multiplo'))
-        except Exception:
-            draft.pop('conferma_in_corso', None)
-            await messaggio.reply_text("⚠️ Salvataggio non riuscito. Il lotto non è stato aggiunto: premi CONFERMA E AVVIA per riprovare.", reply_markup=tastiera_multiplo(draft))
-            return False
-        context.user_data.pop('multiplo', None)
-    righe = [f"✅ {'Avvio automatico dopo 2 minuti' if automatico else 'Avvio confermato'}",
-             f"📅 {len(piano)} post aggiunti a Programmati — {draft['canale'].upper()}.",
-             f"Primo invio: {piano[0][1].astimezone(ROMA_TZ):%d/%m %H:%M}" if piano else "Nessun invio: tutti i prodotti sono stati scartati.",
-             f"Intervallo: {draft['minuti']} minuti. Orari già occupati rispettati.",
-             f"Richiesti: {draft['richiesti']} · Validati: {len(piano)}" if draft.get("richiesti") else "",
-             "Il primo post partirà al primo orario libero, rispettando le Pause Caffè.",
-             f"Duplicati ignorati: {draft['duplicati']}"]
-    if draft['scartati']:
-        righe += ["", "❌ LINK SCARTATI / ERRORI:"] + list(draft['scartati'])
-    else:
-        righe.append("✅ Nessun link scartato per errori o dati mancanti.")
-    testo = "\n".join(righe)
-    # Il lotto è già salvato: un errore di notifica non deve ripetere gli INSERT.
-    try:
-        for pos in range(0, len(testo), 3500):
-            await messaggio.reply_text(testo[pos:pos+3500])
-    except Exception as exc:
-        print(f"Invio multiplo salvato, notifica non consegnata: {type(exc).__name__}")
-    return True
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return await invio_multiplo.avvia_lotto_multiplo(_servizi_invii, messaggio, context, draft, automatico)
 
 
 async def riepilogo_multiplo(messaggio, draft, context=None):
-    if draft.get('tipo') == 'singolo_cronologia':
-        return await mostra_confronto_cronologia(messaggio,context,draft)
-    filtra_duplicati_recenti_multiplo(draft)
-    piano = piano_multiplo(draft['pronti'], draft['minuti'], _chat_id_per_canale(draft['canale']))
-    righe = [f"{'🔁 REPOST' if draft.get('tipo') == 'repost' else '📦 INVIO MULTIPLO'} — {draft['canale'].upper()}", f"⏱ Intervallo: {draft['minuti']} minuti", f"✅ Pronti: {len(piano)} · Scartati: {len(draft['scartati'])} · Duplicati: {draft['duplicati']}", ""]
-    if draft.get("richiesti"):
-        righe.append(f"Richiesti: {draft['richiesti']} · Preparati: {len(piano)} · Candidati disponibili per il controllo: {draft.get('candidati',0)}")
-    if piano:
-        giorni_piano = {quando.astimezone(ROMA_TZ).date() for _, quando in piano}
-        eventi = descrizione_pause_programmate(_chat_id_per_canale(draft['canale']), giorni_piano)
-        if eventi:
-            righe.append('☕ Pause Caffè considerate nella programmazione:')
-            righe.extend(testo.replace('\n', ' · ') for _, testo in eventi)
-            righe.append('')
-    for prodotto, (_, quando) in zip(draft['pronti'], piano):
-        righe.append(f"{quando.astimezone(ROMA_TZ):%d/%m %H:%M} · {prodotto['nome'][:75]} · {prodotto['prezzo']} €")
-    for motivo in draft['scartati']:
-        righe.append("❌ " + motivo)
-    if draft["pronti"]:
-        righe.append("\n⏳ Avvio automatico tra 2 minuti. Premi CONFERMA E AVVIA per partire subito oppure ANNULLA per fermare il lotto.")
-    righe.append("\nOrari italiani. Gli orari saranno ricontrollati alla conferma. Prezzi rilevati durante la preparazione.")
-    # Liste ampie vengono suddivise per rispettare il limite Telegram.
-    testo = "\n".join(righe)
-    for pos in range(0, len(testo), 3500):
-        await messaggio.reply_text(testo[pos:pos+3500], reply_markup=tastiera_multiplo(draft) if pos+3500 >= len(testo) else None)
-    if context is not None and draft["pronti"]:
-        arma_avvio_multiplo(messaggio, context, draft)
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return await invio_multiplo.riepilogo_multiplo(_servizi_invii, messaggio, draft, context)
 
 
 def asin_in_programmati(destinazione):
-    with sqlite3.connect(DB_PATH, timeout=30) as db:
-        links = db.execute("SELECT link FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),str(destinazione))).fetchall()
-    # La funzione viene chiamata in un thread durante la ricerca dei candidati.
-    return {asin for (link,) in links if (asin := risolvi_asin_da_link(link))}
+    """Callback compatibile; implementazione in repost.py."""
+    return repost.asin_in_programmati(_servizi_invii, destinazione)
 
 
 def candidati_repost(canale, quantita):
-    """Storico completo per il repost; metadata storici NON validano offerte attuali."""
-    destinazione = _chat_id_per_canale(canale)
-    adesso = datetime.now(timezone.utc)
-    limite = adesso - timedelta(days=7)
-    with sqlite3.connect(DB_PATH, timeout=30) as db:
-        righe = db.execute("""SELECT asin,link,pubblicata_il,nome,foto_file_id,categoria
-            FROM recap_offerte WHERE CAST(telegram_chat_id AS TEXT)=?
-            AND COALESCE(origine,'manuale')<>'raccolta'
-            ORDER BY pubblicata_il DESC,id DESC""", (destinazione,)).fetchall()
-    in_coda = asin_in_programmati(destinazione)
-    visti = set()
-    candidati = []
-    for asin, link, data, nome, foto_id, categoria in righe:
-        quando = _data_sqlite(data)
-        if not quando or not limite <= quando.astimezone(timezone.utc) <= adesso:
-            continue
-        asin = asin or risolvi_asin_da_link(link)
-        if not asin or asin in visti:
-            continue
-        visti.add(asin)
-        if asin in in_coda or prodotto_inviato_ultime_24h(asin, destinazione):
-            continue
-        candidati.append({'link': 'https://www.amazon.it/dp/' + asin,
-                          'nome': nome, 'foto_file_id': foto_id, 'categoria': categoria})
-    # Preferire prodotti con nome e foto salvati; mescolare solo a parita' di completezza.
-    random.shuffle(candidati)
-    candidati.sort(key=lambda r: bool(r.get('nome')) + bool(r.get('foto_file_id')), reverse=True)
-    return candidati[:min(300,max(30,quantita*6))]
+    """Callback compatibile; implementazione in repost.py."""
+    return repost.candidati_repost(_servizi_invii, canale, quantita)
 
 
 async def leggi_offerta_repost(link, storico, callback=None):
-    """Storico per nome/foto; prezzi, sconto, coupon e disponibilita' da lettura corrente."""
-    dati = await leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callback=callback)
-    if not dati:
-        return None, 'prezzo, disponibilita’ o condizione non verificabili (vedi log Railway)'
-    if not offerta_attuale_rilevata(dati):
-        return None, 'nessuno sconto o coupon attuale rilevato'
-    dati['nome'] = dati.get('nome') or storico.get('nome')
-    dati['_foto_storica_repost'] = storico.get('foto_file_id')
-    dati['categoria'] = dati.get('categoria') or storico.get('categoria')
-    if not dati.get('nome') or not (dati.get('immagine') or storico.get('foto_file_id')):
-        return None, 'nome o foto mancanti anche nella cronologia'
-    return dati, None
+    """Callback compatibile; implementazione in repost.py."""
+    return await repost.leggi_offerta_repost(_servizi_invii, link, storico, callback)
 
 
 async def repost_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-    await update.callback_query.answer()
-    context.user_data.clear()
-    draft = {'tipo':'repost','canale':'tech','minuti':intervallo_multiplo(update.effective_user.id),'pronti':[],'scartati':[],'duplicati':0,'elaborazione':False,'repost_attesa_quantita':True}
-    context.user_data['multiplo'] = draft
-    await update.effective_message.reply_text(
-        "🔁 REPOST — ULTIMI 7 GIORNI\n\nScegli canale e intervallo, poi scrivi quanti prodotti vuoi ripubblicare (1–50).\nEscludo prodotti già inviati nelle ultime 24 ore e già programmati nello stesso canale.\nControllo dati, prezzi, disponibilità e coupon. Dopo il riepilogo: conferma subito oppure avvio automatico tra 2 minuti. Gli invii rispettano la fascia manuale/multiplo.",
-        reply_markup=tastiera_multiplo(draft))
-    return RAPIDO
+    """Callback compatibile; implementazione in repost.py."""
+    return await repost.repost_da_pulsante(_servizi_invii, update, context)
 
 
 async def rapido_da_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-    if update.callback_query:
-        await update.callback_query.answer()
-    context.user_data.clear()
-    draft = {'canale': 'tech', 'minuti': intervallo_multiplo(update.effective_user.id), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
-    context.user_data['multiplo'] = draft
-    await update.effective_message.reply_text("📦 INVIO MULTIPLO\n\nScegli canale e intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.", reply_markup=tastiera_multiplo(draft))
-    return RAPIDO
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return await invio_multiplo.rapido_da_comando(_servizi_invii, update, context)
 
 
 async def rapido_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await rapido_da_comando(update, context)
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return await invio_multiplo.rapido_da_pulsante(_servizi_invii, update, context)
 
 
 async def prepara_repost(messaggio, context, draft):
-    try:
-        links = await asyncio.to_thread(candidati_repost,draft['canale'],draft['richiesti'])
-        if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
-            return
-        draft['candidati'] = len(links)
-        if not links:
-            draft['elaborazione'] = False
-            draft['repost_attesa_quantita'] = True
-            await messaggio.reply_text('ℹ️ Nessun prodotto disponibile per Repost: servono pubblicazioni negli ultimi 7 giorni, più vecchie di 24 ore e non già in coda. Puoi cambiare canale o annullare.',reply_markup=tastiera_multiplo(draft))
-            return
-        await prepara_lotto_multiplo(messaggio,context,draft,links)
-    except Exception as exc:
-        draft['elaborazione'] = False
-        draft['repost_attesa_quantita'] = True
-        await messaggio.reply_text(f'⚠️ Ricerca Repost interrotta: {type(exc).__name__}. Riprova indicando la quantità.')
+    """Callback compatibile; implementazione in repost.py."""
+    return await repost.prepara_repost(_servizi_invii, messaggio, context, draft)
 
 
 def offerta_attuale_rilevata(dati):
-    """Non confronta mai il prezzo con quello della pubblicazione storica."""
-    attuale = numero_da_prezzo(dati.get('prezzo'))
-    precedente = numero_da_prezzo(dati.get('vecchio_prezzo'))
-    return bool((attuale is not None and attuale > 0 and precedente is not None and precedente > attuale)
-                or frase_coupon(dati.get('coupon')))
+    """Callback compatibile; implementazione in repost.py."""
+    return repost.offerta_attuale_rilevata(_servizi_invii, dati)
 
 
 def tastiera_confronto_cronologia(pronto=False):
@@ -9731,218 +9318,18 @@ async def decidi_ricontrollo_cronologia(update: Update, context: ContextTypes.DE
 
 
 async def prepara_lotto_multiplo(messaggio, context, draft, links, seconda_passata=False):
-    visti = set()
-    da_riprovare = []
-    try:
-        for indice, candidato in enumerate(links, 1):
-            storico = candidato if isinstance(candidato, dict) else {}
-            link = storico.get('link') if storico else candidato
-            if draft.get('richiesti') and len(draft['pronti']) >= draft['richiesti']:
-                break
-
-            if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
-                return
-            # Nel Repost il numero richiesto è l'obiettivo; la lista più ampia
-            # contiene solo possibili sostituti per gli articoli scartati.
-            if draft.get('tipo') == 'repost':
-                stato = (f"🔁 REPOST: {len(draft['pronti'])}/{draft['richiesti']} post pronti\n"
-                         f"🔎 Candidato esaminato: {indice} (gli altri sono riserve)")
-            else:
-                stato = f"🔎 Prodotto {indice}/{len(links)} — preparazione in corso…"
-            try:
-                await messaggio.edit_text(stato, reply_markup=tastiera_annulla_elaborazione())
-            except Exception:
-                pass
-            asin_iniziale = await asyncio.to_thread(risolvi_asin_da_link, link)
-            if draft.get('tipo') != 'singolo_cronologia' and prodotto_inviato_ultime_24h(asin_iniziale, _chat_id_per_canale(draft['canale'])):
-                draft['scartati'].append(f"{link} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
-                continue
-            async def mostra_tentativo_multiplo(numero):
-                if numero < 3:
-                    try:
-                        if context.user_data.get('multiplo') is draft and not draft.get('annullato'):
-                            await messaggio.edit_text(f'🔎 Tentativo {numero}/3 — {len(draft["pronti"])}/{draft.get("richiesti", len(links))} post pronti. Riprovo…', reply_markup=tastiera_annulla_elaborazione())
-                    except Exception:
-                        pass
-            if draft.get('tipo') == 'repost':
-                dati, motivo_repost = await leggi_offerta_repost(link, storico, mostra_tentativo_multiplo)
-            else:
-                dati = await leggi_offerta_con_sei_tentativi(link, richiedi_immagine=True, callback=mostra_tentativo_multiplo)
-                motivo_repost = None
-            if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
-                return
-            if not dati:
-                if not seconda_passata:
-                    da_riprovare.append(candidato)
-                    print(f'Invio multiplo: {link} in coda per seconda passata dopo 20 secondi.')
-                else:
-                    draft['scartati'].append(f'{link} — {motivo_repost or "lettura non completata dopo 6 tentativi (vedi log Railway)"}')
-                continue
-            tipo = tipo_o_fallback(link, dati)
-            dati['tipologia_amazon'] = tipo
-            if draft.get('tipo') == 'repost' and not offerta_attuale_rilevata(dati):
-                draft['scartati'].append(f"{link} — nessuno sconto attuale né coupon rilevato")
-                continue
-            try:
-                asin = dati.get('asin') or asin_iniziale
-                if draft.get('tipo') != 'singolo_cronologia' and prodotto_inviato_ultime_24h(asin, _chat_id_per_canale(draft['canale'])):
-                    draft['scartati'].append(f"{link} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
-                    continue
-                if asin in visti:
-                    draft['duplicati'] += 1
-                    continue
-                affiliato = link_affiliato_multiplo(link, asin)
-                foto_storica = dati.get('_foto_storica_repost') if draft.get('tipo') == 'repost' else None
-                if foto_storica:
-                    foto = foto_storica
-                else:
-                    foto = await prepara_foto_automatica(dati['immagine'])
-                if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
-                    return
-                # Upload nella chat amministratore: salva un file_id persistente,
-                # senza dipendere da file temporanei o URL al momento dell'invio.
-                anteprima = await messaggio.reply_photo(photo=foto, caption=f"📦 Preparato {indice}/{len(links)}: {str(dati['nome'])[:700]}")
-                if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
-                    return
-                visti.add(asin)
-                draft['pronti'].append({'nome': ' '.join(str(dati['nome']).split())[:500], 'prezzo': pulisci_prezzo(dati['prezzo']), 'vecchio_prezzo': pulisci_prezzo(dati['vecchio_prezzo']) if dati.get('vecchio_prezzo') else 'NO', 'link': affiliato, 'foto_file_id': anteprima.photo[-1].file_id, 'categoria': dati.get('categoria'), 'asin': asin, 'link_originale': link, 'coupon': dati.get('coupon')})
-            except Exception as exc:
-                draft['scartati'].append(f"{link} — {str(exc)[:120]}")
-        if da_riprovare and not seconda_passata and context.user_data.get('multiplo') is draft and not draft.get('annullato'):
-            try:
-                await messaggio.edit_text(
-                    f'⏳ Prima passata terminata. {len(da_riprovare)} prodotti in attesa: riprovo tra 20 secondi (3 tentativi ciascuno).',
-                    reply_markup=tastiera_annulla_elaborazione(),
-                )
-            except Exception:
-                pass
-            await asyncio.sleep(20)
-            if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
-                return
-            await prepara_lotto_multiplo(messaggio, context, draft, da_riprovare, seconda_passata=True)
-            return
-        if context.user_data.get('multiplo') is draft and not draft.get('annullato'):
-            draft['elaborazione'] = False
-            if draft.get('tipo') == 'singolo_cronologia':
-                await mostra_confronto_cronologia(messaggio,context,draft)
-            else:
-                await riepilogo_multiplo(messaggio, draft, context)
-    except Exception as exc:
-        draft['elaborazione'] = False
-        if context.user_data.get('multiplo') is draft:
-            await messaggio.reply_text(f"⚠️ Preparazione interrotta: {type(exc).__name__}. Puoi confermare i prodotti già pronti o annullare.", reply_markup=tastiera_multiplo(draft))
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return await invio_multiplo.prepara_lotto_multiplo(_servizi_invii, messaggio, context, draft, links, seconda_passata)
 
 
 async def ricevi_rapido(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-    draft = context.user_data.get('multiplo')
-    if not draft:
-        return await rapido_da_comando(update, context)
-    if draft.get('elaborazione'):
-        await update.message.reply_text("⏳ Sto preparando il lotto. Attendi il riepilogo oppure usa /annulla.")
-        return RAPIDO
-    if draft.pop('timing_personalizzato', False):
-        try:
-            minuti = int(update.message.text.strip())
-            if not 1 <= minuti <= 1440:
-                raise ValueError
-        except ValueError:
-            draft['timing_personalizzato'] = True
-            await update.message.reply_text("Inserisci un numero intero da 1 a 1440 minuti.")
-            return RAPIDO
-        draft['minuti'] = intervallo_multiplo(update.effective_user.id, minuti)
-        if draft["pronti"]:
-            await riepilogo_multiplo(update.message, draft, context)
-        else:
-            await update.message.reply_text(f"✅ Intervallo salvato: {minuti} minuti.", reply_markup=tastiera_multiplo(draft))
-        return RAPIDO
-    if draft.get('repost_attesa_quantita'):
-        testo = update.message.text.strip()
-        if not testo.isdigit() or not 1 <= int(testo) <= 50:
-            await update.message.reply_text('Scrivi quanti prodotti vuoi ripubblicare: un numero da 1 a 50.')
-            return RAPIDO
-        if not (os.environ.get('AMAZON_PARTNER_TAG') or os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip():
-            await update.message.reply_text('⚠️ Imposta AMAZON_PARTNER_TAG su Railway con il tuo tag affiliato prima di avviare Repost.')
-            return RAPIDO
-        quantita = int(testo)
-        draft['elaborazione'] = True
-        draft['richiesti'] = quantita
-        draft.pop('repost_attesa_quantita', None)
-        attesa = await update.message.reply_text(
-            f'🔁 REPOST — Obiettivo: {quantita} post.\n'
-            'Potrei esaminare più prodotti come riserve se alcuni non sono validi.\n'
-            'Premi ANNULLA per interrompere.',
-            reply_markup=tastiera_annulla_elaborazione())
-        context.application.create_task(prepara_repost(attesa,context,draft),update=update)
-        return RAPIDO
-    if draft.get('pronti'):
-        await update.message.reply_text("Conferma o annulla il lotto già preparato prima di inviare altri link.")
-        return RAPIDO
-    if not (os.environ.get('AMAZON_PARTNER_TAG') or os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip():
-        await update.message.reply_text("⚠️ Prima imposta AMAZON_PARTNER_TAG nelle variabili Railway con il TUO tag affiliato Amazon, poi reinvia i link.")
-        return RAPIDO
-    links = re.findall(r'https?://[^\s<>]+', update.message.text)
-    links = [x.rstrip('.,;)]') for x in links]
-    validi = []
-    for link in links:
-        host = (urlparse(link).hostname or '').lower()
-        if host in {'amazon.it', 'www.amazon.it', 'amzn.to', 'amzn.eu', 'link.amazon', 'link.amazon.it', 'a.co'} or host.endswith('.amazon.it'):
-            validi.append(link)
-    if not validi or len(validi) > 50:
-        await update.message.reply_text("Invia da 1 a 50 link Amazon Italia validi, uno per riga.")
-        return RAPIDO
-    unici = list(dict.fromkeys(validi))
-    draft['duplicati'] = len(validi)-len(unici)
-    draft['scartati'] = [f"{len(links)-len(validi)} link non Amazon Italia ignorati"] if len(links) != len(validi) else []
-    draft['elaborazione'] = True
-    attesa = await update.message.reply_text(f"🔎 Preparo {len(unici)} prodotti. Puoi usare /annulla per interrompere.")
-    context.application.create_task(prepara_lotto_multiplo(attesa, context, draft, unici), update=update)
-    return RAPIDO
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return await invio_multiplo.ricevi_rapido(_servizi_invii, update, context)
 
 
 async def gestisci_multiplo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-    query = update.callback_query
-    await query.answer()
-    draft = context.user_data.get('multiplo')
-    if not draft:
-        await query.message.reply_text("Lotto non più disponibile. Apri nuovamente Invio multiplo.")
-        return ConversationHandler.END
-    azione = query.data
-    if azione == 'multi_annulla':
-        draft['annullato'] = True
-        context.user_data.pop('multiplo', None)
-        await query.edit_message_text("🛑 Elaborazione annullata. Nessun nuovo post verrà preparato o programmato.\nLa lettura Amazon già avviata potrebbe terminare in background, ma il risultato sarà ignorato.")
-        return ConversationHandler.END
-    if draft.get('elaborazione') or draft.get('conferma_in_corso'):
-        await query.message.reply_text("⏳ Attendi il completamento dell'operazione in corso.")
-        return RAPIDO
-    if azione == 'multi_timing':
-        draft.pop('timer_token', None)
-        await query.message.reply_text("⏱ Scegli l'intervallo tra i post:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"{m} min", callback_data=f"multi_min_{m}") for m in (10,20,30)], [InlineKeyboardButton(f"{m} min", callback_data=f"multi_min_{m}") for m in (40,60)], [InlineKeyboardButton("✏️ Personalizzato", callback_data="multi_personalizzato")]]))
-    elif azione == 'multi_personalizzato':
-        draft['timing_personalizzato'] = True
-        await query.message.reply_text("Scrivi l'intervallo desiderato in minuti (1–1440):")
-    elif azione.startswith('multi_min_'):
-        draft['minuti'] = intervallo_multiplo(update.effective_user.id, int(azione.rsplit('_',1)[1]))
-        draft.pop('timing_personalizzato', None)
-        if draft["pronti"]:
-            await riepilogo_multiplo(query.message, draft, context)
-        else:
-            await query.message.reply_text(f"✅ Intervallo: {draft['minuti']} minuti", reply_markup=tastiera_multiplo(draft))
-    elif azione.startswith('multi_canale_'):
-        draft['canale'] = azione.rsplit('_',1)[1]
-        if draft['pronti']:
-            await riepilogo_multiplo(query.message, draft, context)
-        else:
-            await query.message.reply_text(f"✅ Canale: {draft['canale'].upper()}. " + ("Scrivi quanti prodotti vuoi ripubblicare (1–50)." if draft.get("tipo") == "repost" else "Incolla i link."), reply_markup=tastiera_multiplo(draft))
-    elif azione == 'multi_avvia' and draft['pronti']:
-        riuscito = await avvia_lotto_multiplo(query.message, context, draft)
-        if riuscito:
-            return ConversationHandler.END
-    return RAPIDO
+    """Callback compatibile; implementazione in invio_multiplo.py."""
+    return await invio_multiplo.gestisci_multiplo(_servizi_invii, update, context)
 
 
 
@@ -11760,237 +11147,32 @@ def crea_messaggio(context):
 
 
 async def prova_foto_automatica_o_chiedi(update, context):
-    """Cerca e brandizza la foto; se non riesce passa alla scelta manuale."""
-    messaggio = update.message if update.message else update.callback_query.message
-    foto_url = context.user_data.get("foto_url_automatica")
-    if not foto_url:
-        link = context.user_data.get("link")
-        try:
-            prodotto = await asyncio.to_thread(leggi_prodotto_amazon, link)
-        except Exception as errore:
-            print(f"Errore ricerca foto pagina Amazon: {errore}")
-            prodotto = None
-        if prodotto:
-            foto_url = prodotto.get("immagine")
-            context.user_data["foto_url_automatica"] = foto_url
-
-    if foto_url:
-        attesa = await messaggio.reply_text(
-            "🖼 Foto trovata. Creo automaticamente la locandina BestPrice24h…"
-        )
-        try:
-            foto_brandizzata = await asyncio.to_thread(crea_immagine_brandizzata, foto_url)
-            context.user_data["foto_file_id"] = foto_brandizzata
-            await attesa.edit_text("✅ Foto trovata e locandina creata.")
-            return await mostra_anteprima(update, context)
-        except Exception as errore:
-            print(f"Errore locandina automatica manuale: {errore}")
-            context.user_data.pop("foto_file_id", None)
-            await attesa.edit_text(
-                "⚠️ Non sono riuscito a preparare automaticamente la foto."
-            )
-
-    return await chiedi_immagine(update, context)
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.prova_foto_automatica_o_chiedi(_servizi_invii, update, context)
 
 
-async def chiedi_immagine(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    tastiera = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "📷 AGGIUNGI IMMAGINE",
-                    callback_data="foto_aggiungi",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "➡️ CONTINUA SENZA IMMAGINE",
-                    callback_data="foto_salta",
-                )
-            ],
-        ]
-    )
-
-    if update.message:
-        await update.message.reply_text(
-            "🖼 Vuoi aggiungere un'immagine al post?",
-            reply_markup=tastiera,
-        )
-    else:
-        await update.callback_query.message.reply_text(
-            "🖼 Vuoi aggiungere un'immagine al post?",
-            reply_markup=tastiera,
-        )
-
-    return FOTO_SCELTA
+async def chiedi_immagine(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.chiedi_immagine(_servizi_invii, update, context)
 
 
-async def scelta_immagine(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "foto_salta":
-        context.user_data.pop(
-            "foto_file_id",
-            None,
-        )
-
-        await query.edit_message_text(
-            "➡️ Continuo senza immagine."
-        )
-
-        return await mostra_anteprima(
-            update,
-            context,
-        )
-
-    if query.data == "foto_aggiungi":
-        await query.edit_message_text(
-            "📷 Inviami la foto del prodotto."
-        )
-        return FOTO_ATTESA
-
-    return FOTO_SCELTA
+async def scelta_immagine(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.scelta_immagine(_servizi_invii, update, context)
 
 
-async def ricevi_immagine(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not update.message.photo:
-        await update.message.reply_text(
-            "❌ Inviami una foto valida."
-        )
-        return FOTO_ATTESA
-
-    foto = update.message.photo[-1]
-    try:
-        file_telegram = await foto.get_file()
-        contenuto = await file_telegram.download_as_bytearray()
-        foto_brandizzata = await asyncio.to_thread(
-            crea_immagine_brandizzata_da_bytes,
-            bytes(contenuto),
-        )
-        context.user_data["foto_file_id"] = foto_brandizzata
-        await update.message.reply_text("✅ Immagine aggiunta e locandina creata.")
-    except Exception as errore:
-        print(f"Errore brandizzazione foto manuale: {errore}")
-        context.user_data["foto_file_id"] = foto.file_id
-        await update.message.reply_text(
-            "⚠️ Ho aggiunto la foto originale perché non sono riuscito a creare la locandina."
-        )
-
-    return await mostra_anteprima(
-        update,
-        context,
-    )
+async def ricevi_immagine(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.ricevi_immagine(_servizi_invii, update, context)
 
 
 # =========================================================
 # ANTEPRIMA
 # =========================================================
 
-async def mostra_anteprima(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    messaggio = crea_messaggio(
-        context
-    )
-
-    context.user_data["messaggio"] = messaggio
-
-    link = context.user_data.get(
-        "link",
-        "",
-    )
-
-    tastiera = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "📤 PUBBLICA ORA",
-                    callback_data="pubblica",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🕒 PROGRAMMA INVIO",
-                    callback_data="programma",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🎨 FORMATO AUTOMATICO",
-                    callback_data="cambia_template",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "❌ ANNULLA",
-                    callback_data="annulla",
-                )
-            ],
-        ]
-    )
-
-    testo = (
-        "👀 ANTEPRIMA\n\n"
-        "──────────────\n\n"
-        + crea_caption_con_link(messaggio, link)
-    )
-
-    foto_file_id = context.user_data.get(
-        "foto_file_id"
-    )
-
-    if update.message:
-
-        if foto_file_id:
-            inviato = await update.message.reply_photo(
-                photo=foto_file_id,
-                caption=testo,
-                parse_mode="HTML",
-                reply_markup=tastiera,
-            )
-            if inviato.photo:
-                context.user_data["foto_file_id"] = inviato.photo[-1].file_id
-        else:
-            await update.message.reply_text(
-                testo,
-                parse_mode="HTML",
-                reply_markup=tastiera,
-            )
-
-    else:
-
-        if foto_file_id:
-            inviato = await update.callback_query.message.reply_photo(
-                photo=foto_file_id,
-                caption=testo,
-                parse_mode="HTML",
-                reply_markup=tastiera,
-            )
-            if inviato.photo:
-                context.user_data["foto_file_id"] = inviato.photo[-1].file_id
-        else:
-            await update.callback_query.message.reply_text(
-                testo,
-                parse_mode="HTML",
-                reply_markup=tastiera,
-            )
-
-    return CONFERMA
+async def mostra_anteprima(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.mostra_anteprima(_servizi_invii, update, context)
 
 
 # =========================================================
@@ -12043,288 +11225,9 @@ def minuti_rimanenti_prima_del_prossimo_invio():
 # CONFERMA / PUBBLICAZIONE
 # =========================================================
 
-async def conferma(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-
-    query = update.callback_query
-
-    await query.answer()
-
-    # PROGRAMMA INVIO
-    if query.data == "programma":
-
-        tastiera = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "📅 OGGI",
-                        callback_data="prog_giorno_0",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "📅 DOMANI",
-                        callback_data="prog_giorno_1",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "📅 TRA 2 GIORNI",
-                        callback_data="prog_giorno_2",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "❌ ANNULLA",
-                        callback_data="annulla",
-                    )
-                ],
-            ]
-        )
-
-        await query.message.reply_text(
-            "📅 PROGRAMMA INVIO\n\n"
-            "Scegli il giorno:",
-            reply_markup=tastiera,
-        )
-
-        return CONFERMA
-
-    # GIORNO SCELTO
-    if query.data.startswith("prog_giorno_"):
-
-        try:
-
-            giorni = int(
-                query.data.replace(
-                    "prog_giorno_",
-                    "",
-                )
-            )
-
-        except ValueError:
-
-            return CONFERMA
-
-        data_scelta = (
-            datetime.now(ROMA_TZ).date()
-            + timedelta(days=giorni)
-        )
-
-        context.user_data[
-            "data_programmata"
-        ] = data_scelta.isoformat()
-
-        etichetta = (
-            "oggi"
-            if giorni == 0
-            else "domani"
-            if giorni == 1
-            else "tra 2 giorni"
-        )
-
-        eventi = programmazioni_del_giorno(
-            data_scelta
-        )
-
-        if eventi:
-
-            orari_occupati = ", ".join(
-                evento["datetime"].strftime(
-                    "%H:%M"
-                )
-                for evento in eventi
-            )
-
-        else:
-
-            orari_occupati = "nessuno"
-
-        suggerito = suggerisci_prossimo_slot(
-            data_scelta
-        )
-
-        if suggerito:
-
-            suggerimento_testo = (
-                "💡 Prossimo spazio consigliato: "
-                f"{suggerito.strftime('%H:%M')}\n\n"
-            )
-
-        else:
-
-            suggerimento_testo = (
-                "⚠️ Non trovo altri spazi "
-                "consigliati oggi.\n\n"
-            )
-
-        await query.message.reply_text(
-            f"🕒 Hai scelto {etichetta}.\n\n"
-            f"📅 Orari già programmati: "
-            f"{orari_occupati}\n\n"
-            f"{suggerimento_testo}"
-            "Ora scrivi solo l'orario."
-        )
-
-        return PROGRAMMA_ORA
-
-    # ANNULLA
-    if query.data == "annulla":
-        return await annulla(update, context)
-
-    # CAMBIA TEMPLATE
-    if query.data == "cambia_template":
-        await query.message.reply_text('🎨 Il formato è unico e automatico: Offerta sotto il 30%, Super offerta dal 30% al 69%, Sconto extra dal 70%. Coupon e categoria vengono inclusi quando disponibili.')
-        return CONFERMA
-
-    # TEMPLATE SELEZIONATO
-    if query.data.startswith("tpl_"):
-
-        template = query.data.replace(
-            "tpl_",
-            "",
-        )
-
-        context.user_data["template"] = template
-
-        await query.edit_message_text(
-            f"✅ Template selezionato: {template}"
-        )
-
-        return await mostra_anteprima(
-            update,
-            context,
-        )
-
-    # PUBBLICA
-    if query.data == "pubblica":
-
-        ora = datetime.now(ROMA_TZ)
-        if prossimo_orario_manuale(ora) != ora:
-            dati = context.user_data
-            if not dati.get('messaggio') or not dati.get('link'):
-                await query.message.reply_text('❌ Dati dell’offerta mancanti.')
-                return CONFERMA
-            pid, quando = salva_programmazione(dati.get('nome'), dati['messaggio'], dati['link'], dati.get('prezzo'), ora, dati.get('telegram_chat_id', CHANNEL_ID))
-            salva_foto_programmazione(pid, dati.get('foto_file_id'))
-            context.user_data.clear()
-            await query.message.reply_text(f"🌙 Fuori fascia: offerta aggiunta a Programmati per {quando:%d/%m/%Y %H:%M} (ora italiana).",reply_markup=menu_pubblicazione())
-            return ConversationHandler.END
-
-        minuti_rimanenti = minuti_rimanenti_prima_del_prossimo_invio()
-
-        if minuti_rimanenti > 0:
-            await query.message.reply_text(
-                f"⏳ È ancora presto. Attendi ancora {minuti_rimanenti} minuto/i.\n\n"
-                f"Tra un post e l'altro devono passare almeno "
-                f"{DISTANZA_MINIMA_MINUTI} minuti."
-            )
-            return CONFERMA
-
-        messaggio = context.user_data.get("messaggio")
-        link = context.user_data.get("link")
-        nome = context.user_data.get("nome")
-
-        if not messaggio or not link:
-
-            await query.edit_message_text(
-                "❌ Dati dell'offerta mancanti."
-            )
-
-            return ConversationHandler.END
-
-        messaggio_con_link = crea_caption_con_link(messaggio, link)
-
-        bottone_offerta = tastiera_offerta_automatica(link, asin=context.user_data.get("asin"))
-
-        foto_file_id = context.user_data.get(
-            "foto_file_id"
-        )
-
-        if foto_file_id:
-            messaggio_telegram = await context.bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=foto_file_id,
-                caption=messaggio_con_link,
-                parse_mode="HTML",
-                reply_markup=bottone_offerta,
-            )
-        else:
-            messaggio_telegram = await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=messaggio_con_link,
-                parse_mode="HTML",
-                reply_markup=bottone_offerta,
-            )
-
-        await aggiorna_pulsanti_offerta(
-            context.bot, messaggio_telegram, link,
-            asin=context.user_data.get("asin"), chat_id=CHANNEL_ID,
-        )
-
-        foto_monitoraggio = foto_file_id
-        if getattr(messaggio_telegram, "photo", None):
-            foto_monitoraggio = messaggio_telegram.photo[-1].file_id
-        sconto_manuale = calcola_sconto(
-            context.user_data.get("prezzo"),
-            context.user_data.get("vecchio_prezzo", "NO"),
-        ) or 0
-        registra_pubblicazione_monitorata(
-            nome=nome,
-            link=link,
-            message_id=messaggio_telegram.message_id,
-            foto_file_id=foto_monitoraggio,
-            sconto=sconto_manuale,
-            soglia_sconto=sconto_manuale,
-            asin=context.user_data.get("asin"),
-        )
-
-        ultime_offerte.appendleft(
-            {
-                "nome": nome,
-                "link": link,
-                "prezzo": context.user_data.get("prezzo"),
-            }
-        )
-
-        salva_offerta_recap(
-            nome,
-            link,
-            context.user_data.get("prezzo"),
-            context.user_data.get("vecchio_prezzo", "NO"),
-            messaggio=messaggio,
-            foto_file_id=foto_file_id,
-            template=context.user_data.get("template", "pulito"),
-            asin=context.user_data.get("asin") or risolvi_asin_da_link(link),
-            telegram_chat_id=CHANNEL_ID,
-            origine="manuale",
-            sconto=sconto_manuale,
-            telegram_message_id=messaggio_telegram.message_id,
-        )
-
-        context.user_data.clear()
-
-        chat_id = query.message.chat_id
-
-        await query.message.delete()
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                "✅ OFFERTA PUBBLICATA!\n\n"
-                "Cosa vuoi fare adesso?"
-            ),
-            reply_markup=menu_dopo_pubblicazione(),
-        )
-
-        return ConversationHandler.END
-
-    return CONFERMA
+async def conferma(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback compatibile; implementazione in invio_singolo.py."""
+    return await invio_singolo.conferma(_servizi_invii, update, context)
 
 
 # =========================================================
@@ -15126,4 +14029,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
