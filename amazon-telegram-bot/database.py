@@ -1,10 +1,25 @@
 """Impostazioni e consultazione V2: ogni operazione richiede una destinazione."""
 import sqlite3
+import json
 
 
 class ArchivioCanali:
     def __init__(self, path):
         self.path = str(path)
+
+    def canali_salvati(self):
+        with sqlite3.connect(self.path, timeout=30) as db:
+            db.execute('''CREATE TABLE IF NOT EXISTS registro_canali_v2 (
+                chiave TEXT PRIMARY KEY, nome TEXT NOT NULL,
+                chat_id TEXT NOT NULL UNIQUE, admin_ids TEXT NOT NULL)''')
+            return [(key, name, chat, json.loads(admins)) for key, name, chat, admins in
+                    db.execute('SELECT chiave,nome,chat_id,admin_ids FROM registro_canali_v2 ORDER BY rowid')]
+
+    def salva_canale(self, channel):
+        self.canali_salvati()
+        with sqlite3.connect(self.path, timeout=30) as db:
+            db.execute('INSERT INTO registro_canali_v2 VALUES (?,?,?,?)',
+                       (channel.chiave, channel.nome, channel.chat_id, json.dumps(channel.admin_ids)))
 
     def inizializza(self, canali, fascia_iniziale):
         with sqlite3.connect(self.path, timeout=30) as db:

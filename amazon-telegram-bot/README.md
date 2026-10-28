@@ -10,6 +10,8 @@ Dopo la selezione, il menu del canale contiene:
 
 - Nuovi post: invio singolo e multiplo.
 - Repost: ricerca casuale nella cronologia del solo canale corrente.
+- Invio automatico: gestione dei filtri e delle impostazioni legacy, indipendenti per canale.
+- Rubrica: oroscopo e quiz del legacy.
 - Programmati e code: elenco, dettagli, modifica e annullamento dei post in attesa.
 - Cronologia: pubblicazioni del canale, con dettagli e paginazione.
 - Impostazioni canale: intervallo, fascia oraria, tag affiliato e verifica dei permessi Telegram.
@@ -20,8 +22,7 @@ si digita il numero (123 oppure #123), senza pulsanti per i singoli risultati.
 Il numero viene cercato solo nel canale selezionato.
 
 Le impostazioni generali mostrano tag predefinito, fuso orario, canali configurati,
-stato e diagnostica. Destinazioni e amministratori si configurano nelle variabili
-del servizio. La verifica dei permessi Telegram è esplicita: una configurazione
+stato e diagnostica. I nuovi canali si aggiungono dal bot; gli amministratori globali restano configurati nelle variabili del servizio. La verifica dei permessi Telegram è esplicita: una configurazione
 presente non viene mostrata automaticamente come collegamento verificato.
 
 ## Link accettati
@@ -51,6 +52,46 @@ nello stesso canale. Rilegge le pagine Amazon e richiede uno sconto o coupon
 attuale. La scelta è casuale con priorità per i prodotti con nome e foto salvati.
 La ricerca si avvia su richiesta: non è un nuovo servizio di repost ricorrente.
 
+## Ricerca automatica per canale
+
+Il motore di ricerca, il calcolo dei punteggi e i filtri derivano dal
+`manual_bot.py` legacy. Ogni canale conserva separatamente attivazione,
+intervallo, fascia automatica, categorie, sconto minimo, modalità qualità,
+punteggio, bonus sconto, priorità Amazon, raggruppamento varianti e duplicati.
+Anche marchi, parole escluse, prodotti prioritari e parole anti-accessorio
+sono indipendenti. Un ripristino o una modifica disattiva soltanto l'automazione
+del canale corrente.
+
+Al primo utilizzo le regole vengono copiate dai dati legacy in un archivio
+dedicato al canale. Le copie sono indipendenti; i dati originali non vengono
+modificati. Il motore condivide solo il codice: ogni ricerca riceve il canale
+esplicitamente e usa le sue regole, anche quando più ricerche sono concorrenti.
+
+**Limite ereditato:** nel legacy `get_items()` e `search_items()` restituiscono
+liste vuote perché la Creators API è disabilitata. Il nuovo menu lo segnala e
+impedisce di attivare una ricerca senza sorgente. Questa modifica recupera
+gestione, filtri e pianificazione; non ripristina il collegamento API mancante.
+
+## Rubrica legacy
+
+Sono nuovamente disponibili calendario, caricamento e modifica oroscopi,
+foto, anteprima, due orari, attivazione, statistiche e CSV. Il quiz mantiene
+caricamento JSON, foto, calendario, orario, anteprima e statistiche del legacy.
+Gli oroscopi conservano testi e orari condivisi e destinazioni selezionabili,
+ora estese anche ai nuovi canali. Il quiz resta dedicato a TECH.
+Le pause offerte di 30 minuti e i controlli contro gli invii duplicati restano
+quelli precedenti. La gestione della rubrica condivisa richiede accesso a tutti
+i canali; i pulsanti pubblici per segni zodiacali e risposte al quiz restano attivi.
+
+## Aggiungere un canale dal bot
+
+Aprire **Impostazioni generali → Aggiungi canale** e inserire nome, chiave univoca
+e @username o ID -100…. Il bot verifica che la destinazione sia un canale e che
+disponga del permesso di pubblicazione, poi chiede conferma. Il registro viene
+salvato nel database e ricaricato al riavvio. I canali aggiunti riusano gli stessi
+moduli, con cronologia, code, regole e configurazione automatiche indipendenti.
+La selezione delle categorie automatiche avviene nel menu del nuovo canale.
+
 ## Struttura
 
 | File | Responsabilità |
@@ -62,6 +103,11 @@ La ricerca si avvia su richiesta: non è un nuovo servizio di repost ricorrente.
 | `canali.py` | Registro, autorizzazioni per canale e selezione personale |
 | `database.py` | Impostazioni e query con destinazione esplicita |
 | `menu_canali.py` | Navigazione e configurazione V2 |
+| `invio_automatico.py` | Gestione multicanale delle funzioni automatiche legacy |
+| `filtri_canale.py` | Regole automatiche persistenti e isolate per canale |
+| `rubrica.py` | Gestione dell'oroscopo e del quiz legacy |
+| `aggiunta_canale.py` | Procedura guidata e verifica del nuovo canale |
+| `interfaccia_legacy.py` | Adattamento dei pannelli legacy con pulsanti legati al canale |
 | `assets/` | Loghi e font |
 | `sito-web/` | Sito che legge l'API delle offerte |
 | `tests/` | Verifiche senza invii reali |
@@ -119,10 +165,7 @@ Un invio acquisito dal worker passa a `in_invio`; un errore con esito incerto
 viene segnalato come `da_verificare`, senza ripetizione automatica che potrebbe
 duplicare il messaggio. Un invio già in corso non è più annullabile.
 
-Questa fase riguarda le tre modalità principali. Le integrazioni storiche
-(TikTok, rubriche e ricerca API) restano nel coordinatore e non sono ancora
-migrate nel nuovo menu. Se si usa una copia di un database precedente, le
-automazioni già abilitate conservano la loro configurazione.
+TikTok rimane nel coordinatore e non è ancora stato riportato nel nuovo menu.
 
 ## Verifiche
 

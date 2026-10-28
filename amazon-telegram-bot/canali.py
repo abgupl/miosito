@@ -15,6 +15,17 @@ class Canale:
         return not self.admin_ids or str(user_id) in self.admin_ids
 
 
+def nuovo_canale(registro, chiave, nome, chat_id, admin_ids=()):
+    if not re.fullmatch(r'[a-z][a-z0-9_]{0,23}', chiave) or chiave in registro:
+        raise ValueError('Chiave non valida o già utilizzata.')
+    nome, chat_id = str(nome).strip(), str(chat_id).strip()
+    if not nome or len(nome) > 80 or not chat_id:
+        raise ValueError('Nome o destinazione non validi.')
+    if any(c.chat_id.casefold() == chat_id.casefold() for c in registro.values()):
+        raise ValueError('Questa destinazione è già configurata.')
+    return Canale(chiave, nome, chat_id, tuple(str(a) for a in admin_ids))
+
+
 def carica_canali(env):
     elementi = [
         {'chiave': 'tech', 'nome': '💻 TECH', 'chat_id': env['TELEGRAM_CHAT_ID']},

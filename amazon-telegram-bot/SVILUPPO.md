@@ -1,39 +1,33 @@
-# Stato dello sviluppo V2
+# Stato dello sviluppo
 
-## Completato
+## Funzioni disponibili
 
-- Filtro unico dei link per singolo e multiplo in `link_amazon.py`, inclusi amzn.eu e gli altri link brevi.
+- Invio singolo, multiplo e repost nei moduli condivisi.
+- Scelta canale, cronologia e code con apertura tramite numero digitato.
+- Configurazioni automatiche indipendenti per ciascun canale.
+- Marchi, parole escluse, priorità e anti-accessori separati, con migrazione non distruttiva dei valori legacy.
+- Pannelli automatici originali: categorie, intervalli, fasce, sconti, qualità, selettiva, priorità, duplicati e varianti.
+- Rubrica legacy: gestione oroscopi, quiz, calendari, caricamenti, foto, statistiche ed esportazioni.
+- Destinazioni dell'oroscopo estese ai canali aggiunti; testi e orari restano condivisi come nel legacy, quiz dedicato a TECH.
+- Aggiunta guidata del canale con verifica dei permessi Telegram, conferma e persistenza.
+- Pulsanti dei pannelli legacy vincolati al canale; rifiuto di pannelli precedenti di altri canali.
+- I job automatici usano la propria configurazione e destinazione, indipendentemente dal menu aperto.
 
-- Apertura dei risultati di cronologia e programmati tramite numero digitato,
-  con controllo della destinazione; comportamento condiviso da tutti i canali.
+## Validazione
 
-- Estrazione di 34 funzioni operative nei tre moduli di invio.
-- Menu iniziale con scelta canale e impostazioni generali.
-- Selezione indipendente per amministratore e accessi per canale.
-- Canali aggiuntivi configurabili senza duplicare il bot.
-- Destinazione fissata nella bozza e nella coda, mai in una variabile globale mutabile.
-- Cronologia, consultazione/modifica dei programmati e repost filtrati per destinazione.
-- Intervallo multiplo/repost, fascia oraria, periodo repost e tag affiliato per canale.
-- Pubblicazione singola attraverso la coda, con controllo degli slot del canale.
-- Rifiuto di schermate di altri canali, anteprime scadute e ID fuori dal canale selezionato.
-- Protezione dei job contro un secondo invio della stessa riga e contro annullamenti tardivi.
-- 31 test superati, inclusa un'integrazione con handler Telegram reali e invii simulati.
+36 test senza invii reali, inclusa navigazione con gli handler Telegram,
+modifica dei filtri separati tra TECH, CASA e SPORT, aggiunta del canale,
+caricamento degli oroscopi, programmazione e pubblicazione simulate.
+Verificato anche l'isolamento del contesto tra ricerche concorrenti.
 
-## Limiti di questa fase
+## Limiti
 
-- Cartella principale `amazon-telegram-bot` assegnata alla V2; vecchio codice
-  preservato in `amazon-telegram-bot-legacy`.
-- Default del database ripristinato a `club.db` relativo alla directory di lavoro,
-  identico al vecchio bot; `CLUB_DB_PATH` continua ad avere precedenza.
-- Nessuna operazione diretta sul servizio o sul database di produzione eseguita;
-  un deploy automatico GitHub può attivare la V2 dopo questo cambio.
-- Nessuna migrazione del database di produzione eseguita.
-- Gestione amministratori e aggiunta canali tramite variabili d'ambiente.
-- Il repost avvia un lotto su richiesta, non una nuova ricerca ricorrente autonoma.
-- TikTok, rubriche e altre integrazioni storiche non sono ancora nel nuovo menu.
-- Servizi condivisi di lettura Amazon, rendering, monitoraggio e pianificazione
-  restano nel coordinatore. I moduli ricevono esplicitamente il parametro
-  `servizi`, senza import circolari. L'eventuale successiva estrazione della
-  pubblicazione condivisa va eseguita mantenendo questi controlli di destinazione.
+- La sorgente Creators API è disabilitata nel codice legacy: `get_items` e
+  `search_items` restituiscono liste vuote. Il nuovo menu lo mostra e non
+  permette di attivare una ricerca priva di sorgente.
+- TikTok non è ancora nel nuovo menu.
+- Nessun accesso diretto al database o al servizio di produzione, nessun
+  invio reale durante le verifiche.
+- Il progetto precedente in `amazon-telegram-bot-legacy` rimane invariato.
 
-Configurazione, comportamento e istruzioni di prova sono descritti in [README.md](README.md).
+Istruzioni complete in [README.md](README.md).

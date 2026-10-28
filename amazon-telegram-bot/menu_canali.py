@@ -22,6 +22,8 @@ def menu_canale(s, channel):
     return tastiera(s, [
         [('✍️ Nuovi post', prefix + 'posts')],
         [('♻️ Repost', prefix + 'repost')],
+        [('🤖 Invio automatico', prefix + 'automatic')],
+        [('☕ Rubrica', prefix + 'rubrica')],
         [('📅 Programmati e code', prefix + 'queue:0')],
         [('📚 Cronologia', prefix + 'history:0')],
         [('⚙️ Impostazioni canale', prefix + 'settings')],
@@ -41,6 +43,12 @@ async def gestisci(s, update, context, data_override=None):
     if q:
         await q.answer()
     data = data_override or (q.data if q else 'v2_home')
+    if data == 'v2_add_channel':
+        import aggiunta_canale
+        return await aggiunta_canale.avvia(s, update, context)
+    if data == 'v2_add_save':
+        import aggiunta_canale
+        return await aggiunta_canale.conferma(s, update, context)
     if data == 'v2_home':
         reset_flusso(context)
         context.user_data.pop('canale_attivo', None)
@@ -55,6 +63,7 @@ async def gestisci(s, update, context, data_override=None):
                      'I canali ereditano il tag generale finché non impostano il proprio.\n'
                      'Destinazioni e amministratori si configurano nelle variabili del servizio.',
                      tastiera(s, [[('📢 Canali configurati', 'v2_channels')],
+                                  [('➕ Aggiungi canale', 'v2_add_channel')],
                                   [('📊 Stato del bot', 'v2_status')],
                                   [('📋 Log e diagnostica', 'diag_logs_all_0')],
                                   [('⬅️ Scelta canale', 'v2_home')]]))
@@ -89,7 +98,13 @@ async def gestisci(s, update, context, data_override=None):
     reset_flusso(context)
     settings = s.ARCHIVIO.impostazioni(channel.chat_id)
     back = [('⬅️ Menu ' + channel.nome, prefix + 'menu')]
-    if action == 'posts':
+    if action == 'automatic':
+        import invio_automatico
+        return await invio_automatico.apri(s, update, context)
+    elif action == 'rubrica':
+        import rubrica
+        return await rubrica.apri(s, update, context)
+    elif action == 'posts':
         await mostra(s, update, '✍️ NUOVI POST — ' + channel.nome + '\n\nLa destinazione rimane questo canale per tutta la preparazione.',
                      tastiera(s, [[('📝 Invio singolo', 'nuova')], [('📦 Invio multiplo', 'rapido')], back]))
     elif action == 'repost':

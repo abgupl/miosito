@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory() as tmp:
         sent.set_bot(app.bot)
         with patch.object(type(app.bot),'send_message',new=AsyncMock(return_value=sent)) as send, \
              patch.object(type(app.bot),'answer_callback_query',new=AsyncMock()) as answer, \
-             patch.object(type(app.bot),'edit_message_text',new=AsyncMock(return_value=sent)):
+             patch.object(type(app.bot),'edit_message_text',new=AsyncMock(return_value=sent)) as edit:
             await click('v2_home')
             await click('v2_select_casa')
             await click('v2c:casa:posts')
@@ -116,6 +116,104 @@ with tempfile.TemporaryDirectory() as tmp:
             assert 'prog_id' not in app.user_data[42]
             await click('prog_modifica')
             assert answer.call_args.kwargs.get('show_alert')
+            # Original automation settings and selective filters are reachable through scoped buttons.
+            await click('v2_home')
+            await click('v2_select_casa')
+            await click('v2c:casa:automatic')
+            assert 'disabilitata' in edit.call_args.kwargs['text']
+            buttons=edit.call_args.kwargs['reply_markup'].inline_keyboard
+            assert all(b.callback_data.startswith(('v2a:casa:', 'v2c:casa:')) for row in buttons for b in row)
+            await click('v2a:casa:auto_intervallo')
+            await text('75')
+            assert runtime.leggi_config_automatica('casa')['intervallo_minuti']==75
+            assert runtime.leggi_config_automatica('tech')['intervallo_minuti']==120
+            await click('v2a:casa:auto_disc_30')
+            assert runtime.leggi_config_automatica('casa')['sconto_minimo']==30
+            await click('v2a:casa:selective_menu')
+            await click('v2a:casa:selective_score_7')
+            assert runtime.leggi_config_automatica('casa')['punteggio_minimo']==7
+            assert runtime.leggi_config_automatica('tech')['punteggio_minimo']==4
+            await click('v2a:casa:filter_word_add')
+            await text('paroladiprova')
+            assert 'paroladiprova' in runtime.FILTRI.leggi('casa')['parole']
+            assert 'paroladiprova' not in runtime.FILTRI.leggi('tech')['parole']
+            snapshot=runtime.carica_snapshot_filtri(configurazione=runtime.leggi_config_automatica('casa'))
+            assert 'paroladiprova' in snapshot['indesiderate']
+            assert 'paroladiprova' not in runtime.carica_snapshot_filtri(configurazione=runtime.leggi_config_automatica('tech'))['indesiderate']
+            runtime.salva_config_automatica('attiva',1,'tech')
+            await click('v2a:casa:filter_word_add')
+            await text('secondaparolacasa')
+            assert runtime.leggi_config_automatica('tech')['attiva']
+            assert not runtime.leggi_config_automatica('casa')['attiva']
+            runtime.salva_config_automatica('attiva',0,'tech')
+            with sqlite3.connect(runtime.DB_PATH) as db:
+                assert not db.execute("SELECT 1 FROM parole_indesiderate_qualita WHERE parola='paroladiprova'").fetchone()
+            await click('v2a:casa:auto_toggle')
+            assert not runtime.leggi_config_automatica('casa')['attiva']
+            assert 'disabilitata' in send.call_args.kwargs['text']
+            await click('v2_home')
+            await click('v2_select_tech')
+            await click('v2a:casa:auto_disc_50')
+            assert answer.call_args.kwargs.get('show_alert')
+            assert runtime.leggi_config_automatica('casa')['sconto_minimo']==30
+            # Legacy horoscope/quiz management, including multiline text import.
+            await click('v2c:tech:rubrica')
+            await click('v2r:tech:oro_menu')
+            await click('v2r:tech:oro_ora')
+            await text('14:00')
+            assert runtime.configurazione_oroscopo()['ora']=='14:00'
+            await click('v2r:tech:quiz_ora')
+            await text('14:30')
+            assert runtime.configurazione_quiz()['ora']=='14:30'
+            day=(runtime.datetime.now(runtime.ROMA_TZ).date()+runtime.timedelta(days=1)).isoformat()
+            horoscope='DATA: '+day+'\n'+'\n'.join(symbol+' '+name+': Testo per '+name+'.' for symbol,name in runtime.OROSCOPO_SEGNI)
+            await click('v2r:tech:oro_carica')
+            await text(horoscope)
+            await click('v2r:tech:oro_verifica')
+            await click('v2r:tech:oro_salva')
+            assert len(runtime.testi_oroscopo(day))==12
+            # Add a new category from the UI; verify persistence and reuse of the same modules.
+            await click('v2_settings')
+            await click('v2_add_channel')
+            await text('SPORT')
+            await text('sport')
+            from types import SimpleNamespace
+            with patch.object(type(app.bot),'get_chat',new=AsyncMock(return_value=Chat(-100303,'channel',title='SPORT'))), \
+                 patch.object(type(app.bot),'get_chat_member',new=AsyncMock(return_value=SimpleNamespace(status='administrator',can_post_messages=True))):
+                await text('-100303')
+            await click('v2_add_save')
+            assert runtime.CANALI['sport'].chat_id=='-100303'
+            assert any(row[0]=='sport' for row in runtime.ArchivioCanali(runtime.DB_PATH).canali_salvati())
+            await click('v2_select_sport')
+            await click('v2c:sport:automatic')
+            assert 'SPORT' in edit.call_args.kwargs['text']
+            await click('v2a:sport:auto_intervallo')
+            await text('90')
+            assert runtime.leggi_config_automatica('sport')['intervallo_minuti']==90
+            assert runtime.leggi_config_automatica('casa')['intervallo_minuti']==75
+            await click('v2a:sport:selective_menu')
+            await click('v2a:sport:filter_brandcat_casa')
+            await click('v2a:sport:filter_brand_add')
+            await text('MarchioSportTest')
+            assert 'MarchioSportTest' in runtime.FILTRI.leggi('sport')['marchi']['casa']
+            assert 'MarchioSportTest' not in runtime.FILTRI.leggi('casa')['marchi']['casa']
+            await click('v2a:sport:priority_cat_casa')
+            await click('v2a:sport:priority_add')
+            await text('ProdottoSport | MarcaSport | 6')
+            assert any(row[2]=='ProdottoSport' and row[4]==6 for row in runtime.FILTRI.leggi('sport')['priorita'])
+            assert not any(row[2]=='ProdottoSport' for row in runtime.FILTRI.leggi('tech')['priorita'])
+            await click('v2a:sport:filter_reset_yes')
+            assert 'paroladiprova' in runtime.FILTRI.leggi('casa')['parole']
+            await click('v2c:sport:rubrica')
+            await click('v2r:sport:oro_canali:sport')
+            assert runtime.configurazione_oroscopo()['canali']==['sport']
+            runtime.imposta_oroscopo('foto','test-file-id')
+            runtime.imposta_oroscopo('attivo',True)
+            with patch.object(type(app.bot),'send_photo',new=AsyncMock(return_value=sent)) as photo:
+                await runtime.pubblica_oroscopo_giornaliero(app,runtime.datetime.fromisoformat(day+'T20:00:00').replace(tzinfo=runtime.ROMA_TZ))
+                photo.assert_awaited_once()
+                assert photo.call_args.kwargs['chat_id']=='-100303'
+            runtime.imposta_oroscopo('attivo',False)
             assert not errors,errors
             # Persisted jobs retain the destination independently of the open UI.
             runtime.ARCHIVIO.salva('-100202','attiva','0')

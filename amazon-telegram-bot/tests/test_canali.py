@@ -91,6 +91,13 @@ class ChannelStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.lista('recap_offerte; DROP TABLE programmazioni', 'CASA')
 
+    def test_added_channels_are_persistent_and_duplicates_are_rejected(self):
+        channel = canali.nuovo_canale(self.registry, 'sport', 'SPORT', '-100303')
+        self.store.salva_canale(channel)
+        self.assertEqual(ArchivioCanali(self.path).canali_salvati(), [('sport', 'SPORT', '-100303', [])])
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.salva_canale(channel)
+
 
 class MenuTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

@@ -24,6 +24,7 @@ from collections import deque
 from urllib.parse import urlparse, parse_qs, urlencode
 
 import requests
+import filtri_canale
 from link_amazon import link_amazon_valido
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
@@ -2367,12 +2368,19 @@ def prossimo_fuori_pausa(data, canale):
     return locale
 
 
-async def attendi_finestra_offerte(canale):
+async def attendi_finestra_offerte(canale, automazione=None):
     """Rilegge la configurazione prima di ogni invio programmato/automatico."""
     while True:
         adesso = datetime.now(ROMA_TZ)
         ripresa = prossimo_fuori_pausa(adesso, canale)
-        ripresa = prossimo_orario_manuale(ripresa, config_fascia_manuale(canale=canale))
+        if automazione is not None:
+            config = leggi_config_automatica(automazione)
+            if not config['attiva']:
+                raise ValueError('Automazione disattivata per questo canale.')
+            fascia = {'attiva': True, 'inizio': config['ora_inizio'], 'fine': config['ora_fine']}
+        else:
+            fascia = config_fascia_manuale(canale=canale)
+        ripresa = prossimo_orario_manuale(ripresa, fascia)
         if ripresa <= adesso:
             return
         await asyncio.sleep(min(30, max(1, (ripresa - adesso).total_seconds())))
@@ -3373,8 +3381,8 @@ def _chiave_config_canale(canale, chiave):
 
 
 def leggi_config_automatica(canale="tech"):
-    if canale not in {"tech", "casa"}:
-        canale = "tech"
+    if canale not in CANALI:
+        raise ValueError("Canale non configurato.")
     db = sqlite3.connect(DB_PATH)
     cur = db.cursor()
     cur.execute("SELECT chiave, valore FROM configurazione_automatica")
@@ -3397,12 +3405,13 @@ def leggi_config_automatica(canale="tech"):
         """,
         (canale,),
     )
-    categorie_consentite = TECH_CATEGORIE if canale == "tech" else CASA_CATEGORIE
+    categorie_consentite = categorie_consentite_canale(canale)
     categorie = [
         riga[0] for riga in cur.fetchall() if riga[0] in categorie_consentite
     ]
     db.close()
     return {
+        "_canale": canale,
         "attiva": valori.get("attiva", "0") == "1",
         "intervallo_minuti": int(valori.get("intervallo_minuti", "120")),
         "ora_inizio": valori.get("ora_inizio", "09:00"),
@@ -3421,6 +3430,8 @@ def leggi_config_automatica(canale="tech"):
 
 
 def salva_config_automatica(chiave, valore, canale="tech"):
+    if canale not in CANALI:
+        raise ValueError("Canale non configurato.")
     db = sqlite3.connect(DB_PATH)
     db.execute(
         "INSERT OR REPLACE INTO configurazione_automatica (chiave, valore) VALUES (?, ?)",
@@ -3551,62 +3562,23 @@ def ruota_categorie_persistente(categorie, chiave, canale="tech"):
 
 
 def leggi_marchi_qualita(categoria=None):
-    db = sqlite3.connect(DB_PATH)
+    data = FILTRI.leggi()['marchi']
     if categoria:
-        righe = db.execute(
-            "SELECT marchio FROM marchi_qualita WHERE categoria = ? ORDER BY marchio COLLATE NOCASE",
-            (categoria,),
-        ).fetchall()
-        risultato = [riga[0] for riga in righe]
-    else:
-        righe = db.execute(
-            "SELECT categoria, marchio FROM marchi_qualita ORDER BY categoria, marchio COLLATE NOCASE"
-        ).fetchall()
-        risultato = righe
-    db.close()
-    return risultato
+        return sorted(data.get(categoria, []), key=str.casefold)
+    return [(category, brand) for category in sorted(data) for brand in sorted(data[category], key=str.casefold)]
 
 
 def leggi_parole_indesiderate():
-    db = sqlite3.connect(DB_PATH)
-    righe = db.execute(
-        "SELECT parola FROM parole_indesiderate_qualita ORDER BY parola COLLATE NOCASE"
-    ).fetchall()
-    db.close()
-    return [riga[0] for riga in righe]
+    return sorted(FILTRI.leggi()['parole'], key=str.casefold)
 
 
 def leggi_prodotti_prioritari(categoria=None):
-    db = sqlite3.connect(DB_PATH)
-    if categoria:
-        righe = db.execute(
-            """
-            SELECT id, categoria, parola, marchio, bonus
-            FROM prodotti_prioritari
-            WHERE categoria = ?
-            ORDER BY bonus DESC, parola COLLATE NOCASE
-            """,
-            (categoria,),
-        ).fetchall()
-    else:
-        righe = db.execute(
-            """
-            SELECT id, categoria, parola, marchio, bonus
-            FROM prodotti_prioritari
-            ORDER BY categoria, bonus DESC, parola COLLATE NOCASE
-            """
-        ).fetchall()
-    db.close()
-    return righe
+    rows = [tuple(r) for r in FILTRI.leggi()['priorita'] if categoria is None or r[1] == categoria]
+    return sorted(rows, key=lambda r: (r[1], -r[4], r[2].casefold()))
 
 
 def leggi_parole_accessori_priorita():
-    db = sqlite3.connect(DB_PATH)
-    righe = db.execute(
-        "SELECT parola FROM parole_accessori_priorita ORDER BY parola COLLATE NOCASE"
-    ).fetchall()
-    db.close()
-    return [riga[0] for riga in righe]
+    return sorted(FILTRI.leggi()['accessori'], key=str.casefold)
 
 
 def termini_prioritari_categoria(categoria):
@@ -3622,7 +3594,7 @@ def _testo_elenco(valori, vuoto="nessuno"):
 
 
 async def mostra_menu_filtri(query):
-    configurazione = leggi_config_automatica()
+    configurazione = leggi_config_automatica(filtri_canale.corrente())
     priorita = "ATTIVA" if configurazione["priorita_amazon"] else "DISATTIVATA"
     tastiera = InlineKeyboardMarkup([
         [InlineKeyboardButton("🏷 MARCHI AUTORIZZATI", callback_data="filter_brands")],
@@ -3659,7 +3631,7 @@ def _callback_ritorno_filtri(context):
 def _categorie_filtri_context(context):
     if not context.user_data.get("filtri_da_selettiva"):
         return set(AUTO_CATEGORIE)
-    return TECH_CATEGORIE if _auto_canale_corrente(context) == "tech" else CASA_CATEGORIE
+    return categorie_consentite_canale(_auto_canale_corrente(context))
 
 
 async def mostra_categorie_marchi(query, context):
@@ -3799,20 +3771,7 @@ async def gestisci_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]),
         )
     if azione == "filter_reset_yes":
-        db = sqlite3.connect(DB_PATH)
-        db.execute("DELETE FROM marchi_qualita")
-        db.execute("DELETE FROM parole_indesiderate_qualita")
-        for categoria, marchi in MARCHI_AUTORIZZATI.items():
-            db.executemany(
-                "INSERT INTO marchi_qualita (categoria, marchio) VALUES (?, ?)",
-                [(categoria, marchio) for marchio in marchi],
-            )
-        db.executemany(
-            "INSERT INTO parole_indesiderate_qualita (parola) VALUES (?)",
-            [(parola,) for parola in PAROLE_INDESIDERATE],
-        )
-        db.commit()
-        db.close()
+        FILTRI.ripristina_filtri(MARCHI_AUTORIZZATI, PAROLE_INDESIDERATE)
         salva_config_automatica("punteggio_minimo", 4, canale_filtri)
         salva_config_automatica("bonus_sconto_da", 30, canale_filtri)
         salva_config_automatica("priorita_amazon", 1, canale_filtri)
@@ -3847,53 +3806,29 @@ def _pulisci_valore_filtro(testo):
     return re.sub(r"\s+", " ", str(testo or "").strip())[:80]
 
 
-async def ricevi_modifica_filtro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ricevi_modifica_filtro(update, context):
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
     valore = _pulisci_valore_filtro(update.message.text)
-    stato = context.user_data.get("stato_filtro_corrente")
+    stato = context.user_data.get('stato_filtro_corrente')
     if len(valore) < 2:
-        await update.message.reply_text("❌ Inserisci almeno 2 caratteri.")
+        await update.message.reply_text('❌ Inserisci almeno 2 caratteri.')
         return stato
-
-    # Lo stato viene valorizzato dai quattro wrapper registrati nel ConversationHandler.
-    categoria = context.user_data.get("filtro_categoria")
-    db = sqlite3.connect(DB_PATH)
-    if stato == FILTRO_MARCHIO_AGGIUNGI:
-        db.execute(
-            "INSERT OR IGNORE INTO marchi_qualita (categoria, marchio) VALUES (?, ?)",
-            (categoria, valore),
-        )
-        messaggio = f"✅ Marchio aggiunto in {AUTO_CATEGORIE[categoria][0]}: {valore}"
-    elif stato == FILTRO_MARCHIO_RIMUOVI:
-        cursore = db.execute(
-            "DELETE FROM marchi_qualita WHERE categoria = ? AND marchio = ? COLLATE NOCASE",
-            (categoria, valore),
-        )
-        messaggio = "✅ Marchio rimosso." if cursore.rowcount else "ℹ️ Marchio non trovato."
-    elif stato == FILTRO_PAROLA_AGGIUNGI:
-        db.execute(
-            "INSERT OR IGNORE INTO parole_indesiderate_qualita (parola) VALUES (?)",
-            (valore,),
-        )
-        messaggio = f"✅ Parola esclusa aggiunta: {valore}"
+    categoria = context.user_data.get('filtro_categoria')
+    if stato in (FILTRO_MARCHIO_AGGIUNGI, FILTRO_MARCHIO_RIMUOVI):
+        if categoria not in AUTO_CATEGORIE:
+            return ConversationHandler.END
+        trovato = FILTRI.marchio(categoria, valore, stato == FILTRO_MARCHIO_AGGIUNGI)
+        messaggio = f'✅ Marchio aggiunto: {valore}' if stato == FILTRO_MARCHIO_AGGIUNGI else '✅ Marchio rimosso.' if trovato else 'ℹ️ Marchio non trovato.'
+    elif stato in (FILTRO_PAROLA_AGGIUNGI, FILTRO_PAROLA_RIMUOVI):
+        trovato = FILTRI.parola('parole', valore, stato == FILTRO_PAROLA_AGGIUNGI)
+        messaggio = f'✅ Parola esclusa aggiunta: {valore}' if stato == FILTRO_PAROLA_AGGIUNGI else '✅ Parola rimossa.' if trovato else 'ℹ️ Parola non trovata.'
     else:
-        cursore = db.execute(
-            "DELETE FROM parole_indesiderate_qualita WHERE parola = ? COLLATE NOCASE",
-            (valore,),
-        )
-        messaggio = "✅ Parola rimossa." if cursore.rowcount else "ℹ️ Parola non trovata."
-    db.commit()
-    db.close()
-    canale = _auto_canale_corrente(context) if context.user_data.get("filtri_da_selettiva") else "tech"
-    salva_config_automatica("attiva", 0, canale)
-    await update.message.reply_text(
-        messaggio + "\n\nL’automazione è stata disattivata: riattivala dopo le modifiche.",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⚙️ TORNA AI FILTRI", callback_data=_callback_ritorno_filtri(context))
-        ]]),
-    )
-    context.user_data.pop("stato_filtro_corrente", None)
+        return ConversationHandler.END
+    channel = _auto_canale_corrente(context)
+    salva_config_automatica('attiva', 0, channel)
+    await update.message.reply_text(messaggio+'\n\nAutomazione disattivata solo per questo canale.', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⚙️ TORNA AI FILTRI',callback_data=_callback_ritorno_filtri(context))]]))
+    context.user_data.pop('stato_filtro_corrente',None)
     return ConversationHandler.END
 
 
@@ -3996,20 +3931,7 @@ async def gestisci_priorita(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]),
         )
     if azione == "priority_reset_yes":
-        db = sqlite3.connect(DB_PATH)
-        db.execute("DELETE FROM prodotti_prioritari")
-        db.execute("DELETE FROM parole_accessori_priorita")
-        for categoria, regole in PRODOTTI_PRIORITARI_DEFAULT.items():
-            db.executemany(
-                "INSERT INTO prodotti_prioritari (categoria, parola, marchio, bonus) VALUES (?, ?, ?, ?)",
-                [(categoria, parola, marchio, bonus) for parola, marchio, bonus in regole],
-            )
-        db.executemany(
-            "INSERT INTO parole_accessori_priorita (parola) VALUES (?)",
-            [(parola,) for parola in PAROLE_ACCESSORI_PRIORITA_DEFAULT],
-        )
-        db.commit()
-        db.close()
+        FILTRI.ripristina_priorita(PRODOTTI_PRIORITARI_DEFAULT, PAROLE_ACCESSORI_PRIORITA_DEFAULT)
         canale = _auto_canale_corrente(context) if context.user_data.get("filtri_da_selettiva") else "tech"
         salva_config_automatica("attiva", 0, canale)
         return await mostra_menu_priorita(query, context)
@@ -4049,72 +3971,38 @@ async def richiedi_modifica_priorita(update: Update, context: ContextTypes.DEFAU
     return stato
 
 
-async def ricevi_modifica_priorita(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ricevi_modifica_priorita(update, context):
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
-    stato = context.user_data.get("stato_priorita_corrente")
+    stato = context.user_data.get('stato_priorita_corrente')
     testo = _pulisci_valore_filtro(update.message.text)
-    categoria = context.user_data.get("priorita_categoria")
-    db = sqlite3.connect(DB_PATH)
-    messaggio = ""
+    categoria = context.user_data.get('priorita_categoria')
     try:
         if stato == PRIORITA_AGGIUNGI:
-            parti = [parte.strip() for parte in testo.split("|")]
-            if len(parti) != 3:
-                await update.message.reply_text("❌ Usa il formato: iPhone | Apple | 5")
-                return stato
-            parola, marchio, bonus_testo = parti
-            bonus = int(bonus_testo)
-            if not parola or not marchio or bonus < 1 or bonus > 10:
+            parts = [p.strip() for p in testo.split('|')]
+            if len(parts) != 3 or categoria not in AUTO_CATEGORIE:
                 raise ValueError
-            db.execute(
-                """
-                INSERT OR REPLACE INTO prodotti_prioritari
-                    (id, categoria, parola, marchio, bonus)
-                VALUES (
-                    (SELECT id FROM prodotti_prioritari WHERE categoria=? AND parola=? COLLATE NOCASE AND marchio=? COLLATE NOCASE),
-                    ?, ?, ?, ?
-                )
-                """,
-                (categoria, parola, marchio, categoria, parola, marchio, bonus),
-            )
-            messaggio = f"✅ Priorità salvata: {parola} · {marchio} · +{bonus}"
+            parola,marchio,bonus = parts[0],parts[1],int(parts[2])
+            if not parola or not marchio or not 1 <= bonus <= 10:
+                raise ValueError
+            FILTRI.priorita(categoria,parola,marchio,bonus)
+            messaggio = f'✅ Priorità salvata: {parola} · {marchio} · +{bonus}'
         elif stato == PRIORITA_RIMUOVI:
-            regola_id = int(testo.lstrip("#"))
-            cursore = db.execute(
-                "DELETE FROM prodotti_prioritari WHERE id=? AND categoria=?",
-                (regola_id, categoria),
-            )
-            messaggio = "✅ Priorità rimossa." if cursore.rowcount else "ℹ️ Regola non trovata."
-        elif stato == PRIORITA_ACCESSORIO_AGGIUNGI:
+            trovato = FILTRI.rimuovi_priorita(int(testo.lstrip('#')),categoria)
+            messaggio = '✅ Priorità rimossa.' if trovato else 'ℹ️ Regola non trovata.'
+        elif stato in (PRIORITA_ACCESSORIO_AGGIUNGI, PRIORITA_ACCESSORIO_RIMUOVI):
             if len(testo) < 2:
                 raise ValueError
-            db.execute(
-                "INSERT OR IGNORE INTO parole_accessori_priorita (parola) VALUES (?)", (testo,)
-            )
-            messaggio = f"✅ Parola anti-accessorio aggiunta: {testo}"
-        elif stato == PRIORITA_ACCESSORIO_RIMUOVI:
-            cursore = db.execute(
-                "DELETE FROM parole_accessori_priorita WHERE parola=? COLLATE NOCASE", (testo,)
-            )
-            messaggio = "✅ Parola rimossa." if cursore.rowcount else "ℹ️ Parola non trovata."
+            trovato = FILTRI.parola('accessori',testo,stato == PRIORITA_ACCESSORIO_AGGIUNGI)
+            messaggio = '✅ Parola anti-accessorio salvata.' if stato == PRIORITA_ACCESSORIO_AGGIUNGI else '✅ Parola rimossa.' if trovato else 'ℹ️ Parola non trovata.'
         else:
             raise ValueError
-        db.commit()
-    except (TypeError, ValueError):
-        db.close()
-        await update.message.reply_text("❌ Valore non valido. Controlla il formato e riprova.")
+    except (TypeError,ValueError):
+        await update.message.reply_text('❌ Valore non valido. Per le priorità usa PRODOTTO | MARCHIO | BONUS, con bonus da 1 a 10.')
         return stato
-    db.close()
-    canale = _auto_canale_corrente(context) if context.user_data.get("filtri_da_selettiva") else "tech"
-    salva_config_automatica("attiva", 0, canale)
-    context.user_data.pop("stato_priorita_corrente", None)
-    await update.message.reply_text(
-        messaggio + "\n\nL’automazione è stata disattivata: riattivala dopo le modifiche.",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🚀 TORNA ALLE PRIORITÀ", callback_data="priority_menu")
-        ]]),
-    )
+    salva_config_automatica('attiva',0,_auto_canale_corrente(context))
+    context.user_data.pop('stato_priorita_corrente',None)
+    await update.message.reply_text(messaggio+'\n\nAutomazione disattivata solo per questo canale.',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🚀 MENU PRIORITÀ',callback_data='priority_menu')]]))
     return ConversationHandler.END
 
 
@@ -4157,7 +4045,7 @@ def tastiera_automazione(configurazione, canale):
         righe.append([
             InlineKeyboardButton("🧺 RACCOLTE CASA", callback_data="casa_collections")
         ])
-    else:
+    elif canale == "tech":
         righe.append([
             InlineKeyboardButton("📦 RACCOLTE TECH", callback_data="tech_collections")
         ])
@@ -4170,8 +4058,10 @@ def tastiera_automazione(configurazione, canale):
 
 
 def _auto_canale_corrente(context):
-    canale = context.user_data.get("auto_canale", "tech")
-    return canale if canale in {"tech", "casa"} else "tech"
+    channel = canale_corrente(context)
+    if channel is None:
+        raise ValueError('Seleziona prima il canale.')
+    return channel.chiave
 
 
 async def mostra_menu_raccolte_casa(query):
@@ -4422,11 +4312,12 @@ async def mostra_menu_selettiva(query, context):
     configurazione = leggi_config_automatica(canale)
     context.user_data["filtri_da_selettiva"] = True
     context.user_data["filtro_canale"] = canale
-    nome_canale = "TECH" if canale == "tech" else "CASA"
+    nome_canale = CANALI[canale].nome
     amazon = "ATTIVA" if configurazione["priorita_amazon"] else "DISATTIVATA"
     varianti = "ATTIVO" if configurazione["raggruppa_varianti"] else "DISATTIVO"
     await query.edit_message_text(
         f"⚙️ MODALITÀ SELETTIVA — {nome_canale}\n\n"
+        "Marchi, parole escluse e regole di priorità sono indipendenti per questo canale.\n"
         "Il punteggio ordina i prodotti migliori; un articolo affidabile e pertinente "
         "può essere usato come riserva se non ci sono candidati sopra soglia.",
         reply_markup=InlineKeyboardMarkup([
@@ -4533,9 +4424,10 @@ def testo_automazione(configurazione, canale):
         if configurazione["qualita_prodotti"] == "marche"
         else configurazione["qualita_prodotti"].capitalize()
     )
-    intestazione = "📱 TECH" if canale == "tech" else "🏠 CASA"
+    intestazione = CANALI[canale].nome
     return (
         f"🤖 INVIO AUTOMATICO — {intestazione}\n\n"
+        "⚠️ Sorgente ricerca Creators API disabilitata nel legacy.\n"
         f"Stato: {'🟢 Attivo' if configurazione['attiva'] else '🔴 Disattivato'}\n"
         f"Intervallo: {configurazione['intervallo_minuti']} minuti\n"
         f"Orario: {configurazione['ora_inizio']}–{configurazione['ora_fine']}\n"
@@ -4646,7 +4538,7 @@ async def aggiorna_menu_automazione(query, context):
 async def mostra_categorie_automatiche(query, context):
     canale = _auto_canale_corrente(context)
     selezionate = set(leggi_config_automatica(canale)["categorie"])
-    consentite = TECH_CATEGORIE if canale == "tech" else CASA_CATEGORIE
+    consentite = categorie_consentite_canale(canale)
     tastiera = []
     for codice, (etichetta, _) in AUTO_CATEGORIE.items():
         if codice not in consentite:
@@ -4783,7 +4675,7 @@ async def gestisci_automazione(update: Update, context: ContextTypes.DEFAULT_TYP
         categoria = azione.replace("auto_cat_", "", 1)
         if categoria not in AUTO_CATEGORIE:
             return
-        consentite = TECH_CATEGORIE if canale == "tech" else CASA_CATEGORIE
+        consentite = categorie_consentite_canale(canale)
         if categoria not in consentite:
             return
         db = sqlite3.connect(DB_PATH)
@@ -5007,21 +4899,22 @@ def _testo_contiene_termine(testo, termine):
 
 def carica_snapshot_filtri(categoria=None, configurazione=None):
     """Legge una sola volta dal database tutti i filtri usati nella ricerca."""
-    configurazione = configurazione or leggi_config_automatica()
-    categorie = [categoria] if categoria else list(AUTO_CATEGORIE)
-    return {
-        "configurazione": configurazione,
-        "marchi": {
-            nome: {_normalizza_qualita(x) for x in leggi_marchi_qualita(nome)}
-            for nome in categorie
-        },
-        "indesiderate": tuple(leggi_parole_indesiderate()),
-        "priorita": {
-            nome: tuple(leggi_prodotti_prioritari(nome))
-            for nome in categorie
-        },
-        "accessori": tuple(leggi_parole_accessori_priorita()),
-    }
+    configurazione = configurazione or leggi_config_automatica(filtri_canale.corrente())
+    with filtri_canale.ambito(configurazione.get('_canale', filtri_canale.corrente())):
+        categorie = [categoria] if categoria else list(AUTO_CATEGORIE)
+        return {
+            "configurazione": configurazione,
+            "marchi": {
+                nome: {_normalizza_qualita(x) for x in leggi_marchi_qualita(nome)}
+                for nome in categorie
+            },
+            "indesiderate": tuple(leggi_parole_indesiderate()),
+            "priorita": {
+                nome: tuple(leggi_prodotti_prioritari(nome))
+                for nome in categorie
+            },
+            "accessori": tuple(leggi_parole_accessori_priorita()),
+        }
 
 
 def valuta_priorita_prodotto(prodotto, categoria, snapshot=None):
@@ -5275,6 +5168,7 @@ def _prodotto_valido_per_raccolta(
     return marchio_noto or "amazon" in venditore
 
 
+@filtri_canale.fisso('casa')
 async def cerca_prodotti_raccolta_casa(configurazione, tema):
     trovati = {}
     giorni_blocco = leggi_config_automatica("casa")["giorni_blocco_duplicati"]
@@ -5598,6 +5492,7 @@ async def tenta_pubblicazione_raccolta_casa(bot):
         return True
 
 
+@filtri_canale.fisso('casa')
 async def controlla_raccolta_dopo_post_casa(bot):
     """Il fallimento della raccolta non deve annullare il post singolo già inviato."""
     try:
@@ -5666,6 +5561,7 @@ def _prodotto_valido_per_raccolta_tech(
     return marchio_noto or "amazon" in venditore
 
 
+@filtri_canale.fisso('tech')
 async def cerca_prodotti_raccolta_tech(configurazione, tema):
     trovati = {}
     giorni_blocco = leggi_config_automatica("tech")["giorni_blocco_duplicati"]
@@ -5993,6 +5889,7 @@ async def tenta_pubblicazione_raccolta_tech(bot):
         return True
 
 
+@filtri_canale.fisso('tech')
 async def controlla_raccolta_dopo_post_tech(bot, origine=None):
     """Solo una pubblicazione della ricerca automatica può avviare le raccolte."""
     if origine != "automatico" or not leggi_config_automatica("tech")["attiva"]:
@@ -6578,8 +6475,8 @@ async def gestisci_ricerca_offerte(update: Update, context: ContextTypes.DEFAULT
     if azione == "offer_search":
         return await menu_ricerca_offerte(query, context)
     if azione.startswith("offer_search_"):
-        canale = azione.rsplit("_", 1)[1]
-        if canale not in {"tech", "casa"}:
+        canale = azione.removeprefix("offer_search_")
+        if canale not in CANALI:
             return
         return await menu_ricerca_offerte(query, context, canale)
     if azione.startswith("os_disc_"):
@@ -6624,8 +6521,7 @@ async def prepara_programmazione_ricerca_offerte(update: Update, context: Contex
     context.user_data["messaggio"] = _messaggio_programmato_da_prodotto(prodotto)
     canale = context.user_data.get("ricerca_offerte_canale")
     context.user_data["telegram_chat_id"] = (
-        CASA_CHANNEL_ID if canale == "casa"
-        else CHANNEL_ID if canale == "tech"
+        _chat_id_per_canale(canale) if canale in CANALI
         else canale_pubblicazione_per_categoria(prodotto.get("categoria"))
     )
     await query.message.reply_text(
@@ -6748,7 +6644,8 @@ def _asin_gia_pubblicato(asin, giorni=10, canale="tech"):
     """Controlla i duplicati separatamente per TECH e CASA, in ogni modalità."""
     if not asin:
         return True
-    canale = "casa" if canale == "casa" else "tech"
+    if canale not in CANALI:
+        raise ValueError("Canale non configurato.")
     adesso = datetime.now(ROMA_TZ)
     limite = adesso - timedelta(days=max(1, int(giorni)))
     chat_id = _chat_id_per_canale(canale)
@@ -6807,7 +6704,8 @@ def _prenota_asin_pubblicazione(asin, canale, giorni):
     """Prenota atomicamente un ASIN prima dell'invio a Telegram."""
     if not asin or _asin_gia_pubblicato(asin, giorni, canale):
         return False
-    canale = "casa" if canale == "casa" else "tech"
+    if canale not in CANALI:
+        raise ValueError("Canale non configurato.")
     adesso = datetime.now(ROMA_TZ)
     limite = adesso - timedelta(days=max(1, int(giorni)))
     db = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
@@ -6862,7 +6760,8 @@ def _prenota_asin_pubblicazione(asin, canale, giorni):
 def _conferma_asin_pubblicato(asin, canale):
     if not asin:
         return
-    canale = "casa" if canale == "casa" else "tech"
+    if canale not in CANALI:
+        raise ValueError("Canale non configurato.")
     db = sqlite3.connect(DB_PATH, timeout=30)
     db.execute(
         """
@@ -6932,6 +6831,7 @@ async def _notifica_admin_automazione(bot, testo):
         print(f"Errore notifica automazione: {errore}")
 
 
+@filtri_canale.per_parametro('canale')
 async def cerca_offerta_automatica(configurazione, categoria_iniziale, canale="tech"):
     categorie = list(configurazione["categorie"])
     if categoria_iniziale in categorie:
@@ -7160,6 +7060,12 @@ async def storico_prezzi_non_disponibile(update, context):
 
 
 async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="automatico"):
+    if canale is not None and canale not in CANALI:
+        raise ValueError('Canale non configurato.')
+    canale_effettivo = canale or ('casa' if prodotto.get('categoria') in CASA_CATEGORIE else 'tech')
+    prodotto = dict(prodotto)
+    if tag_canale(canale_effettivo):
+        prodotto['link'] = link_affiliato_multiplo(prodotto.get('link'), prodotto.get('asin') or risolvi_asin_da_link(prodotto.get('link')), canale_effettivo)
     tipo = tipo_o_fallback(prodotto.get('link'), prodotto)
     if tipo == 'sconosciuto' and not prodotto.get('_lettura_offerta_completata'):
         # Solo per pubblicazioni dirette non passate dalla ricerca automatica.
@@ -7189,12 +7095,7 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
     )
     tastiera = tastiera_offerta_automatica(prodotto["link"], asin=prodotto.get("asin"))
     foto = await prepara_foto_automatica(prodotto["immagine"])
-    canale_effettivo = (
-        canale if canale in {"tech", "casa"}
-        else "casa" if prodotto.get("categoria") in CASA_CATEGORIE
-        else "tech"
-    )
-    telegram_chat_id = CASA_CHANNEL_ID if canale_effettivo == "casa" else CHANNEL_ID
+    telegram_chat_id = _chat_id_per_canale(canale_effettivo)
     giorni_blocco = leggi_config_automatica(canale_effettivo)[
         "giorni_blocco_duplicati"
     ]
@@ -7206,7 +7107,7 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
             f"nel canale {canale_effettivo.upper()}."
         )
     # Ultima verifica degli orari aggiornati prima di inviare l'offerta.
-    await attendi_finestra_offerte(telegram_chat_id)
+    await attendi_finestra_offerte(telegram_chat_id, automazione=canale_effettivo if origine == 'automatico' else None)
     messaggio_telegram = await bot.send_photo(
         chat_id=telegram_chat_id,
         photo=foto,
@@ -7284,10 +7185,10 @@ async def esegui_slot_automatico(app, configurazione, data_slot, ora_slot, canal
         # Uno slot automatico in pausa resta prenotato e attende la ripresa.
         while True:
             adesso_pausa = datetime.now(ROMA_TZ)
-            ripresa = prossimo_fuori_pausa(adesso_pausa, CASA_CHANNEL_ID if canale == 'casa' else CHANNEL_ID)
+            ripresa = prossimo_fuori_pausa(adesso_pausa, _chat_id_per_canale(canale))
             if ripresa <= adesso_pausa:
                 break
-            if ripresa.hour > 21 or (ripresa.hour == 21 and ripresa.minute > 30):
+            if not _dentro_fascia_automatica(configurazione, ripresa):
                 _aggiorna_slot_automatico(data_slot, slot_ora_db, 'rinviata_pausa')
                 return
             await asyncio.sleep(max(1, (ripresa - adesso_pausa).total_seconds()))
@@ -7371,7 +7272,10 @@ def _calcola_prossimo_invio(configurazione, riferimento):
 async def controlla_invii_automatici(app):
     while True:
         try:
-            for canale in ("tech", "casa"):
+            if not SORGENTE_RICERCA_ATTIVA:
+                await asyncio.sleep(30)
+                continue
+            for canale in tuple(CANALI):
                 configurazione = leggi_config_automatica(canale)
                 if not configurazione["attiva"]:
                     continue
@@ -8921,11 +8825,52 @@ import invio_multiplo
 import repost
 import canali
 import menu_canali
+import invio_automatico
+import rubrica
+import aggiunta_canale
 from database import ArchivioCanali
 _servizi_invii = sys.modules[__name__]
 
-CANALI = canali.carica_canali(os.environ)
 ARCHIVIO = ArchivioCanali(DB_PATH)
+FILTRI = filtri_canale.ArchivioFiltri(DB_PATH)
+CANALI = canali.carica_canali(os.environ)
+for _key, _nome, _chat, _admins in ARCHIVIO.canali_salvati():
+    if _key in CANALI:
+        if CANALI[_key].chat_id != _chat:
+            raise ValueError('Conflitto fra canali salvati e configurazione ambiente: ' + _key)
+        continue
+    CANALI[_key] = canali.nuovo_canale(CANALI, _key, _nome, _chat, _admins)
+
+# Identico al legacy: le due funzioni get_items/search_items sono disabilitate.
+SORGENTE_RICERCA_ATTIVA = False
+
+def categorie_consentite_canale(key):
+    if key not in CANALI:
+        raise ValueError('Canale non configurato.')
+    return TECH_CATEGORIE if key == 'tech' else CASA_CATEGORIE if key == 'casa' else set(AUTO_CATEGORIE)
+
+async def gestisci_automatico_v2(update, context):
+    return await invio_automatico.gestisci(_servizi_invii, update, context)
+
+def input_automatico_v2(function):
+    async def callback(update, context):
+        return await invio_automatico.ricevi(_servizi_invii, update, context, function)
+    return callback
+
+async def gestisci_rubrica_v2(update, context):
+    return await rubrica.gestisci(_servizi_invii, update, context)
+
+async def ricevi_rubrica_v2(update, context):
+    return await rubrica.ricevi(_servizi_invii, update, context)
+
+async def ricevi_nuovo_canale_v2(update, context):
+    return await aggiunta_canale.ricevi(_servizi_invii, update, context)
+
+async def interazioni_pubbliche_rubrica(update, context):
+    q = update.callback_query
+    if q and (q.data or '').startswith(('oro_segno:', 'quiz_r:')):
+        return await gestisci_oroscopi(update, context)
+
 
 def reset_flusso(context):
     canali.reset_flusso(context)
@@ -8972,7 +8917,7 @@ async def proteggi_menu_v2(update, context):
     if data.startswith('v2_') or data == 'settings_menu' or data.startswith(('diag_logs_', 'diag_export_')):
         return
     channel = canali.selezionato(context, CANALI, update.effective_user.id)
-    if data.startswith('v2c:'):
+    if data.startswith(('v2c:', 'v2a:', 'v2r:')):
         if channel and data.split(':', 2)[1] == channel.chiave:
             return
     elif channel and (data in {'nuova','rapido','repost','publish_menu','menu_admin','annulla',
@@ -12813,9 +12758,8 @@ async def azione_oroscopo(dato, msg, context):
             "I due post usano gli stessi testi della giornata.\n"
             f"Canali: {', '.join(cfg['canali'])}\n\nScegli dove pubblicare:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📱 Tech", callback_data="oro_canali:tech"),
-                 InlineKeyboardButton("🏠 Casa", callback_data="oro_canali:casa"),
-                 InlineKeyboardButton("📢 Entrambi", callback_data="oro_canali:entrambi")],
+                *[[InlineKeyboardButton('Solo ' + channel.nome, callback_data='oro_canali:' + channel.chiave)] for channel in CANALI.values()],
+                [InlineKeyboardButton('📢 Tutti i canali', callback_data='oro_canali:entrambi')],
                 [InlineKeyboardButton("🕒 Primo orario", callback_data="oro_ora"),
                  InlineKeyboardButton("🕕 Secondo orario", callback_data="oro_ora2")],
                 [InlineKeyboardButton("🔔 Secondo invio: " + ("ON" if cfg['secondo_attivo'] else "OFF"),
@@ -12835,9 +12779,9 @@ async def azione_oroscopo(dato, msg, context):
         await esporta_clic_oroscopo(msg, dato.split(":")[1])
     elif dato.startswith("oro_canali:"):
         valore = dato.split(":")[1]
-        if valore not in {"tech", "casa", "entrambi"}:
+        if valore not in CANALI and valore != "entrambi":
             raise ValueError("Canale non valido.")
-        imposta_oroscopo("canali", ["tech", "casa"] if valore == "entrambi" else [valore])
+        imposta_oroscopo("canali", list(CANALI) if valore == "entrambi" else [valore])
         await mostra_pannello_oroscopo(msg, context)
     elif dato == "oro_attiva":
         if not cfg["attivo"]:
@@ -12981,7 +12925,9 @@ async def pubblica_oroscopo_giornaliero(app, adesso=None):
             imposta_oroscopo("attivo", False)
             return
         for canale in cfg["canali"]:
-            destinazione = CHANNEL_ID if canale == "tech" else CASA_CHANNEL_ID
+            if canale not in CANALI:
+                continue
+            destinazione = _chat_id_per_canale(canale)
             # Prenotazione persistente prima dell'invio: un riavvio non ripubblica.
             with sqlite3.connect(DB_PATH, timeout=30) as db:
                 risultato = db.execute(
@@ -13326,7 +13272,7 @@ def main():
     app.add_handler(TypeHandler(Update, proteggi_menu_v2), group=-2)
 
     # Intercetta solo la rubrica; gli altri flussi mantengono i propri handler.
-    app.add_handler(TypeHandler(Update, gestisci_oroscopi), group=-1)
+    app.add_handler(TypeHandler(Update, interazioni_pubbliche_rubrica), group=-1)
 
     app.add_handler(CallbackQueryHandler(
         storico_prezzi_non_disponibile, pattern="^offer_price_unavailable$"
@@ -13336,6 +13282,8 @@ def main():
 
         entry_points=[
             CallbackQueryHandler(gestisci_menu_v2, pattern=r'^v2(?:_|c:)'),
+            CallbackQueryHandler(gestisci_automatico_v2, pattern=r'^v2a:'),
+            CallbackQueryHandler(gestisci_rubrica_v2, pattern=r'^v2r:'),
             CallbackQueryHandler(ricontrolla_da_cronologia, pattern=r'^archive_recheck_[0-9]+$'),
 
             CallbackQueryHandler(repost_da_pulsante, pattern='^repost$'),
@@ -13374,6 +13322,18 @@ def main():
         ],
 
         states={
+            aggiunta_canale.INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_nuovo_canale_v2)],
+            rubrica.INPUT: [MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, ricevi_rubrica_v2)],
+            AUTO_INTERVALLO: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_automatico_v2('ricevi_intervallo_automatico'))],
+            AUTO_FASCIA: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_automatico_v2('ricevi_fascia_automatica'))],
+            FILTRO_MARCHIO_AGGIUNGI: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_automatico_v2('ricevi_modifica_filtro'))],
+            FILTRO_MARCHIO_RIMUOVI: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_automatico_v2('ricevi_modifica_filtro'))],
+            FILTRO_PAROLA_AGGIUNGI: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_automatico_v2('ricevi_modifica_filtro'))],
+            FILTRO_PAROLA_RIMUOVI: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_automatico_v2('ricevi_modifica_filtro'))],
+            PRIORITA_AGGIUNGI: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_automatico_v2('ricevi_modifica_priorita'))],
+            PRIORITA_RIMUOVI: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_automatico_v2('ricevi_modifica_priorita'))],
+            PRIORITA_ACCESSORIO_AGGIUNGI: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_automatico_v2('ricevi_modifica_priorita'))],
+            PRIORITA_ACCESSORIO_RIMUOVI: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_automatico_v2('ricevi_modifica_priorita'))],
             menu_canali.INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_impostazione_v2)],
 
             LINK: [
