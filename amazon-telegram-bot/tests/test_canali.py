@@ -117,8 +117,8 @@ class MenuTests(unittest.IsolatedAsyncioTestCase):
     async def test_home_contains_global_settings_and_channel_selection(self):
         await menu_canali.gestisci(self.s, self.update, self.context)
         buttons = self.message.reply_text.call_args.kwargs['reply_markup']
-        self.assertIn([('⚙️ Impostazioni generali', 'v2_settings')], buttons)
-        self.assertIn([('☕ Rubrica', 'v2_rubrica')], buttons)
+        self.assertEqual(buttons[-2], [('➕ Aggiungi canale', 'v2_add_channel')])
+        self.assertEqual(buttons[-1], [('☕ Rubrica', 'v2_rubrica'), ('⚙️ Impostazioni', 'v2_settings')])
         self.assertIn([('💻 TECH', 'v2_select_tech')], buttons)
         self.assertNotIn('canale_attivo', self.context.user_data)
 

@@ -1,3 +1,4 @@
+from interfaccia_legacy import navigazione_coordinatore
 import os
 import asyncio
 import sqlite3
@@ -9305,6 +9306,7 @@ async def gestisci_multiplo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # RICEZIONE ORA PROGRAMMAZIONE
 # =========================================================
 
+@navigazione_coordinatore
 async def ricevi_ora_programmazione(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -9721,6 +9723,7 @@ def suggerisci_prossimo_slot(
 # CONFERMA ORARIO VICINO
 # =========================================================
 
+@navigazione_coordinatore
 async def conferma_orario_vicino(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -10039,6 +10042,7 @@ async def invia_lista_programmati(
     )
 
 
+@navigazione_coordinatore
 async def mostra_programmati(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -10081,6 +10085,7 @@ async def mostra_programmati(
     return PROG_SELEZIONE
 
 
+@navigazione_coordinatore
 async def seleziona_programmato(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -10212,6 +10217,7 @@ async def invia_scheda_programmato(
         )
 
 
+@navigazione_coordinatore
 async def gestisci_programmato(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -10395,6 +10401,7 @@ async def gestisci_programmato(
     return PROG_GESTIONE
 
 
+@navigazione_coordinatore
 async def menu_modifica_programmato(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -10599,6 +10606,7 @@ async def menu_modifica_programmato(
     return PROG_MODIFICA_MENU
 
 
+@navigazione_coordinatore
 async def salva_modifica_testuale_programmato(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -10729,6 +10737,7 @@ async def salva_modifica_testuale_programmato(
     return PROG_GESTIONE
 
 
+@navigazione_coordinatore
 async def edit_programmato_nome(
     update,
     context,
@@ -10744,6 +10753,7 @@ async def edit_programmato_nome(
     )
 
 
+@navigazione_coordinatore
 async def edit_programmato_prezzo(
     update,
     context,
@@ -10759,6 +10769,7 @@ async def edit_programmato_prezzo(
     )
 
 
+@navigazione_coordinatore
 async def edit_programmato_vecchio(
     update,
     context,
@@ -10774,6 +10785,7 @@ async def edit_programmato_vecchio(
     )
 
 
+@navigazione_coordinatore
 async def edit_programmato_link(
     update,
     context,
@@ -10789,6 +10801,7 @@ async def edit_programmato_link(
     )
 
 
+@navigazione_coordinatore
 async def edit_programmato_dataora(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -10894,6 +10907,7 @@ async def edit_programmato_dataora(
 
 
 
+@navigazione_coordinatore
 async def gestisci_immagine_programmata(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -10974,6 +10988,7 @@ async def gestisci_immagine_programmata(
     return PROG_IMMAGINE_MENU
 
 
+@navigazione_coordinatore
 async def ricevi_immagine_programmata(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -11031,6 +11046,7 @@ async def ricevi_immagine_programmata(
     return PROG_GESTIONE
 
 
+@navigazione_coordinatore
 async def esci_programmati(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,

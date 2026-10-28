@@ -183,3 +183,11 @@ python -m unittest discover -s tests -v
 I test usano database temporanei e simulano Telegram e Amazon. Il test di
 integrazione costruisce l'applicazione e attraversa gli handler Telegram reali,
 senza polling e senza rete. Richiede le dipendenze di `requirements.txt`.
+
+## Navigazione aggiornata
+
+La schermata iniziale mostra, nell’ordine: lista canali; Aggiungi canale; Rubrica e Impostazioni affiancate. La rubrica è unica e globale, senza pulsanti duplicati nei menu dei canali.
+
+Il ritorno dall’automazione apre il menu del canale; Menu principale apre sempre la lista iniziale. Le schermate di inserimento, i pannelli automatici, le anteprime e gli editor dispongono di pulsanti di uscita. L’aggiunta del canale consente di tornare al passo precedente senza perdere tutta la bozza.
+
+Verifiche: 44 test, con navigazione degli handler reali su TECH, CASA e un canale SPORT simulato; nessun invio reale.

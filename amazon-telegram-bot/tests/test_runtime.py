@@ -63,6 +63,7 @@ with tempfile.TemporaryDirectory() as tmp:
             await click('v2c:casa:posts')
             await click('nuova')
             assert app.user_data[42]['telegram_chat_id']=='-100202'
+            assert any(b.callback_data=='v2c:casa:posts' for row in send.call_args.kwargs['reply_markup'].inline_keyboard for b in row)
             await click('v2_home')
             await click('v2_select_tech')
             await click('v2c:casa:days:90')
@@ -123,7 +124,26 @@ with tempfile.TemporaryDirectory() as tmp:
             await click('v2c:casa:automatic')
             assert 'disabilitata' in edit.call_args.kwargs['text']
             buttons=edit.call_args.kwargs['reply_markup'].inline_keyboard
-            assert all(b.callback_data.startswith(('v2a:casa:', 'v2c:casa:')) for row in buttons for b in row)
+            assert all(b.callback_data.startswith(('v2a:casa:', 'v2c:casa:', 'v2_home')) for row in buttons for b in row)
+            # The actual back button leaves automation; home clears channel selection.
+            await click('v2c:casa:menu')
+            assert 'GESTIONE' in send.call_args.kwargs['text']
+            await click('v2c:casa:automatic')
+            await click('v2_home')
+            assert 'canale_attivo' not in app.user_data[42]
+            for channel in ('tech','casa'):
+                await click('v2_select_'+channel)
+                await click('v2c:'+channel+':automatic')
+                for action in ('auto_categorie','auto_sconto','auto_qualita','auto_duplicates','selective_menu','filter_menu','priority_menu'):
+                    await click('v2a:'+channel+':'+action)
+                    markup=edit.call_args.kwargs['reply_markup']
+                    assert any(b.callback_data=='v2_home' for row in markup.inline_keyboard for b in row)
+                    assert any('⬅' in b.text for row in markup.inline_keyboard for b in row)
+                    await click('v2a:'+channel+':auto_menu')
+                await click('v2c:'+channel+':menu')
+                await click('v2_home')
+            await click('v2_select_casa')
+            await click('v2c:casa:automatic')
             await click('v2a:casa:auto_intervallo')
             await text('75')
             assert runtime.leggi_config_automatica('casa')['intervallo_minuti']==75
@@ -177,9 +197,13 @@ with tempfile.TemporaryDirectory() as tmp:
             await click('v2r:global:oro_salva')
             assert len(runtime.testi_oroscopo(day))==12
             # Add a new category from the UI; verify persistence and reuse of the same modules.
-            await click('v2_settings')
+            await click('v2_home')
             await click('v2_add_channel')
+            await text('Nome provvisorio')
+            await click('v2_add_back')
             await text('SPORT')
+            await text('sport')
+            await click('v2_add_back')
             await text('sport')
             from types import SimpleNamespace
             with patch.object(type(app.bot),'get_chat',new=AsyncMock(return_value=Chat(-100303,'channel',title='SPORT'))), \
@@ -189,6 +213,7 @@ with tempfile.TemporaryDirectory() as tmp:
             assert runtime.CANALI['sport'].chat_id=='-100303'
             assert any(row[0]=='sport' for row in runtime.ArchivioCanali(runtime.DB_PATH).canali_salvati())
             await click('v2_select_sport')
+            assert all('rubrica' not in (b.callback_data or '') for row in send.call_args.kwargs['reply_markup'].inline_keyboard for b in row)
             await click('v2c:sport:automatic')
             assert 'SPORT' in edit.call_args.kwargs['text']
             await click('v2a:sport:auto_intervallo')

@@ -5,6 +5,7 @@ condivise del coordinatore. Non importa manual_bot e non avvia servizi.
 Questo adattatore mantiene i callback esistenti durante la migrazione.
 """
 from __future__ import annotations
+from interfaccia_legacy import navigabile
 
 
 def asin_in_programmati(servizi, destinazione):
@@ -55,6 +56,7 @@ async def leggi_offerta_repost(servizi, link, storico, callback=None):
     return (dati, None)
 
 
+@navigabile
 async def repost_da_pulsante(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END

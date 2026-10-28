@@ -5,8 +5,10 @@ condivise del coordinatore. Non importa manual_bot e non avvia servizi.
 Questo adattatore mantiene i callback esistenti durante la migrazione.
 """
 from __future__ import annotations
+from interfaccia_legacy import navigabile
 
 
+@navigabile
 async def nuova_da_comando(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END
@@ -18,6 +20,7 @@ async def nuova_da_comando(servizi, update: Update, context: ContextTypes.DEFAUL
     return servizi.LINK
 
 
+@navigabile
 async def nuova_da_pulsante(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END
@@ -31,6 +34,7 @@ async def nuova_da_pulsante(servizi, update: Update, context: ContextTypes.DEFAU
     return servizi.LINK
 
 
+@navigabile
 async def ricevi_link(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END
@@ -79,6 +83,7 @@ async def ricevi_link(servizi, update: Update, context: ContextTypes.DEFAULT_TYP
     return servizi.DATI_AUTOMATICI
 
 
+@navigabile
 async def conferma_dati_automatici(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END
@@ -127,6 +132,7 @@ async def conferma_dati_automatici(servizi, update: Update, context: ContextType
         return servizi.NOME
 
 
+@navigabile
 async def ricevi_nome(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END
@@ -135,6 +141,7 @@ async def ricevi_nome(servizi, update: Update, context: ContextTypes.DEFAULT_TYP
     return servizi.PREZZO
 
 
+@navigabile
 async def ricevi_prezzo(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END
@@ -143,6 +150,7 @@ async def ricevi_prezzo(servizi, update: Update, context: ContextTypes.DEFAULT_T
     return servizi.VECCHIO_PREZZO
 
 
+@navigabile
 async def ricevi_vecchio_prezzo(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END
@@ -154,6 +162,7 @@ async def ricevi_vecchio_prezzo(servizi, update: Update, context: ContextTypes.D
     return await servizi.prova_foto_automatica_o_chiedi(update, context)
 
 
+@navigabile
 async def prova_foto_automatica_o_chiedi(servizi, update, context):
     """Cerca e brandizza la foto; se non riesce passa alla scelta manuale."""
     messaggio = update.message if update.message else update.callback_query.message
@@ -182,6 +191,7 @@ async def prova_foto_automatica_o_chiedi(servizi, update, context):
     return await servizi.chiedi_immagine(update, context)
 
 
+@navigabile
 async def chiedi_immagine(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     tastiera = servizi.InlineKeyboardMarkup([[servizi.InlineKeyboardButton('📷 AGGIUNGI IMMAGINE', callback_data='foto_aggiungi')], [servizi.InlineKeyboardButton('➡️ CONTINUA SENZA IMMAGINE', callback_data='foto_salta')]])
     if update.message:
@@ -191,6 +201,7 @@ async def chiedi_immagine(servizi, update: Update, context: ContextTypes.DEFAULT
     return servizi.FOTO_SCELTA
 
 
+@navigabile
 async def scelta_immagine(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -204,6 +215,7 @@ async def scelta_immagine(servizi, update: Update, context: ContextTypes.DEFAULT
     return servizi.FOTO_SCELTA
 
 
+@navigabile
 async def ricevi_immagine(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.photo:
         await update.message.reply_text('❌ Inviami una foto valida.')
@@ -222,6 +234,7 @@ async def ricevi_immagine(servizi, update: Update, context: ContextTypes.DEFAULT
     return await servizi.mostra_anteprima(update, context)
 
 
+@navigabile
 async def mostra_anteprima(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     messaggio = servizi.crea_messaggio(context)
     context.user_data['messaggio'] = messaggio
@@ -246,6 +259,7 @@ async def mostra_anteprima(servizi, update: Update, context: ContextTypes.DEFAUL
     return servizi.CONFERMA
 
 
+@navigabile
 async def conferma(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END

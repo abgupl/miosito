@@ -5,6 +5,7 @@ condivise del coordinatore. Non importa manual_bot e non avvia servizi.
 Questo adattatore mantiene i callback esistenti durante la migrazione.
 """
 from __future__ import annotations
+from interfaccia_legacy import navigabile
 
 
 def filtra_duplicati_recenti_multiplo(servizi, draft):
@@ -154,6 +155,7 @@ async def riepilogo_multiplo(servizi, messaggio, draft, context=None):
         servizi.arma_avvio_multiplo(messaggio, context, draft)
 
 
+@navigabile
 async def rapido_da_comando(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END
@@ -169,6 +171,7 @@ async def rapido_da_comando(servizi, update: Update, context: ContextTypes.DEFAU
     return servizi.RAPIDO
 
 
+@navigabile
 async def rapido_da_pulsante(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await servizi.rapido_da_comando(update, context)
 
@@ -268,6 +271,7 @@ async def prepara_lotto_multiplo(servizi, messaggio, context, draft, links, seco
             await messaggio.reply_text(f'⚠️ Preparazione interrotta: {type(exc).__name__}. Puoi confermare i prodotti già pronti o annullare.', reply_markup=servizi.tastiera_multiplo(draft))
 
 
+@navigabile
 async def ricevi_rapido(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END
@@ -331,6 +335,7 @@ async def ricevi_rapido(servizi, update: Update, context: ContextTypes.DEFAULT_T
     return servizi.RAPIDO
 
 
+@navigabile
 async def gestisci_multiplo(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END

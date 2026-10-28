@@ -29,11 +29,11 @@ async def _gestisci(s, update, context, checked):
     if action == 'auto_toggle' and not s.leggi_config_automatica(channel.chiave)['attiva']:
         if not s.SORGENTE_RICERCA_ATTIVA:
             await update.callback_query.answer()
-            await update.effective_message.reply_text('⚠️ Nel codice legacy la sorgente Creators API è disabilitata. I filtri sono disponibili, ma la ricerca di nuove offerte non può essere attivata finché la sorgente non viene ripristinata.')
+            await proxy.effective_message.reply_text('⚠️ Nel codice legacy la sorgente Creators API è disabilitata. I filtri sono disponibili, ma la ricerca di nuove offerte non può essere attivata finché la sorgente non viene ripristinata.')
             return s.ConversationHandler.END
     if not s.SORGENTE_RICERCA_ATTIVA and (action == 'auto_test' or action.startswith('os_count_') or action.endswith('_bundle_test')):
         await update.callback_query.answer()
-        await update.effective_message.reply_text('⚠️ Ricerca non eseguita: la sorgente Creators API è disabilitata anche nel legacy. Nessun prodotto è stato cercato o pubblicato.')
+        await proxy.effective_message.reply_text('⚠️ Ricerca non eseguita: la sorgente Creators API è disabilitata anche nel legacy. Nessun prodotto è stato cercato o pubblicato.')
         return s.ConversationHandler.END
     filters = {
         'filter_brand_add': s.FILTRO_MARCHIO_AGGIUNGI,
