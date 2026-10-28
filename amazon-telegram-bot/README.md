@@ -201,3 +201,7 @@ Validazione aggiornamento: 46 test senza invii reali.
 ## Stato del bot
 
 Impostazioni → Stato del bot mostra versione del pannello e commit Railway se disponibile, avvio/tempo di attività, monitoraggio globale e disponibilità della sorgente automatica. Le pagine da quattro canali mostrano code separate, post da verificare, prossimo invio previsto e stato automatico. La rubrica indica prossimi orari e disponibilità di testi e foto. Gli ultimi tre errori provengono solo dal processo corrente e sono filtrati per i dati riservati. Il pulsante Aggiorna stato rilegge i dati; nessuna richiesta ad Amazon o verifica Telegram viene eseguita. Gli orari sono previsioni, non garanzie di pubblicazione. Validazione: 48 test.
+
+## Grafica e pulsanti
+
+Impostazioni → Grafica e template ripristina l'accesso al pannello informativo legacy sulle tipologie di offerta, soglie di sconto e condizioni Amazon. Non è un editor dei template. La selezione del template del singolo post resta nel relativo flusso. Tutti i pulsanti costruiti dal bot passano dal formato comune di pulsanti.py: prima lettera maiuscola e successive minuscole, senza modificare callback o URL. Le vecchie tastiere già inviate non vengono riscritte. Validazione: 50 test.

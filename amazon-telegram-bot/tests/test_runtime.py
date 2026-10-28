@@ -60,6 +60,12 @@ with tempfile.TemporaryDirectory() as tmp:
              patch.object(type(app.bot),'edit_message_text',new=AsyncMock(return_value=sent)) as edit:
             await click('v2_home')
             await click('v2_settings')
+            await click('v2_templates')
+            assert 'GRAFICA E TEMPLATE' in send.call_args.kwargs['text']
+            await click('settings_menu')
+            for row in send.call_args.kwargs['reply_markup'].inline_keyboard:
+                for button in row:
+                    assert button.text == runtime.InlineKeyboardButton(button.text,callback_data=button.callback_data).text
             await click('v2_status')
             assert 'DISABILITATA' in send.call_args.kwargs['text']
             assert 'Versione:' in send.call_args.kwargs['text']

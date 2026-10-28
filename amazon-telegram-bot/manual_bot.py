@@ -47,6 +47,8 @@ from telegram import (
     InputMediaPhoto,
 )
 
+from pulsanti import InlineKeyboardButton
+
 from telegram.ext import (
     Application,
     CommandHandler,

@@ -70,6 +70,9 @@ async def gestisci(s, update, context, data_override=None):
             return s.ConversationHandler.END
         monitoraggio.imposta(s.DB_PATH, data == 'v2_monitor_on')
         data = 'v2_monitor'
+    if data == 'v2_templates':
+        await s.template_menu(update, context)
+        return s.ConversationHandler.END
     if data == 'v2_monitor':
         enabled = monitoraggio.attivo(s.DB_PATH)
         await mostra(s, update, '🔎 MONITORAGGIO POST PUBBLICATI\n\nStato: ' + ('ATTIVO' if enabled else 'DISATTIVATO') +
@@ -87,7 +90,8 @@ async def gestisci(s, update, context, data_override=None):
                      'Tag affiliato predefinito: ' + (s.tag_canale(None) or 'non configurato') + '\n\n'
                      'I canali ereditano il tag generale finché non impostano il proprio.\n'
                      'Destinazioni e amministratori si configurano nelle variabili del servizio.',
-                     tastiera(s, [[('🔎 Monitoraggio post: ' + ('ATTIVO' if monitoraggio.attivo(s.DB_PATH) else 'DISATTIVATO'), 'v2_monitor')],
+                     tastiera(s, [[('🎨 Grafica e template', 'v2_templates')],
+                                  [('🔎 Monitoraggio post: ' + ('ATTIVO' if monitoraggio.attivo(s.DB_PATH) else 'DISATTIVATO'), 'v2_monitor')],
                                   [('📢 Canali configurati', 'v2_channels')],
                                   [('📊 Stato del bot', 'v2_status')],
                                   [('📋 Log e diagnostica', 'diag_logs_all_0')],
