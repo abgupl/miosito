@@ -313,19 +313,18 @@ async def ricevi_rapido(servizi, update: Update, context: ContextTypes.DEFAULT_T
     if not servizi.tag_canale(draft['canale']):
         await update.message.reply_text('⚠️ Prima imposta AMAZON_PARTNER_TAG nelle variabili Railway con il TUO tag affiliato Amazon, poi reinvia i link.')
         return servizi.RAPIDO
-    links = servizi.re.findall('https?://[^\\s<>]+', update.message.text)
+    links = servizi.re.findall('https?://[^\\s<>]+', update.message.text, flags=servizi.re.IGNORECASE)
     links = [x.rstrip('.,;)]') for x in links]
     validi = []
     for link in links:
-        host = (servizi.urlparse(link).hostname or '').lower()
-        if host in {'amazon.it', 'www.amazon.it', 'amzn.to', 'amzn.eu', 'link.amazon', 'link.amazon.it', 'a.co'} or host.endswith('.amazon.it'):
+        if servizi.link_amazon_valido(link):
             validi.append(link)
     if not validi or len(validi) > 50:
-        await update.message.reply_text('Invia da 1 a 50 link Amazon Italia validi, uno per riga.')
+        await update.message.reply_text('Invia da 1 a 50 link Amazon validi, uno per riga.')
         return servizi.RAPIDO
     unici = list(dict.fromkeys(validi))
     draft['duplicati'] = len(validi) - len(unici)
-    draft['scartati'] = [f'{len(links) - len(validi)} link non Amazon Italia ignorati'] if len(links) != len(validi) else []
+    draft['scartati'] = [f'{len(links) - len(validi)} link non Amazon ignorati'] if len(links) != len(validi) else []
     draft['elaborazione'] = True
     attesa = await update.message.reply_text(f'🔎 Preparo {len(unici)} prodotti. Puoi usare /annulla per interrompere.')
     context.application.create_task(servizi.prepara_lotto_multiplo(attesa, context, draft, unici), update=update)

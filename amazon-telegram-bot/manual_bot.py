@@ -24,6 +24,7 @@ from collections import deque
 from urllib.parse import urlparse, parse_qs, urlencode
 
 import requests
+from link_amazon import link_amazon_valido
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
@@ -8884,18 +8885,6 @@ def estrai_asin_da_link(link):
     return corrispondenza.group(1).upper() if corrispondenza else None
 
 
-def link_amazon_valido(link):
-    from urllib.parse import urlsplit
-    try:
-        parsed = urlsplit(str(link or '').strip())
-        host = (parsed.hostname or '').lower()
-        return parsed.scheme in ('http', 'https') and (
-            host == 'link.amazon' or host == 'amzn.to' or
-            host == 'amazon.it' or host.endswith('.amazon.it') or
-            bool(re.fullmatch(r'(?:www\.)?amazon\.[a-z.]+', host))
-        )
-    except (ValueError, TypeError):
-        return False
 
 
 def risolvi_asin_da_link(link):

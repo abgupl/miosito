@@ -24,6 +24,15 @@ stato e diagnostica. Destinazioni e amministratori si configurano nelle variabil
 del servizio. La verifica dei permessi Telegram è esplicita: una configurazione
 presente non viene mostrata automaticamente come collegamento verificato.
 
+## Link accettati
+
+Singolo e multiplo usano lo stesso filtro in `link_amazon.py`.
+Sono ammessi link HTTP/HTTPS diretti Amazon e link brevi `amzn.eu`,
+`amzn.to`, `a.co`, `link.amazon` e `link.amazon.it`, oltre ai domini
+Amazon esteri come `amazon.de` e `amazon.com`. Il link deve condurre a un
+prodotto identificabile: l'accettazione del dominio non garantisce la lettura.
+La lettura corrente dei prodotti continua a usare Amazon Italia.
+
 ## Invii e isolamento
 
 La scelta del canale appartiene al singolo amministratore. Cambiare schermata

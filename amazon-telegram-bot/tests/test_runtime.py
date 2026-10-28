@@ -90,7 +90,8 @@ with tempfile.TemporaryDirectory() as tmp:
             with patch.object(runtime,'leggi_offerta_con_sei_tentativi',new=AsyncMock(return_value={
                 'asin':'B087654321','nome':'Offerta di prova','prezzo':'10','vecchio_prezzo':'20',
                 'categoria':'casa','condizione':'Nuovo','disponibile':True})):
-                await text('https://www.amazon.it/dp/B087654321')
+                await text('https://amzn.eu/LinkDiProva')
+                runtime.leggi_offerta_con_sei_tentativi.assert_awaited_once()
             await click('dati_ok')
             await click('foto_salta')
             assert not errors,errors

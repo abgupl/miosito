@@ -2,6 +2,8 @@
 
 ## Completato
 
+- Filtro unico dei link per singolo e multiplo in `link_amazon.py`, inclusi amzn.eu e gli altri link brevi.
+
 - Apertura dei risultati di cronologia e programmati tramite numero digitato,
   con controllo della destinazione; comportamento condiviso da tutti i canali.
 
@@ -15,7 +17,7 @@
 - Pubblicazione singola attraverso la coda, con controllo degli slot del canale.
 - Rifiuto di schermate di altri canali, anteprime scadute e ID fuori dal canale selezionato.
 - Protezione dei job contro un secondo invio della stessa riga e contro annullamenti tardivi.
-- 28 test superati, inclusa un'integrazione con handler Telegram reali e invii simulati.
+- 31 test superati, inclusa un'integrazione con handler Telegram reali e invii simulati.
 
 ## Limiti di questa fase
 
