@@ -14,7 +14,7 @@ def tastiera_scoped(s, markup, namespace, channel):
                 result.append(button)
                 continue
             if data in {'menu_admin', 'publish_menu'}:
-                scoped = 'v2c:' + channel + ':menu'
+                scoped = 'v2_home' if namespace == 'v2r' else 'v2c:' + channel + ':menu'
             elif data == 'settings_menu':
                 scoped = 'v2_settings'
             elif data == 'auto_channels':

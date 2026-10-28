@@ -118,6 +118,7 @@ class MenuTests(unittest.IsolatedAsyncioTestCase):
         await menu_canali.gestisci(self.s, self.update, self.context)
         buttons = self.message.reply_text.call_args.kwargs['reply_markup']
         self.assertIn([('⚙️ Impostazioni generali', 'v2_settings')], buttons)
+        self.assertIn([('☕ Rubrica', 'v2_rubrica')], buttons)
         self.assertIn([('💻 TECH', 'v2_select_tech')], buttons)
         self.assertNotIn('canale_attivo', self.context.user_data)
 

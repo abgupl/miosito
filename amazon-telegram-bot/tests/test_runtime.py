@@ -14,7 +14,7 @@ class RuntimeTests(unittest.TestCase):
         script = r'''
 import asyncio,os,tempfile,warnings,sqlite3
 from pathlib import Path
-from unittest.mock import patch,AsyncMock
+from unittest.mock import patch,AsyncMock,Mock
 from telegram import Update,User,Message,Chat
 from telegram.warnings import PTBUserWarning
 warnings.simplefilter('ignore', PTBUserWarning)
@@ -27,6 +27,7 @@ os.environ.pop('PORT',None)
 with tempfile.TemporaryDirectory() as tmp:
     os.environ['CLUB_DB_PATH']=str(Path(tmp)/'test.db')
     import manual_bot as runtime
+    runtime.requests.get=Mock(side_effect=runtime.requests.ConnectionError('Rete disabilitata nei test'))
     with patch.object(runtime.Application,'run_polling',autospec=True) as polling:
         runtime.main()
         app=polling.call_args.args[0]
@@ -157,20 +158,23 @@ with tempfile.TemporaryDirectory() as tmp:
             assert answer.call_args.kwargs.get('show_alert')
             assert runtime.leggi_config_automatica('casa')['sconto_minimo']==30
             # Legacy horoscope/quiz management, including multiline text import.
-            await click('v2c:tech:rubrica')
-            await click('v2r:tech:oro_menu')
-            await click('v2r:tech:oro_ora')
+            await click('v2_home')
+            await click('v2_rubrica')
+            assert 'canale_attivo' not in app.user_data[42]
+            assert send.call_args.kwargs['reply_markup'].inline_keyboard[-1][0].callback_data=='v2_home'
+            await click('v2r:global:oro_menu')
+            await click('v2r:global:oro_ora')
             await text('14:00')
             assert runtime.configurazione_oroscopo()['ora']=='14:00'
-            await click('v2r:tech:quiz_ora')
+            await click('v2r:global:quiz_ora')
             await text('14:30')
             assert runtime.configurazione_quiz()['ora']=='14:30'
             day=(runtime.datetime.now(runtime.ROMA_TZ).date()+runtime.timedelta(days=1)).isoformat()
             horoscope='DATA: '+day+'\n'+'\n'.join(symbol+' '+name+': Testo per '+name+'.' for symbol,name in runtime.OROSCOPO_SEGNI)
-            await click('v2r:tech:oro_carica')
+            await click('v2r:global:oro_carica')
             await text(horoscope)
-            await click('v2r:tech:oro_verifica')
-            await click('v2r:tech:oro_salva')
+            await click('v2r:global:oro_verifica')
+            await click('v2r:global:oro_salva')
             assert len(runtime.testi_oroscopo(day))==12
             # Add a new category from the UI; verify persistence and reuse of the same modules.
             await click('v2_settings')
@@ -204,16 +208,39 @@ with tempfile.TemporaryDirectory() as tmp:
             assert not any(row[2]=='ProdottoSport' for row in runtime.FILTRI.leggi('tech')['priorita'])
             await click('v2a:sport:filter_reset_yes')
             assert 'paroladiprova' in runtime.FILTRI.leggi('casa')['parole']
-            await click('v2c:sport:rubrica')
-            await click('v2r:sport:oro_canali:sport')
-            assert runtime.configurazione_oroscopo()['canali']==['sport']
+            await click('v2_home')
+            await click('v2_rubrica')
+            await click('v2r:global:oro_canali:sport')
+            assert set(runtime.configurazione_oroscopo()['canali'])=={'tech','casa','sport'}
             runtime.imposta_oroscopo('foto','test-file-id')
             runtime.imposta_oroscopo('attivo',True)
             with patch.object(type(app.bot),'send_photo',new=AsyncMock(return_value=sent)) as photo:
                 await runtime.pubblica_oroscopo_giornaliero(app,runtime.datetime.fromisoformat(day+'T20:00:00').replace(tzinfo=runtime.ROMA_TZ))
-                photo.assert_awaited_once()
-                assert photo.call_args.kwargs['chat_id']=='-100303'
+                assert photo.await_count==3
+                assert {call.kwargs['chat_id'] for call in photo.call_args_list}=={'-100101','-100202','-100303'}
+                await runtime.pubblica_oroscopo_giornaliero(app,runtime.datetime.fromisoformat(day+'T20:00:00').replace(tzinfo=runtime.ROMA_TZ))
+                assert photo.await_count==3
             runtime.imposta_oroscopo('attivo',False)
+            # The same quiz reaches every channel once, including a newly registered category.
+            item={'data':day,'domanda':'Domanda comune di prova?', 'risposte':['A','B','C','D'],
+                  'corretta':0,'approfondimento':'Spiegazione condivisa del quiz di prova.'}
+            with sqlite3.connect(runtime.DB_PATH) as db:
+                db.execute('INSERT INTO quiz_giorni VALUES (?,?)',(day,runtime.json.dumps(item)))
+            runtime.imposta_quiz('foto','quiz-file-id')
+            runtime.imposta_quiz('attivo',True)
+            at=runtime.datetime.fromisoformat(day+'T20:00:00').replace(tzinfo=runtime.ROMA_TZ)
+            with patch.object(type(app.bot),'send_photo',new=AsyncMock(return_value=sent)) as photo:
+                await runtime.pubblica_quiz(app,at)
+                await runtime.pubblica_quiz(app,at)
+                assert photo.await_count==3
+                assert {call.kwargs['chat_id'] for call in photo.call_args_list}=={'-100101','-100202','-100303'}
+            vote=SimpleNamespace(data='quiz_r:'+day+':0',from_user=SimpleNamespace(id=77,username='votante'),
+                                 message=SimpleNamespace(message_id=900,chat_id=-100202,chat=Chat(-100202,'channel')),answer=AsyncMock())
+            await runtime.risposta_quiz(vote)
+            with sqlite3.connect(runtime.DB_PATH) as db:
+                assert db.execute('SELECT count(*) FROM quiz_voti WHERE giorno=?',(day,)).fetchone()[0]==1
+                assert db.execute('SELECT count(*) FROM quiz_uscite_canali WHERE giorno=? AND stato=?',(day,'inviato')).fetchone()[0]==3
+            runtime.imposta_quiz('attivo',False)
             assert not errors,errors
             # Persisted jobs retain the destination independently of the open UI.
             runtime.ARCHIVIO.salva('-100202','attiva','0')

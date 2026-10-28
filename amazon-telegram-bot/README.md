@@ -5,13 +5,12 @@ Il punto di avvio rimane `manual_bot.py`.
 
 ## Menu
 
-`/start` mostra i canali disponibili all'amministratore e **Impostazioni generali**.
+`/start` mostra i canali disponibili all'amministratore, **☕ Rubrica** e **Impostazioni generali**.
 Dopo la selezione, il menu del canale contiene:
 
 - Nuovi post: invio singolo e multiplo.
 - Repost: ricerca casuale nella cronologia del solo canale corrente.
 - Invio automatico: gestione dei filtri e delle impostazioni legacy, indipendenti per canale.
-- Rubrica: oroscopo e quiz del legacy.
 - Programmati e code: elenco, dettagli, modifica e annullamento dei post in attesa.
 - Cronologia: pubblicazioni del canale, con dettagli e paginazione.
 - Impostazioni canale: intervallo, fascia oraria, tag affiliato e verifica dei permessi Telegram.
@@ -74,11 +73,18 @@ gestione, filtri e pianificazione; non ripristina il collegamento API mancante.
 
 ## Rubrica legacy
 
+La rubrica si apre direttamente dalla prima schermata, senza scegliere un
+canale. Quiz e oroscopi hanno un'unica gestione condivisa; anche il ritorno
+al menu porta alla prima schermata. Il pulsante non è nei menu dei canali.
+
 Sono nuovamente disponibili calendario, caricamento e modifica oroscopi,
 foto, anteprima, due orari, attivazione, statistiche e CSV. Il quiz mantiene
 caricamento JSON, foto, calendario, orario, anteprima e statistiche del legacy.
-Gli oroscopi conservano testi e orari condivisi e destinazioni selezionabili,
-ora estese anche ai nuovi canali. Il quiz resta dedicato a TECH.
+Quiz e oroscopo hanno testi, grafica, orari e attivazione condivisi e vengono
+pubblicati su tutti i canali configurati, inclusi quelli aggiunti in futuro.
+Ogni invio del quiz è registrato per giorno e canale, senza ripetizioni dopo
+un riavvio; gli invii storici TECH vengono conservati. Le pause offerte e il
+riconoscimento delle risposte ufficiali al quiz funzionano su tutti i canali.
 Le pause offerte di 30 minuti e i controlli contro gli invii duplicati restano
 quelli precedenti. La gestione della rubrica condivisa richiede accesso a tutti
 i canali; i pulsanti pubblici per segni zodiacali e risposte al quiz restano attivi.

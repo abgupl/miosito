@@ -13,6 +13,7 @@ def tastiera(s, rows):
 def menu_iniziale(s, user_id=None):
     rows = [[(c.nome, 'v2_select_' + c.chiave)] for c in s.CANALI.values()
             if user_id is None or c.accessibile(user_id)]
+    rows.append([('☕ Rubrica', 'v2_rubrica')])
     rows.append([('⚙️ Impostazioni generali', 'v2_settings')])
     return tastiera(s, rows)
 
@@ -23,7 +24,6 @@ def menu_canale(s, channel):
         [('✍️ Nuovi post', prefix + 'posts')],
         [('♻️ Repost', prefix + 'repost')],
         [('🤖 Invio automatico', prefix + 'automatic')],
-        [('☕ Rubrica', prefix + 'rubrica')],
         [('📅 Programmati e code', prefix + 'queue:0')],
         [('📚 Cronologia', prefix + 'history:0')],
         [('⚙️ Impostazioni canale', prefix + 'settings')],
@@ -43,6 +43,11 @@ async def gestisci(s, update, context, data_override=None):
     if q:
         await q.answer()
     data = data_override or (q.data if q else 'v2_home')
+    if data == 'v2_rubrica':
+        import rubrica
+        reset_flusso(context)
+        context.user_data.pop('canale_attivo', None)
+        return await rubrica.apri(s, update, context)
     if data == 'v2_add_channel':
         import aggiunta_canale
         return await aggiunta_canale.avvia(s, update, context)

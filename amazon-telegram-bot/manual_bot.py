@@ -2036,20 +2036,9 @@ def link_oroscopo_recap(giorno, canale, telegram_chat_id):
 
 
 def link_quiz_recap(giorno, telegram_chat_id):
-    """Link al quiz TECH effettivamente pubblicato oggi; nessun link se assente."""
-    if str(telegram_chat_id) != str(CHANNEL_ID):
-        return None
-    try:
-        with sqlite3.connect(DB_PATH, timeout=30) as db:
-            riga = db.execute(
-                "SELECT message_id FROM quiz_uscite WHERE giorno=? AND stato='inviato' AND message_id IS NOT NULL",
-                (giorno,),
-            ).fetchone()
-    except sqlite3.OperationalError:
-        return None
-    if not riga:
-        return None
-    return f"{TECH_CHANNEL_URL.rstrip('/')}/{int(riga[0])}"
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        row = db.execute("SELECT message_id FROM quiz_uscite_canali WHERE giorno=? AND canale=? AND stato='inviato' AND message_id IS NOT NULL", (giorno,str(telegram_chat_id))).fetchone()
+    return link_post_telegram(chat_id=telegram_chat_id,message_id=row[0]) if row else None
 
 
 def recap_gia_inviato(oggi, canale):
@@ -2341,11 +2330,11 @@ def finestre_pausa_caffe(canale, giorno):
                 continue
             previsto = datetime.fromisoformat(f'{giorno_iso}T{ora}').replace(tzinfo=ROMA_TZ)
             finestre.append((previsto, previsto + timedelta(minutes=PAUSA_CAFFE_MINUTI)))
-    if nome == 'tech':
+    if nome in CANALI:
         qcfg = configurazione_quiz()
         if qcfg['attivo']:
             with sqlite3.connect(DB_PATH, timeout=30) as db:
-                row = db.execute("SELECT stato,pubblicato_il FROM quiz_uscite WHERE giorno=?", (giorno_iso,)).fetchone()
+                row = db.execute("SELECT stato,pubblicato_il FROM quiz_uscite_canali WHERE giorno=? AND canale=?", (giorno_iso,str(canale))).fetchone()
             if row and row[1]:
                 inizio = datetime.fromisoformat(row[1]).astimezone(ROMA_TZ)
                 finestre.append((inizio, inizio + timedelta(minutes=PAUSA_CAFFE_MINUTI)))
@@ -2397,7 +2386,7 @@ def descrizione_pause_programmate(canale, giorni):
     eventi = []
     for giorno in sorted(set(giorni)):
         for indice, (inizio, fine) in enumerate(finestre_pausa_caffe(canale, giorno)):
-            titolo = ('🧠 Quiz del Caffè' if configurazione_quiz()['attivo'] and str(canale) == str(CHANNEL_ID) and inizio.strftime('%H:%M') == configurazione_quiz()['ora'] else ('☀️ Prima Pausa Caffè' if inizio.strftime('%H:%M') == configurazione_oroscopo()['ora'] else '🌙 Seconda Pausa Caffè'))
+            titolo = ('🧠 Quiz del Caffè' if configurazione_quiz()['attivo'] and inizio.strftime('%H:%M') == configurazione_quiz()['ora'] else ('☀️ Prima Pausa Caffè' if inizio.strftime('%H:%M') == configurazione_oroscopo()['ora'] else '🌙 Seconda Pausa Caffè'))
             eventi.append((inizio, f'{inizio:%d/%m • %H:%M}\n{titolo}\n⏸ Pausa offerte fino alle {fine:%H:%M}'))
     return eventi
 
@@ -8827,6 +8816,7 @@ import canali
 import menu_canali
 import invio_automatico
 import rubrica
+import quiz_multicanale
 import aggiunta_canale
 from database import ArchivioCanali
 _servizi_invii = sys.modules[__name__]
@@ -8906,6 +8896,8 @@ async def proteggi_menu_v2(update, context):
     if not q or not autorizzato(update):
         return
     data = q.data or ''
+    if data.startswith('v2r:global:'):
+        return
     if data.startswith(('oro_segno:', 'quiz_r:')) or data == 'offer_price_unavailable':
         return
     if channel and (data == 'programmati' or data == 'prog_esci'):
@@ -12339,7 +12331,9 @@ def inizializza_oroscopi():
 
 def configurazione_oroscopo():
     with sqlite3.connect(DB_PATH, timeout=30) as db:
-        return {k: json.loads(v) for k, v in db.execute("SELECT chiave, valore FROM oroscopo_config")}
+        values = {k: json.loads(v) for k, v in db.execute("SELECT chiave, valore FROM oroscopo_config")}
+    values["canali"] = list(CANALI)
+    return values
 
 
 def imposta_oroscopo(chiave, valore):
@@ -12755,11 +12749,9 @@ async def azione_oroscopo(dato, msg, context):
         await msg.reply_text(
             f"⚙️ Impostazioni rubrica\nPrimo invio: {cfg['ora']} (Italia)\n"
             f"Secondo invio: {cfg['ora2']} — {'ON' if cfg['secondo_attivo'] else 'OFF'}\n"
-            "I due post usano gli stessi testi della giornata.\n"
-            f"Canali: {', '.join(cfg['canali'])}\n\nScegli dove pubblicare:",
+            "I due post usano gli stessi testi della giornata su tutti i canali.\n"
+            f"Canali: {', '.join(cfg['canali'])}\n\nImpostazioni comuni a tutti i canali:",
             reply_markup=InlineKeyboardMarkup([
-                *[[InlineKeyboardButton('Solo ' + channel.nome, callback_data='oro_canali:' + channel.chiave)] for channel in CANALI.values()],
-                [InlineKeyboardButton('📢 Tutti i canali', callback_data='oro_canali:entrambi')],
                 [InlineKeyboardButton("🕒 Primo orario", callback_data="oro_ora"),
                  InlineKeyboardButton("🕕 Secondo orario", callback_data="oro_ora2")],
                 [InlineKeyboardButton("🔔 Secondo invio: " + ("ON" if cfg['secondo_attivo'] else "OFF"),
@@ -12939,7 +12931,7 @@ async def pubblica_oroscopo_giornaliero(app, adesso=None):
                 post = await invia_anteprima_oroscopo(app.bot, destinazione, giorno, slot=slot, anteprima=False)
                 with sqlite3.connect(DB_PATH, timeout=30) as db:
                     db.execute("INSERT OR REPLACE INTO pausa_caffe_pubblicazioni VALUES (?,?,?,?)",
-                               (giorno, str(destinazione), slot, datetime.now(ROMA_TZ).isoformat(timespec='seconds')))
+                               (giorno, str(destinazione), slot, adesso.isoformat(timespec='seconds')))
                     db.execute("UPDATE oroscopo_uscite SET stato='inviato', message_id=? WHERE giorno=? AND canale=? AND slot=?",
                                (post.message_id, giorno, str(destinazione), slot))
             except Exception as errore:
@@ -12963,7 +12955,7 @@ async def controlla_oroscopi(app):
 
 
 # =========================================================
-# RUBRICA: QUIZ TECH (un quiz al giorno, orari modificabili)
+# RUBRICA: QUIZ (un quiz al giorno, orari modificabili)
 # =========================================================
 QUIZ_LOCK = asyncio.Lock()
 
@@ -12978,6 +12970,8 @@ def inizializza_quiz():
         """)
         defaults={'attivo':False,'ora':'17:00','foto':'','promemoria':'','esaurimento':''}
         db.executemany('INSERT OR IGNORE INTO quiz_config VALUES (?,?)',[(k,json.dumps(v)) for k,v in defaults.items()])
+
+    quiz_multicanale.inizializza(_servizi_invii)
 
 def configurazione_quiz():
     with sqlite3.connect(DB_PATH, timeout=30) as db:
@@ -13032,14 +13026,7 @@ async def risposta_quiz(query):
             if not 0 <= scelta < len(item['risposte']):
                 raise ValueError('Risposta non valida.')
             uid = query.from_user.id
-            valido = db.execute(
-                "SELECT message_id FROM quiz_uscite WHERE giorno=? AND stato='inviato'", (g,)
-            ).fetchone()
-            ufficiale = bool(
-                valido and query.message
-                and query.message.message_id == valido[0]
-                and str(query.message.chat_id) == str(CHANNEL_ID)
-            )
+            ufficiale = quiz_multicanale.voto_ufficiale(_servizi_invii, db, query, g)
             if ufficiale:
                 # Il voto ufficiale viene registrato una sola volta per utente e data.
                 inserito = db.execute(
@@ -13086,8 +13073,8 @@ async def risposta_quiz(query):
 
 async def mostra_rubrica(msg):
     oc=configurazione_oroscopo(); qc=configurazione_quiz()
-    await msg.reply_text(f"☕ RUBRICA — BESTPRICE24H\n\n☀️ Primo Caffè: {oc['ora']}\n🧠 Quiz TECH: {qc['ora']} ({'ON' if qc['attivo'] else 'OFF'})\n🌙 Secondo Caffè: {oc['ora2']}\n\n⏸ Pausa offerte: 30 minuti per ogni appuntamento.",reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton('♈ Oroscopo',callback_data='oro_menu'),InlineKeyboardButton('🧠 Quiz TECH',callback_data='quiz_menu')],
+    await msg.reply_text(f"☕ RUBRICA — BESTPRICE24H\n\n☀️ Primo Caffè: {oc['ora']}\n🧠 Quiz: {qc['ora']} ({'ON' if qc['attivo'] else 'OFF'})\n🌙 Secondo Caffè: {oc['ora2']}\n\n⏸ Pausa offerte: 30 minuti per ogni appuntamento.",reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton('♈ Oroscopo',callback_data='oro_menu'),InlineKeyboardButton('🧠 Quiz',callback_data='quiz_menu')],
         [InlineKeyboardButton('🕒 Orari rubrica',callback_data='quiz_orari')],
         [InlineKeyboardButton('⬅️ Menu principale',callback_data='menu_admin')]]))
 
@@ -13095,7 +13082,7 @@ async def pannello_quiz(msg):
     c=configurazione_quiz(); oggi=datetime.now(ROMA_TZ).date().isoformat()
     with sqlite3.connect(DB_PATH,timeout=30) as db:
         gg=[r[0] for r in db.execute('SELECT giorno FROM quiz_giorni WHERE giorno>=? ORDER BY giorno',(oggi,))]
-    await msg.reply_text(f"🧠 QUIZ DEL CAFFÈ — TECH\n\nStato: {'ATTIVO' if c['attivo'] else 'SOSPESO'}\n🕒 Orario: {c['ora']} (Italia)\n🖼 Foto: {'caricata' if c['foto'] else 'da caricare'}\n📅 Quiz disponibili: {len(gg)}\nUltima data: {gg[-1] if gg else 'nessuna'}\n⏸ Pausa offerte: 30 minuti",reply_markup=InlineKeyboardMarkup([
+    await msg.reply_text(f"🧠 QUIZ DEL CAFFÈ — TUTTI I CANALI\n\nStato: {'ATTIVO' if c['attivo'] else 'SOSPESO'}\n🕒 Orario: {c['ora']} (Italia)\n🖼 Foto: {'caricata' if c['foto'] else 'da caricare'}\n📅 Quiz disponibili: {len(gg)}\nUltima data: {gg[-1] if gg else 'nessuna'}\n⏸ Pausa offerte: 30 minuti",reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton('📥 Carica quiz',callback_data='quiz_carica'),InlineKeyboardButton('🖼 Imposta foto',callback_data='quiz_foto')],
         [InlineKeyboardButton('🕒 Cambia orario',callback_data='quiz_ora'),InlineKeyboardButton('📅 Calendario quiz',callback_data='quiz_cal:0')],
         [InlineKeyboardButton('👁 Anteprima di oggi',callback_data='quiz_preview')],
@@ -13108,7 +13095,7 @@ async def azione_quiz(dato,msg,context):
     if dato=='quiz_menu': await pannello_quiz(msg); return
     if dato=='quiz_orari':
         c=configurazione_oroscopo(); q=configurazione_quiz()
-        await msg.reply_text(f"🕒 ORARI RUBRICA\n☀️ Primo Caffè: {c['ora']}\n🧠 Quiz TECH: {q['ora']}\n🌙 Secondo Caffè: {c['ora2']}\n\nLe modifiche aggiornano subito la lista Programmati e le pause di 30 minuti.",reply_markup=InlineKeyboardMarkup([
+        await msg.reply_text(f"🕒 ORARI RUBRICA\n☀️ Primo Caffè: {c['ora']}\n🧠 Quiz: {q['ora']}\n🌙 Secondo Caffè: {c['ora2']}\n\nLe modifiche aggiornano subito la lista Programmati e le pause di 30 minuti.",reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton('☀️ Primo Caffè',callback_data='oro_ora'),InlineKeyboardButton('🧠 Quiz',callback_data='quiz_ora')],
             [InlineKeyboardButton('🌙 Secondo Caffè',callback_data='oro_ora2')],
             [InlineKeyboardButton('⬅️ Rubrica',callback_data='rub_menu')]])); return
@@ -13142,7 +13129,7 @@ async def azione_quiz(dato,msg,context):
         if pagina + 1 < pagine: nav.append(InlineKeyboardButton('Successivi ➡️', callback_data=f'quiz_cal:{pagina+1}'))
         if nav: bottoni.append(nav)
         bottoni.append([InlineKeyboardButton('⬅️ Menu Quiz', callback_data='quiz_menu')])
-        await msg.reply_text(f'📅 CALENDARIO QUIZ TECH\nPagina {pagina+1}/{pagine} · {len(righe)} quiz\n\n👁 Da pubblicare · ✅ Pubblicato · ⚠️ Da verificare\n\nSeleziona una data per leggere domanda, risposte e spiegazione in privato.', reply_markup=InlineKeyboardMarkup(bottoni))
+        await msg.reply_text(f'📅 CALENDARIO QUIZ\nPagina {pagina+1}/{pagine} · {len(righe)} quiz\n\n👁 Da pubblicare · ✅ Pubblicato · ⚠️ Da verificare\n\nSeleziona una data per leggere domanda, risposte e spiegazione in privato.', reply_markup=InlineKeyboardMarkup(bottoni))
         return
     if dato.startswith('quiz_det:'):
         parti = dato.split(':')
@@ -13153,7 +13140,7 @@ async def azione_quiz(dato,msg,context):
             uscita = db.execute('SELECT stato FROM quiz_uscite WHERE giorno=?', (giorno,)).fetchone()
         if not r: raise ValueError('Quiz non trovato per questa data.')
         item = json.loads(r[0]); giusta = int(item['corretta'])
-        righe = [f'🧠 QUIZ TECH — {giorno}', f"❓ {item['domanda']}", '']
+        righe = [f'🧠 QUIZ — {giorno}', f"❓ {item['domanda']}", '']
         for i, risposta in enumerate(item['risposte']):
             righe.append(f"{'✅ ' if i == giusta else '▫️ '}{risposta}")
         righe.extend(['', '📚 Spiegazione completa:', item['approfondimento'], '',
@@ -13172,7 +13159,7 @@ async def azione_quiz(dato,msg,context):
     if dato=='quiz_stats':
         with sqlite3.connect(DB_PATH,timeout=30) as db:
             tot,giuste,persone=db.execute('SELECT count(*),coalesce(sum(corretta),0),count(DISTINCT user_id) FROM quiz_voti').fetchone()
-        await msg.reply_text(f'📊 QUIZ TECH\n👥 Partecipanti unici: {persone}\n🗳 Risposte: {tot}\n✅ Corrette: {giuste}\n❌ Errate: {tot-giuste}\n🎯 Successo: {100*giuste/tot:.1f}%' if tot else '📊 Nessun voto registrato.',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Quiz',callback_data='quiz_menu')]])); return
+        await msg.reply_text(f'📊 QUIZ\n👥 Partecipanti unici: {persone}\n🗳 Risposte: {tot}\n✅ Corrette: {giuste}\n❌ Errate: {tot-giuste}\n🎯 Successo: {100*giuste/tot:.1f}%' if tot else '📊 Nessun voto registrato.',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Quiz',callback_data='quiz_menu')]])); return
 
 async def input_quiz(msg,context,modalita):
     if modalita=='quiz_foto':
@@ -13204,32 +13191,10 @@ async def invia_quiz(bot,chat_id,g,anteprima=False):
         row=db.execute('SELECT contenuto FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
     if not row: raise ValueError('Quiz mancante per '+g)
     item=json.loads(row[0])
-    return await bot.send_photo(chat_id=chat_id,photo=c['foto'],caption=f"🧠 QUIZ TECH\n📅 {datetime.strptime(g, '%Y-%m-%d').strftime('%d/%m/%Y')}\n\n⚡ La sfida del giorno!\nQuattro risposte, una sola corretta. Riuscirai a indovinarla?\n\n❓ {item['domanda']}",reply_markup=tastiera_quiz(g))
+    return await bot.send_photo(chat_id=chat_id,photo=c['foto'],caption=f"🧠 QUIZ\n📅 {datetime.strptime(g, '%Y-%m-%d').strftime('%d/%m/%Y')}\n\n⚡ La sfida del giorno!\nQuattro risposte, una sola corretta. Riuscirai a indovinarla?\n\n❓ {item['domanda']}",reply_markup=tastiera_quiz(g))
 
-async def pubblica_quiz(app,adesso=None):
-    adesso=adesso or datetime.now(ROMA_TZ)
-    async with QUIZ_LOCK:
-        c=configurazione_quiz()
-        if not c['attivo']: return
-        g=adesso.date().isoformat()
-        if adesso.strftime('%H:%M')<c['ora']: return
-        with sqlite3.connect(DB_PATH,timeout=30) as db:
-            row=db.execute('SELECT 1 FROM quiz_giorni WHERE giorno=?',(g,)).fetchone()
-            if not row:
-                if c.get('esaurimento')!=g and ADMIN_ID:
-                    await app.bot.send_message(chat_id=ADMIN_ID,text=f'⚠️ Quiz TECH: nessuna domanda caricata per {g}. Carica il prossimo file da ☕ Rubrica → Quiz.')
-                    imposta_quiz('esaurimento',g)
-                return
-            result=db.execute("INSERT OR IGNORE INTO quiz_uscite(giorno,stato) VALUES (?,'in_invio')",(g,))
-            if not result.rowcount: return
-        try:
-            post=await invia_quiz(app.bot,CHANNEL_ID,g)
-            with sqlite3.connect(DB_PATH,timeout=30) as db:
-                db.execute("UPDATE quiz_uscite SET stato='inviato',message_id=?,pubblicato_il=? WHERE giorno=?",(post.message_id,datetime.now(ROMA_TZ).isoformat(timespec='seconds'),g))
-        except Exception as e:
-            with sqlite3.connect(DB_PATH,timeout=30) as db:
-                db.execute("UPDATE quiz_uscite SET stato='da_verificare',errore=? WHERE giorno=?",(str(e)[:500],g))
-            if ADMIN_ID: await app.bot.send_message(chat_id=ADMIN_ID,text=f'⚠️ Invio quiz {g} da verificare: {str(e)[:180]}. Nessun reinvio automatico per evitare doppioni.')
+async def pubblica_quiz(app, adesso=None):
+    return await quiz_multicanale.pubblica(_servizi_invii, app, adesso)
 
 async def controlla_quiz(app):
     while True:
@@ -13242,10 +13207,10 @@ async def controlla_quiz(app):
                     ultimo=r[0]; scadenza=datetime.fromisoformat(f"{ultimo}T{c['ora']}").replace(tzinfo=ROMA_TZ)
                     adesso=datetime.now(ROMA_TZ)
                     if timedelta(0)<=scadenza-adesso<=timedelta(hours=24) and c.get('promemoria')!=ultimo and ADMIN_ID:
-                        await app.bot.send_message(chat_id=ADMIN_ID,text=f'⏰ PROMEMORIA QUIZ TECH\n\n📅 Ultimo quiz disponibile: {datetime.strptime(ultimo, "%Y-%m-%d").strftime("%d/%m/%Y")} alle {c["ora"]}.\n\n📥 Mancano meno di 24 ore alla conclusione del ciclo: carica il nuovo file JSON da 30 giorni tramite ☕ Rubrica → 🧠 Quiz TECH → Carica quiz.')
+                        await app.bot.send_message(chat_id=ADMIN_ID,text=f'⏰ PROMEMORIA QUIZ\n\n📅 Ultimo quiz disponibile: {datetime.strptime(ultimo, "%Y-%m-%d").strftime("%d/%m/%Y")} alle {c["ora"]}.\n\n📥 Mancano meno di 24 ore alla conclusione del ciclo: carica il nuovo file JSON da 30 giorni tramite ☕ Rubrica → 🧠 Quiz → Carica quiz.')
                         imposta_quiz('promemoria',ultimo)
             await pubblica_quiz(app)
-        except Exception as e: print('Errore quiz TECH:',type(e).__name__,str(e)[:300])
+        except Exception as e: print('Errore quiz:',type(e).__name__,str(e)[:300])
         await asyncio.sleep(30)
 
 
