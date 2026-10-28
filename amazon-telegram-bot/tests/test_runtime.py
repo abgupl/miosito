@@ -101,6 +101,9 @@ with tempfile.TemporaryDirectory() as tmp:
             assert runtime.ARCHIVIO.lista('programmazioni','-100202')[1]==1
             assert runtime.ARCHIVIO.lista('programmazioni','-100101')[1]==0
             scheduled=runtime.ARCHIVIO.lista('programmazioni','-100202')[0][0]['id']
+            await click('v2c:casa:queue:0')
+            await text('#'+str(scheduled))
+            assert 'Offerta di prova' in send.call_args.kwargs['text']
             await click(f'v2c:casa:editqueue:{scheduled}')
             await click('prog_modifica')
             await click('prog_edit_nome')

@@ -2,6 +2,9 @@
 
 ## Completato
 
+- Apertura dei risultati di cronologia e programmati tramite numero digitato,
+  con controllo della destinazione; comportamento condiviso da tutti i canali.
+
 - Estrazione di 34 funzioni operative nei tre moduli di invio.
 - Menu iniziale con scelta canale e impostazioni generali.
 - Selezione indipendente per amministratore e accessi per canale.
@@ -12,7 +15,7 @@
 - Pubblicazione singola attraverso la coda, con controllo degli slot del canale.
 - Rifiuto di schermate di altri canali, anteprime scadute e ID fuori dal canale selezionato.
 - Protezione dei job contro un secondo invio della stessa riga e contro annullamenti tardivi.
-- 26 test superati, inclusa un'integrazione con handler Telegram reali e invii simulati.
+- 28 test superati, inclusa un'integrazione con handler Telegram reali e invii simulati.
 
 ## Limiti di questa fase
 

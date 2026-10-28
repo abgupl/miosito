@@ -15,6 +15,10 @@ Dopo la selezione, il menu del canale contiene:
 - Impostazioni canale: intervallo, fascia oraria, tag affiliato e verifica dei permessi Telegram.
 - Cambia canale.
 
+Dopo gli elenchi di cronologia e programmati il bot chiede quale # aprire:
+si digita il numero (123 oppure #123), senza pulsanti per i singoli risultati.
+Il numero viene cercato solo nel canale selezionato.
+
 Le impostazioni generali mostrano tag predefinito, fuso orario, canali configurati,
 stato e diagnostica. Destinazioni e amministratori si configurano nelle variabili
 del servizio. La verifica dei permessi Telegram è esplicita: una configurazione

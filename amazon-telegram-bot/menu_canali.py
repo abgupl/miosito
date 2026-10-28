@@ -151,7 +151,6 @@ async def gestisci(s, update, context, data_override=None):
         for row in rows:
             when = row.get('invio_previsto') or row.get('pubblicata_il')
             text += f"\n#{row['id']} · {str(row.get('nome') or '')[:80]}\n{s._data_archivio(when)} · {row.get('origine') or 'manuale'}\n"
-            buttons.append([(f"Apri #{row['id']}", prefix + f"view:{kind}:{row['id']}")])
         nav = []
         if page:
             nav.append(('⬅️ Precedenti', prefix + f'{kind}:{page - 1}'))
@@ -160,7 +159,12 @@ async def gestisci(s, update, context, data_override=None):
         if nav:
             buttons.append(nav)
         buttons.append(back)
+        if rows:
+            text += '\nQuale # vuoi aprire? Scrivi il numero del post, ad esempio 123 oppure #123.'
+            context.user_data['v2_input'] = (channel.chiave, 'apri_' + kind)
         await mostra(s, update, text, tastiera(s, buttons))
+        if rows:
+            return INPUT
     elif action.startswith('editqueue:'):
         number = action.split(':')[1]
         row = s.ARCHIVIO.dettaglio('programmazioni', channel.chat_id, int(number)) if number.isdigit() else None
@@ -205,6 +209,15 @@ async def ricevi_impostazione(s, update, context):
         return s.ConversationHandler.END
     field = pending[1]
     value = update.message.text.strip()
+    if field in {'apri_history', 'apri_queue'}:
+        number = value.removeprefix('#').strip()
+        kind = field.removeprefix('apri_')
+        table = 'recap_offerte' if kind == 'history' else 'programmazioni'
+        row = s.ARCHIVIO.dettaglio(table, channel.chat_id, int(number)) if re.fullmatch(r'[0-9]{1,18}', number) else None
+        if not row or (kind == 'queue' and row['stato'] not in {'attesa', 'in_invio', 'da_verificare'}):
+            await update.message.reply_text('❌ Numero non valido o post non presente nell’elenco di questo canale. Quale # vuoi aprire?')
+            return INPUT
+        return await gestisci(s, update, context, data_override=f'v2c:{channel.chiave}:view:{kind}:{number}')
     if field == 'intervallo' and value.isdigit() and 1 <= int(value) <= 1440:
         s.ARCHIVIO.salva(channel.chat_id, field, int(value))
     elif field == 'fascia' and re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d-(?:[01]\d|2[0-3]):[0-5]\d', value) and value[:5] < value[6:]:

@@ -175,6 +175,29 @@ class MenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(invio_multiplo.intervallo_multiplo(s, 42, 60, 'casa'), 60)
         store.salva.assert_called_once_with('CASA', 'intervallo', 60)
 
+    async def test_lists_request_typed_number_for_all_channels_and_both_archives(self):
+        self.registry['sport'] = canali.Canale('sport', 'SPORT', 'SPORT')
+        self.s._data_archivio = lambda value: 'oggi'
+        self.s.ARCHIVIO.lista = Mock(return_value=([{'id': 123, 'nome': 'Prodotto', 'stato': 'attesa'}], 1, 0))
+        for key in ('tech', 'casa', 'sport'):
+            for kind in ('history', 'queue'):
+                self.context.user_data = {'canale_attivo': key}
+                self.query.data = f'v2c:{key}:{kind}:0'
+                result = await menu_canali.gestisci(self.s, self.update, self.context)
+                self.assertEqual(result, menu_canali.INPUT)
+                self.assertEqual(self.context.user_data['v2_input'], (key, 'apri_' + kind))
+                call = self.message.reply_text.call_args
+                self.assertIn('Quale # vuoi aprire?', call.args[0])
+                self.assertFalse(any('view:' in data for row in call.kwargs['reply_markup'] for _, data in row))
+
+    async def test_number_from_other_channel_is_rejected_and_waits_for_retry(self):
+        self.context.user_data = {'canale_attivo': 'casa', 'v2_input': ('casa', 'apri_history')}
+        self.update.message = SimpleNamespace(text='#123', reply_text=AsyncMock())
+        self.s.ARCHIVIO.dettaglio = Mock(return_value=None)
+        result = await menu_canali.ricevi_impostazione(self.s, self.update, self.context)
+        self.assertEqual(result, menu_canali.INPUT)
+        self.s.ARCHIVIO.dettaglio.assert_called_once_with('recap_offerte', 'CASA', 123)
+
 
 if __name__ == '__main__':
     unittest.main()
