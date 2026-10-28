@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Le offerte Amazon pubblicate sui canali Telegram BESTPRICE24H.">
+    <title>BESTPRICE24H | Offerte Amazon</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#inizio" aria-label="BESTPRICE24H, torna all'inizio">
+        <span class="brand-mark">BP</span>
+        <span><strong>BESTPRICE</strong><b>24H</b></span>
+      </a>
+      <a class="telegram-top" href="https://t.me/bestprice_2026" target="_blank" rel="noreferrer">➤ Seguici su Telegram</a>
+    </header>
+
+    <main id="inizio">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">● OFFERTE VERIFICATE OGNI GIORNO</p>
+          <h1>Meno offerte.<br><em>Più affari.</em></h1>
+          <p class="hero-text">Gli stessi prodotti pubblicati sui canali Telegram BESTPRICE24H, raccolti e aggiornati automaticamente.</p>
+        </div>
+        <aside class="hero-card">
+          <span class="bolt">⚡</span>
+          <h2>Solo occasioni vere</h2>
+          <p>Prodotti utili, sconti interessanti e disponibilità reali.</p>
+          <strong id="totale-offerte">—</strong> offerte online
+        </aside>
+      </section>
+
+      <section class="offers-section" id="offerte">
+        <div class="section-heading">
+          <div><small>AGGIORNATE AUTOMATICAMENTE</small><h2>Le offerte del momento</h2></div>
+          <p id="ultimo-aggiornamento">Sincronizzazione in corso…</p>
+        </div>
+
+        <div class="toolbar">
+          <div class="filters" aria-label="Filtra le offerte">
+            <button class="active" data-canale="tutte">🔥 Tutte</button>
+            <button data-canale="tech">💻 Tech</button>
+            <button data-canale="casa">🏠 Casa</button>
+          </div>
+          <input id="ricerca" type="search" placeholder="Cerca un prodotto" aria-label="Cerca un prodotto">
+        </div>
+
+        <div id="stato" class="state-card">Sto caricando le offerte…</div>
+        <div id="lista-offerte" class="offer-grid" hidden></div>
+      </section>
+
+      <section class="telegram-banner">
+        <div><strong>Vuoi riceverle appena escono?</strong><span>Entra nel canale Telegram BESTPRICE24H</span></div>
+        <a href="https://t.me/bestprice_2026" target="_blank" rel="noreferrer">Apri Telegram ↗</a>
+      </section>
+    </main>
+
+    <footer>
+      <strong>BESTPRICE<span>24H</span></strong>
+      <p>In qualità di Affiliato Amazon riceviamo un guadagno dagli acquisti idonei. Prezzi e disponibilità possono variare.</p>
+    </footer>
+    <script src="app.js" defer></script>
+  </body>
+</html>
