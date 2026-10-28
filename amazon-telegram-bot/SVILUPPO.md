@@ -16,7 +16,12 @@
 
 ## Limiti di questa fase
 
-- Nessun deploy o invio reale eseguito; il servizio precedente rimane invariato.
+- Cartella principale `amazon-telegram-bot` assegnata alla V2; vecchio codice
+  preservato in `amazon-telegram-bot-legacy`.
+- Default del database ripristinato a `club.db` relativo alla directory di lavoro,
+  identico al vecchio bot; `CLUB_DB_PATH` continua ad avere precedenza.
+- Nessuna operazione diretta sul servizio o sul database di produzione eseguita;
+  un deploy automatico GitHub può attivare la V2 dopo questo cambio.
 - Nessuna migrazione del database di produzione eseguita.
 - Gestione amministratori e aggiunta canali tramite variabili d'ambiente.
 - Il repost avvia un lotto su richiesta, non una nuova ricerca ricorrente autonoma.

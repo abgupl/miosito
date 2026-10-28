@@ -156,7 +156,7 @@ CASA_CATEGORIE = {
     "illuminazione",
 }
 ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
-DB_PATH = os.environ.get("CLUB_DB_PATH", str(Path(__file__).resolve().parent / "club_v2.db"))
+DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
 ROMA_TZ = ZoneInfo("Europe/Rome")
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "bestprice24h_logo.png"
 AMAZON_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "amazon_logo.png"
@@ -2275,11 +2275,7 @@ async def controlla_recap(app):
 # =========================================================
 
 
-def config_fascia_manuale(chiave=None, valore=None, canale=None):
-    if canale is not None:
-        if chiave is not None:
-            ARCHIVIO.salva(str(canale), chiave, valore)
-        return ARCHIVIO.impostazioni(str(canale))
+def config_fascia_manuale(chiave=None, valore=None):
     with sqlite3.connect(DB_PATH, timeout=30) as db:
         db.execute("CREATE TABLE IF NOT EXISTS fascia_manuale (chiave TEXT PRIMARY KEY, valore TEXT NOT NULL)")
         if chiave is not None:
@@ -2315,7 +2311,7 @@ def finestre_pausa_caffe(canale, giorno):
     registrata non genera una seconda finestra soltanto perche' cambia l'orario.
     """
     cfg = configurazione_oroscopo()
-    nome = next((c.chiave for c in CANALI.values() if c.chat_id == str(canale)), None)
+    nome = 'casa' if str(canale) == str(CASA_CHANNEL_ID) else 'tech'
     giorno_iso = giorno.isoformat() if hasattr(giorno, 'isoformat') else str(giorno)
     with sqlite3.connect(DB_PATH, timeout=30) as db:
         pubblicazioni = db.execute(
@@ -2371,7 +2367,7 @@ async def attendi_finestra_offerte(canale):
     while True:
         adesso = datetime.now(ROMA_TZ)
         ripresa = prossimo_fuori_pausa(adesso, canale)
-        ripresa = prossimo_orario_manuale(ripresa, config_fascia_manuale(canale=canale))
+        ripresa = prossimo_orario_manuale(ripresa)
         if ripresa <= adesso:
             return
         await asyncio.sleep(min(30, max(1, (ripresa - adesso).total_seconds())))
@@ -2406,6 +2402,7 @@ def slot_manuale_libero(data, occupati, minuti, config):
 
 def riallinea_programmati_fascia():
     """Riposiziona fuori fascia e arretrati, preservando ordine e intervalli."""
+    cfg = config_fascia_manuale()
     ora = datetime.now(timezone.utc).replace(microsecond=0)
     modificati = 0
     with sqlite3.connect(DB_PATH, timeout=30) as db:
@@ -2419,7 +2416,6 @@ def riallinea_programmati_fascia():
             precedente = precedente.astimezone(timezone.utc)
             base = max(precedente, ora) if precedente < ora-timedelta(seconds=30) else precedente
             canale = str(chat or CHANNEL_ID)
-            cfg = config_fascia_manuale(canale=canale)
             nuovo = slot_manuale_libero(base, occupati.setdefault(canale, []), minuti or DISTANZA_MINIMA_MINUTI, dict(cfg, _canale=canale))
             occupati[canale].append(nuovo)
             if nuovo.astimezone(timezone.utc) != precedente:
@@ -2578,13 +2574,11 @@ def salva_programmazione(
         .astimezone(timezone.utc)
     )
 
-    cfg = dict(config_fascia_manuale(canale=telegram_chat_id or CHANNEL_ID), _canale=str(telegram_chat_id or CHANNEL_ID))
-    primo_consentito = datetime.now(ROMA_TZ) + timedelta(minutes=minuti_rimanenti_prima_del_prossimo_invio(telegram_chat_id or CHANNEL_ID))
-    invio_previsto_locale = max(invio_previsto_locale, primo_consentito)
+    cfg = config_fascia_manuale()
     db = sqlite3.connect(DB_PATH, timeout=30)
     cur = db.cursor()
     cur.execute('BEGIN IMMEDIATE')
-    righe = cur.execute("SELECT invio_previsto FROM programmazioni WHERE stato IN ('attesa','in_invio','da_verificare') AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),str(telegram_chat_id or CHANNEL_ID))).fetchall()
+    righe = cur.execute("SELECT invio_previsto FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),str(telegram_chat_id or CHANNEL_ID))).fetchall()
     occupati = [_data_sqlite(r[0]) for r in righe if _data_sqlite(r[0])]
     invio_previsto_locale = slot_manuale_libero(invio_previsto_locale, occupati, DISTANZA_MINIMA_MINUTI, cfg)
     invio_previsto_utc = invio_previsto_locale.astimezone(timezone.utc)
@@ -2669,10 +2663,6 @@ async def invia_offerta_programmata(
         telegram_chat_id,
     ) = programmazione
     destinazione = telegram_chat_id or CHANNEL_ID
-    with sqlite3.connect(DB_PATH) as db_stato:
-        row = db_stato.execute("SELECT stato FROM programmazioni WHERE id=? AND CAST(telegram_chat_id AS TEXT)=?", (programmazione_id, str(destinazione))).fetchone()
-    if not row or row[0] != 'attesa':
-        return
 
     with sqlite3.connect(DB_PATH) as db_duplicati:
         origine_riga = db_duplicati.execute(
@@ -2704,10 +2694,6 @@ async def invia_offerta_programmata(
 
     # Ricontrolla la pausa anche se la coda e' stata preparata ore prima.
     await attendi_finestra_offerte(destinazione)
-    with sqlite3.connect(DB_PATH) as db_stato:
-        acquisita = db_stato.execute("UPDATE programmazioni SET stato='in_invio' WHERE id=? AND CAST(telegram_chat_id AS TEXT)=? AND stato='attesa'", (programmazione_id, str(destinazione))).rowcount
-    if not acquisita:
-        return
     if foto_file_id:
         messaggio_telegram = await bot.send_photo(
             chat_id=destinazione,
@@ -2797,6 +2783,9 @@ async def controlla_programmazioni(app):
 
             riallinea_programmati_fascia()
             adesso_locale = datetime.now(ROMA_TZ)
+            if prossimo_orario_manuale(adesso_locale) != adesso_locale:
+                await asyncio.sleep(30)
+                continue
 
             db = sqlite3.connect(DB_PATH)
             cur = db.cursor()
@@ -2828,8 +2817,8 @@ async def controlla_programmazioni(app):
 
             for programmazione in programmazioni:
                 ora_controllo = datetime.now(ROMA_TZ)
-                if prossimo_orario_manuale(ora_controllo, config_fascia_manuale(canale=programmazione[6] or CHANNEL_ID)) != ora_controllo:
-                    continue
+                if prossimo_orario_manuale(ora_controllo) != ora_controllo:
+                    break
                 if prossimo_fuori_pausa(ora_controllo, programmazione[6]) > ora_controllo:
                     riallinea_programmati_fascia()
                     continue
@@ -2843,8 +2832,6 @@ async def controlla_programmazioni(app):
 
                 except Exception as errore:
 
-                    with sqlite3.connect(DB_PATH) as db_stato:
-                        db_stato.execute("UPDATE programmazioni SET stato='da_verificare' WHERE id=? AND stato='in_invio'", (programmazione[0],))
                     print(
                         "Errore invio programmato: "
                         f"{errore}"
@@ -2892,7 +2879,7 @@ async def avvia_programmazioni(app):
 
 def autorizzato(update: Update) -> bool:
 
-    if not ADMIN_ID and not os.environ.get('ADMIN_TELEGRAM_IDS'):
+    if not ADMIN_ID:
         return False
 
     user = update.effective_user
@@ -2900,7 +2887,7 @@ def autorizzato(update: Update) -> bool:
     if not user:
         return False
 
-    return str(user.id) in {x.strip() for x in (str(ADMIN_ID or '') + ',' + os.environ.get('ADMIN_TELEGRAM_IDS', '')).split(',') if x.strip()}
+    return str(user.id) == str(ADMIN_ID)
 
 
 async def controlla_autorizzazione(update: Update):
@@ -6730,7 +6717,7 @@ def _aggiorna_slot_automatico(
 
 
 def _chat_id_per_canale(canale):
-    return canali.chat_per_chiave(CANALI, canale)
+    return str(CASA_CHANNEL_ID if canale == "casa" else CHANNEL_ID)
 
 
 def _data_sqlite(valore):
@@ -7661,9 +7648,8 @@ async def _modifica_post_terminato(
         """
         UPDATE recap_offerte SET stato='terminata'
         WHERE asin = (SELECT asin FROM invii_automatici WHERE id = ?)
-          AND telegram_chat_id = ? AND telegram_message_id = ?
         """,
-        (invio_id, str(destinazione), message_id),
+        (invio_id,),
     )
     db.commit()
     db.close()
@@ -8318,23 +8304,43 @@ async def controlla_offerte_terminate(app):
 # =========================================================
 
 def menu_principale():
-    return menu_canali.menu_iniziale(_servizi_invii)
+
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📤 PUBBLICA OFFERTA", callback_data="publish_menu")],
+            [InlineKeyboardButton("🔎 CERCA OFFERTE", callback_data="offer_search")],
+            [InlineKeyboardButton("🤖 INVIO AUTOMATICO", callback_data="auto_channels")],
+            [InlineKeyboardButton("📅 POST PROGRAMMATI", callback_data="programmati")],
+            [InlineKeyboardButton("📚 CRONOLOGIA", callback_data="history_menu")],
+            [InlineKeyboardButton("🎵 AUTOMAZIONE TIKTOK", callback_data="tiktok_menu")],
+            [InlineKeyboardButton("☕ RUBRICA", callback_data="rub_menu")],
+            [InlineKeyboardButton("⚙️ IMPOSTAZIONI", callback_data="settings_menu")],
+        ]
+    )
 
 
 def menu_pubblicazione():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('📝 Invio singolo', callback_data='nuova')],
-        [InlineKeyboardButton('📦 Invio multiplo', callback_data='rapido')],
-        [InlineKeyboardButton('⬅️ Menu canale', callback_data='menu_admin')],
+        [InlineKeyboardButton("🔗 INSERIMENTO DA LINK", callback_data="nuova")],
+        [InlineKeyboardButton("📦 INVIO MULTIPLO", callback_data="rapido")],
+        [InlineKeyboardButton("🔁 REPOST", callback_data="repost")],
+        [InlineKeyboardButton("🕒 FASCIA ORARIA MANUALE E MULTIPLO", callback_data="mf_menu")],
+        [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
     ])
 
 
-async def mostra_menu_pubblicazione(update, context):
-    if not await controlla_autorizzazione(update) or not await richiedi_canale(update, context):
-        return ConversationHandler.END
-    await update.callback_query.answer()
-    await update.effective_message.reply_text('✍️ NUOVI POST — ' + canale_corrente(context).nome, reply_markup=menu_pubblicazione())
-    return ConversationHandler.END
+async def mostra_menu_pubblicazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "📤 PUBBLICA OFFERTA\n\n"
+        "Scegli come vuoi inserire il prodotto.\n\n"
+        "Le offerte automatiche vengono inviate al canale corretto in base "
+        "alla categoria del prodotto.",
+        reply_markup=menu_pubblicazione(),
+    )
 
 
 def menu_storico():
@@ -8442,8 +8448,16 @@ async def esporta_log_diagnostici(update: Update, context: ContextTypes.DEFAULT_
                                     filename=data.name, caption=f"📋 Log {kind}: {len(entries)} eventi")
 
 
-async def mostra_menu_impostazioni(update, context):
-    return await menu_canali.gestisci(_servizi_invii, update, context, data_override='v2_settings')
+async def mostra_menu_impostazioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await controlla_autorizzazione(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "⚙️ IMPOSTAZIONI\n\n"
+        "Gestisci canali, grafica, filtri e stato generale del bot.",
+        reply_markup=menu_impostazioni(),
+    )
 
 
 async def mostra_gestione_canali(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8516,14 +8530,23 @@ def menu_dopo_pubblicazione():
     )
 
 
-async def torna_menu_admin(update, context):
+async def torna_menu_admin(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     if not await controlla_autorizzazione(update):
-        return ConversationHandler.END
-    await update.callback_query.answer()
-    reset_flusso(context)
-    channel = canale_corrente(context)
-    await update.effective_message.reply_text('📢 GESTIONE ' + channel.nome if channel else '📢 SCEGLI IL CANALE', reply_markup=menu_canali.menu_canale(_servizi_invii, channel) if channel else menu_canali.menu_iniziale(_servizi_invii, update.effective_user.id))
-    return ConversationHandler.END
+        return
+
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "🔥 AMAZON OFFERTE BOT\n\n"
+        "🛠 Modalità amministratore\n\n"
+        "Cosa vuoi fare?",
+        reply_markup=menu_principale(),
+    )
 
 
 
@@ -8595,14 +8618,12 @@ async def start(
     # ADMIN
     # =====================================================
     if autorizzato(update):
-        reset_flusso(context)
-        context.user_data.pop('canale_attivo', None)
 
         await update.message.reply_text(
             "🔥 AMAZON OFFERTE BOT\n\n"
             "🛠 Modalità amministratore\n\n"
-            "Scegli il canale da gestire:",
-            reply_markup=menu_canali.menu_iniziale(_servizi_invii, update.effective_user.id),
+            "Cosa vuoi fare?",
+            reply_markup=menu_principale(),
         )
 
         return ConversationHandler.END
@@ -8926,125 +8947,290 @@ def leggi_prodotto_creators_da_link(link):
 
 
 
-# Adattatori espliciti: i moduli non importano il coordinatore.
-import invio_singolo
-import invio_multiplo
-import repost
-import canali
-import menu_canali
-from database import ArchivioCanali
-_servizi_invii = sys.modules[__name__]
-
-CANALI = canali.carica_canali(os.environ)
-ARCHIVIO = ArchivioCanali(DB_PATH)
-
-def reset_flusso(context):
-    canali.reset_flusso(context)
-
-def canale_corrente(context):
-    return canali.selezionato(context, CANALI)
-
-async def richiedi_canale(update, context):
-    channel = canali.selezionato(context, CANALI, update.effective_user.id)
-    if channel is None:
-        await update.effective_message.reply_text('Seleziona prima il canale da gestire.', reply_markup=menu_canali.menu_iniziale(_servizi_invii, update.effective_user.id))
-        return False
-    return True
-
-def tag_canale(key):
-    override = ARCHIVIO.impostazioni(CANALI[key].chat_id)['tag'] if key else ''
-    return override or (os.environ.get('AMAZON_PARTNER_TAG') or os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip()
-
-async def gestisci_menu_v2(update, context):
-    return await menu_canali.gestisci(_servizi_invii, update, context)
-
-async def ricevi_impostazione_v2(update, context):
-    return await menu_canali.ricevi_impostazione(_servizi_invii, update, context)
-
-async def proteggi_menu_v2(update, context):
-    channel = canali.selezionato(context, CANALI, update.effective_user.id if update.effective_user else None)
-    if update.message and not (update.message.text or '').startswith('/') and context.user_data.get('prog_id'):
-        post = ARCHIVIO.dettaglio('programmazioni', channel.chat_id, context.user_data['prog_id']) if channel else None
-        if not post or post['stato'] != 'attesa':
-            await update.message.reply_text('Post non più modificabile nel canale corrente. Riapri Programmati e code.')
-            raise ApplicationHandlerStop
-    q = update.callback_query
-    if not q or not autorizzato(update):
-        return
-    data = q.data or ''
-    if data.startswith(('oro_segno:', 'quiz_r:')) or data == 'offer_price_unavailable':
-        return
-    if channel and (data == 'programmati' or data == 'prog_esci'):
-        return
-    if channel and data.startswith('prog_') and not data.startswith('prog_giorno_'):
-        post = ARCHIVIO.dettaglio('programmazioni', channel.chat_id, context.user_data.get('prog_id', -1))
-        if post and post['stato'] == 'attesa':
-            return
-    if data.startswith('v2_') or data == 'settings_menu' or data.startswith(('diag_logs_', 'diag_export_')):
-        return
-    channel = canali.selezionato(context, CANALI, update.effective_user.id)
-    if data.startswith('v2c:'):
-        if channel and data.split(':', 2)[1] == channel.chiave:
-            return
-    elif channel and (data in {'nuova','rapido','repost','publish_menu','menu_admin','annulla',
-                               'dati_ok','dati_manual','dati_riprova','foto_aggiungi','foto_salta',
-                               'pubblica','programma','cambia_template','conferma_orario_vicino','cambia_orario'}
-                      or re.fullmatch(r'prog_giorno_[012]|tpl_(pulito|aggressivo|tech)|multi_(timing|personalizzato|min_(10|20|30|40|60)|avvia|annulla)', data)):
-        return
-    await q.answer('Schermata precedente o canale diverso. Usa /start oppure il menu corrente.', show_alert=True)
-    raise ApplicationHandlerStop
-
-
-
 # =========================================================
 # NUOVA OFFERTA
 # =========================================================
 
-async def nuova_da_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.nuova_da_comando(_servizi_invii, update, context)
+async def nuova_da_comando(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "🔗 Inviami il link Amazon del prodotto:"
+    )
+
+    return LINK
 
 
-async def nuova_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.nuova_da_pulsante(_servizi_invii, update, context)
+async def nuova_da_pulsante(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+
+    query = update.callback_query
+
+    await query.answer()
+
+    context.user_data.clear()
+
+    await query.message.reply_text(
+        "🔗 Inviami il link Amazon del prodotto:"
+    )
+
+    return LINK
 
 
 # =========================================================
 # RICEZIONE LINK
 # =========================================================
 
-async def ricevi_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.ricevi_link(_servizi_invii, update, context)
+async def ricevi_link(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+
+    link = update.message.text.strip()
+
+    if not link_amazon_valido(link):
+
+        await update.message.reply_text(
+            "❌ Non sembra un link Amazon.\n\n"
+            "Inviami un link Amazon valido:"
+        )
+
+        return LINK
+
+    context.user_data["link"] = link
+
+    messaggio_attesa = (
+        await update.message.reply_text(
+            "🔎 Sto provando a leggere automaticamente "
+            "i dati del prodotto..."
+        )
+    )
+
+    async def mostra_tentativo(numero):
+        if numero < 3:
+            try:
+                await messaggio_attesa.edit_text(f'🔎 Lettura offerta Amazon: tentativo {numero}/3 incompleto. Riprovo automaticamente…')
+            except Exception:
+                pass
+
+    dati = await leggi_offerta_con_sei_tentativi(link, callback=mostra_tentativo)
+    if not dati:
+        await messaggio_attesa.edit_text('⏭️ PRODOTTO SALTATO\n\nLettura non completata: prezzo, disponibilità o condizione non verificabili. Controlla i log Railway e riprova con un link Amazon diretto.')
+        context.user_data.clear()
+        return LINK
+    if dati.get('immagine'):
+        context.user_data['foto_url_automatica'] = dati['immagine']
+    if dati.get('asin'):
+        context.user_data['asin'] = dati['asin']
+    tipo = tipo_o_fallback(link, dati)
+    context.user_data['tipologia_amazon'] = tipo
+    context.user_data['condizione'] = dati.get('condizione')
+    context.user_data["categoria"] = dati.get("categoria")
+    context.user_data["coupon"] = dati.get("coupon")
+    nome = dati.get("nome")
+    prezzo = dati.get("prezzo")
+    vecchio = dati.get("vecchio_prezzo")
+
+    context.user_data["nome"] = " ".join(str(nome).split()).strip()
+    context.user_data["prezzo"] = pulisci_prezzo(prezzo)
+
+    if vecchio:
+        context.user_data["vecchio_prezzo"] = pulisci_prezzo(vecchio)
+    else:
+        context.user_data["vecchio_prezzo"] = "NO"
+
+    vecchio_testo = context.user_data["vecchio_prezzo"]
+
+    tastiera = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ USA QUESTI DATI",
+                    callback_data="dati_ok",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✏️ INSERISCI MANUALMENTE",
+                    callback_data="dati_manual",
+                )
+            ],
+        ]
+    )
+
+    await messaggio_attesa.edit_text(
+        "✅ DATI TROVATI\n\n"
+        f"📦 {context.user_data['nome']}\n\n"
+        f"💰 Prezzo: {context.user_data['prezzo']} €\n"
+        f"🏷️ Prima: {vecchio_testo}"
+        f"{' €' if vecchio_testo != 'NO' else ''}\n\n"
+        "Controlla che prezzo e prodotto siano corretti.",
+        reply_markup=tastiera,
+    )
+
+    return DATI_AUTOMATICI
 
 
 # =========================================================
 # CONFERMA DATI AUTOMATICI
 # =========================================================
 
-async def conferma_dati_automatici(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.conferma_dati_automatici(_servizi_invii, update, context)
+async def conferma_dati_automatici(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if query.data == "dati_riprova":
+        link = context.user_data.get("link")
+        if not link:
+            await query.edit_message_text(
+                "❌ Non trovo più il link del prodotto. Invia nuovamente l'offerta."
+            )
+            return ConversationHandler.END
+
+        await query.edit_message_text(
+            "🔄 Riprovo la ricerca del prodotto: eseguirò fino a 3 nuovi tentativi..."
+        )
+
+        # Riutilizza la stessa procedura dell'invio manuale senza chiedere di nuovo il link.
+        class _MessaggioRiprova:
+            def __init__(self, message, testo):
+                self._message = message
+                self.text = testo
+
+            async def reply_text(self, *args, **kwargs):
+                return await self._message.reply_text(*args, **kwargs)
+
+        class _UpdateRiprova:
+            def __init__(self, update_originale, message):
+                self.effective_user = update_originale.effective_user
+                self.effective_chat = update_originale.effective_chat
+                self.message = _MessaggioRiprova(message, link)
+
+        return await ricevi_link(
+            _UpdateRiprova(update, query.message),
+            context,
+        )
+
+    if query.data == "dati_ok":
+
+        await query.edit_message_text(
+            "✅ Dati confermati."
+        )
+
+        return await prova_foto_automatica_o_chiedi(update, context)
+
+    if query.data == "dati_manual":
+
+        link = context.user_data.get("link")
+        foto_url_automatica = context.user_data.get("foto_url_automatica")
+        asin = context.user_data.get("asin")
+
+        context.user_data.clear()
+
+        context.user_data["link"] = link
+        if foto_url_automatica:
+            context.user_data["foto_url_automatica"] = foto_url_automatica
+        if asin:
+            context.user_data["asin"] = asin
+
+        await query.edit_message_text(
+            "✏️ Inserimento manuale selezionato."
+        )
+
+        await query.message.reply_text(
+            "📦 Scrivi il nome del prodotto:"
+        )
+
+        return NOME
 
 
 # =========================================================
 # INSERIMENTO MANUALE
 # =========================================================
 
-async def ricevi_nome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.ricevi_nome(_servizi_invii, update, context)
+async def ricevi_nome(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+
+    context.user_data["nome"] = " ".join(
+        update.message.text.strip().split()
+    )
+
+    await update.message.reply_text(
+        "💰 Qual è il prezzo attuale?"
+    )
+
+    return PREZZO
 
 
-async def ricevi_prezzo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.ricevi_prezzo(_servizi_invii, update, context)
+async def ricevi_prezzo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+
+    context.user_data["prezzo"] = pulisci_prezzo(
+        update.message.text.strip()
+    )
+
+    await update.message.reply_text(
+        "🏷️ Qual era il prezzo precedente?\n\n"
+        "Oppure scrivi: NO"
+    )
+
+    return VECCHIO_PREZZO
 
 
-async def ricevi_vecchio_prezzo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.ricevi_vecchio_prezzo(_servizi_invii, update, context)
+async def ricevi_vecchio_prezzo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+
+    valore = update.message.text.strip()
+
+    if valore.upper() == "NO":
+
+        context.user_data["vecchio_prezzo"] = "NO"
+
+    else:
+
+        context.user_data["vecchio_prezzo"] = pulisci_prezzo(
+            valore
+        )
+
+    return await prova_foto_automatica_o_chiedi(update, context)
 
 
 # =========================================================
@@ -9164,93 +9350,278 @@ def prodotto_inviato_ultime_24h(asin, destinazione):
 
 
 def filtra_duplicati_recenti_multiplo(draft):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return invio_multiplo.filtra_duplicati_recenti_multiplo(_servizi_invii, draft)
+    validi = []
+    for prodotto in draft['pronti']:
+        asin = prodotto.get('asin') or estrai_asin_da_link(prodotto['link'])
+        if prodotto_inviato_ultime_24h(asin, _chat_id_per_canale(draft['canale'])):
+            draft['scartati'].append(f"{prodotto.get('link_originale') or prodotto['link']} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
+        else:
+            validi.append(prodotto)
+    if draft.get('tipo') == 'repost':
+        with sqlite3.connect(DB_PATH, timeout=30) as db:
+            links_in_coda = db.execute("SELECT link FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),_chat_id_per_canale(draft['canale']))).fetchall()
+        asin_in_coda = {estrai_asin_da_link(link) for (link,) in links_in_coda}
+        restanti = []
+        for prodotto in validi:
+            if (prodotto.get('asin') or estrai_asin_da_link(prodotto['link'])) in asin_in_coda:
+                draft['scartati'].append(f"{prodotto.get('link_originale') or prodotto['link']} — prodotto già in Programmati")
+            else:
+                restanti.append(prodotto)
+        validi = restanti
+    draft['pronti'] = validi
 
 
-def intervallo_multiplo(utente, valore=None, canale=None):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return invio_multiplo.intervallo_multiplo(_servizi_invii, utente, valore, canale)
+def intervallo_multiplo(utente, valore=None):
+    with sqlite3.connect(DB_PATH) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS impostazioni_multiplo (utente TEXT PRIMARY KEY, minuti INTEGER NOT NULL)")
+        if valore is not None:
+            db.execute("INSERT OR REPLACE INTO impostazioni_multiplo VALUES (?, ?)", (str(utente), valore))
+        row = db.execute("SELECT minuti FROM impostazioni_multiplo WHERE utente=?", (str(utente),)).fetchone()
+    return row[0] if row else 30
 
 
 def tastiera_annulla_elaborazione():
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return invio_multiplo.tastiera_annulla_elaborazione(_servizi_invii)
+    return InlineKeyboardMarkup([[InlineKeyboardButton('🛑 ANNULLA REPOST / LETTURA', callback_data='multi_annulla')]])
 
 
 def tastiera_multiplo(draft):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return invio_multiplo.tastiera_multiplo(_servizi_invii, draft)
+    if draft.get('tipo') == 'singolo_cronologia':
+        return tastiera_confronto_cronologia(bool(draft.get('pronti')) and not draft.get('elaborazione'))
+    return InlineKeyboardMarkup([row for row in [
+        [InlineKeyboardButton("✅ Tech" if draft["canale"] == "tech" else "Tech", callback_data="multi_canale_tech"),
+         InlineKeyboardButton("✅ Casa" if draft["canale"] == "casa" else "Casa", callback_data="multi_canale_casa")],
+        [InlineKeyboardButton(f"⏱ Intervallo: {draft['minuti']} min", callback_data="multi_timing")],
+        [InlineKeyboardButton("🚀 CONFERMA E AVVIA", callback_data="multi_avvia")] if draft.get("pronti") and not draft.get("elaborazione") else [],
+        [InlineKeyboardButton("❌ ANNULLA", callback_data="multi_annulla")],
+    ] if row])
 
 
-def link_affiliato_multiplo(link, asin, canale=None):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return invio_multiplo.link_affiliato_multiplo(_servizi_invii, link, asin, canale)
+def link_affiliato_multiplo(link, asin):
+    # Non ereditare mai il tag di un altro inserzionista.
+    tag = (os.environ.get("AMAZON_PARTNER_TAG") or os.environ.get("AMAZON_ASSOCIATE_TAG") or "").strip()
+    if not tag:
+        raise ValueError("Imposta AMAZON_PARTNER_TAG su Railway con il tuo tag affiliato Amazon")
+    if not asin:
+        raise ValueError("ASIN del prodotto non trovato")
+    return "https://www.amazon.it/dp/" + asin + "?" + urlencode({"tag": tag})
 
 
-def piano_multiplo(prodotti, minuti, destinazione, salva=False, origine='multiplo'):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return invio_multiplo.piano_multiplo(_servizi_invii, prodotti, minuti, destinazione, salva, origine)
+def piano_multiplo(prodotti, minuti, destinazione, salva=False, origine="multiplo"):
+    """Ricalcola e prenota l'intero lotto in un'unica transazione SQLite."""
+    cfg = config_fascia_manuale()
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        db.execute("BEGIN IMMEDIATE")
+        righe = db.execute("SELECT invio_previsto FROM programmazioni WHERE stato='attesa' AND (telegram_chat_id=? OR (telegram_chat_id IS NULL AND ?=?))", (str(destinazione), str(destinazione), str(CHANNEL_ID))).fetchall()
+        occupati = [datetime.fromisoformat(r[0]).astimezone(timezone.utc) for r in righe]
+        passo = timedelta(minutes=minuti)
+        quando = datetime.now(timezone.utc).replace(microsecond=0)
+        piano = []
+        for prodotto in prodotti:
+            quando = slot_manuale_libero(quando, occupati, minuti, dict(cfg, _canale=str(destinazione)))
+            pid = None
+            if salva:
+                corpo = crea_messaggio_programmato(prodotto['nome'], prodotto['prezzo'], prodotto['vecchio_prezzo'], 'pulito', prodotto.get('categoria'), prodotto.get('coupon'))
+                cur = db.execute("""INSERT INTO programmazioni
+                    (nome,messaggio,link,prezzo,vecchio_prezzo,template,foto_file_id,telegram_chat_id,invio_previsto,stato,data_creazione,origine)
+                    VALUES (?,?,?,?,?,'pulito',?,?,?,'attesa',?,'multiplo')""",
+                    (prodotto['nome'],corpo,prodotto['link'],prodotto['prezzo'],prodotto['vecchio_prezzo'],prodotto.get('foto_file_id'),str(destinazione),quando.isoformat(timespec='seconds'),datetime.now(timezone.utc).isoformat(timespec='seconds')))
+                pid = cur.lastrowid
+                db.execute("UPDATE programmazioni SET intervallo_minuti=?,origine=? WHERE id=?", (minuti,'repost' if origine == 'repost' else 'multiplo',pid))
+            piano.append((pid, quando))
+            occupati.append(quando)
+            quando += passo
+    return piano
 
 
 def arma_avvio_multiplo(messaggio, context, draft):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return invio_multiplo.arma_avvio_multiplo(_servizi_invii, messaggio, context, draft)
+    # Un token invalida i timer precedenti; conferma e timer usano lo stesso lock.
+    token = object()
+    draft['timer_token'] = token
+    context.application.create_task(avvio_multiplo_differito(messaggio, context, draft, token))
 
 
 async def avvio_multiplo_differito(messaggio, context, draft, token):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return await invio_multiplo.avvio_multiplo_differito(_servizi_invii, messaggio, context, draft, token)
+    await asyncio.sleep(120)
+    if (context.user_data.get('multiplo') is draft
+            and draft.get('timer_token') is token
+            and not draft.get('elaborazione')):
+        await avvia_lotto_multiplo(messaggio, context, draft, automatico=True)
 
 
 async def avvia_lotto_multiplo(messaggio, context, draft, automatico=False):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return await invio_multiplo.avvia_lotto_multiplo(_servizi_invii, messaggio, context, draft, automatico)
+    if draft.get('tipo') == 'singolo_cronologia':
+        return False
+    async with MULTIPLO_LOCK:
+        if (context.user_data.get('multiplo') is not draft
+                or draft.get('conferma_in_corso') or not draft.get('pronti')):
+            return False
+        draft['conferma_in_corso'] = True
+        draft.pop('timer_token', None)
+        try:
+            filtra_duplicati_recenti_multiplo(draft)
+            piano = piano_multiplo(draft['pronti'], draft['minuti'], _chat_id_per_canale(draft['canale']), salva=True, origine=draft.get('tipo','multiplo'))
+        except Exception:
+            draft.pop('conferma_in_corso', None)
+            await messaggio.reply_text("⚠️ Salvataggio non riuscito. Il lotto non è stato aggiunto: premi CONFERMA E AVVIA per riprovare.", reply_markup=tastiera_multiplo(draft))
+            return False
+        context.user_data.pop('multiplo', None)
+    righe = [f"✅ {'Avvio automatico dopo 2 minuti' if automatico else 'Avvio confermato'}",
+             f"📅 {len(piano)} post aggiunti a Programmati — {draft['canale'].upper()}.",
+             f"Primo invio: {piano[0][1].astimezone(ROMA_TZ):%d/%m %H:%M}" if piano else "Nessun invio: tutti i prodotti sono stati scartati.",
+             f"Intervallo: {draft['minuti']} minuti. Orari già occupati rispettati.",
+             f"Richiesti: {draft['richiesti']} · Validati: {len(piano)}" if draft.get("richiesti") else "",
+             "Il primo post partirà al primo orario libero, rispettando le Pause Caffè.",
+             f"Duplicati ignorati: {draft['duplicati']}"]
+    if draft['scartati']:
+        righe += ["", "❌ LINK SCARTATI / ERRORI:"] + list(draft['scartati'])
+    else:
+        righe.append("✅ Nessun link scartato per errori o dati mancanti.")
+    testo = "\n".join(righe)
+    # Il lotto è già salvato: un errore di notifica non deve ripetere gli INSERT.
+    try:
+        for pos in range(0, len(testo), 3500):
+            await messaggio.reply_text(testo[pos:pos+3500])
+    except Exception as exc:
+        print(f"Invio multiplo salvato, notifica non consegnata: {type(exc).__name__}")
+    return True
 
 
 async def riepilogo_multiplo(messaggio, draft, context=None):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return await invio_multiplo.riepilogo_multiplo(_servizi_invii, messaggio, draft, context)
+    if draft.get('tipo') == 'singolo_cronologia':
+        return await mostra_confronto_cronologia(messaggio,context,draft)
+    filtra_duplicati_recenti_multiplo(draft)
+    piano = piano_multiplo(draft['pronti'], draft['minuti'], _chat_id_per_canale(draft['canale']))
+    righe = [f"{'🔁 REPOST' if draft.get('tipo') == 'repost' else '📦 INVIO MULTIPLO'} — {draft['canale'].upper()}", f"⏱ Intervallo: {draft['minuti']} minuti", f"✅ Pronti: {len(piano)} · Scartati: {len(draft['scartati'])} · Duplicati: {draft['duplicati']}", ""]
+    if draft.get("richiesti"):
+        righe.append(f"Richiesti: {draft['richiesti']} · Preparati: {len(piano)} · Candidati disponibili per il controllo: {draft.get('candidati',0)}")
+    if piano:
+        giorni_piano = {quando.astimezone(ROMA_TZ).date() for _, quando in piano}
+        eventi = descrizione_pause_programmate(_chat_id_per_canale(draft['canale']), giorni_piano)
+        if eventi:
+            righe.append('☕ Pause Caffè considerate nella programmazione:')
+            righe.extend(testo.replace('\n', ' · ') for _, testo in eventi)
+            righe.append('')
+    for prodotto, (_, quando) in zip(draft['pronti'], piano):
+        righe.append(f"{quando.astimezone(ROMA_TZ):%d/%m %H:%M} · {prodotto['nome'][:75]} · {prodotto['prezzo']} €")
+    for motivo in draft['scartati']:
+        righe.append("❌ " + motivo)
+    if draft["pronti"]:
+        righe.append("\n⏳ Avvio automatico tra 2 minuti. Premi CONFERMA E AVVIA per partire subito oppure ANNULLA per fermare il lotto.")
+    righe.append("\nOrari italiani. Gli orari saranno ricontrollati alla conferma. Prezzi rilevati durante la preparazione.")
+    # Liste ampie vengono suddivise per rispettare il limite Telegram.
+    testo = "\n".join(righe)
+    for pos in range(0, len(testo), 3500):
+        await messaggio.reply_text(testo[pos:pos+3500], reply_markup=tastiera_multiplo(draft) if pos+3500 >= len(testo) else None)
+    if context is not None and draft["pronti"]:
+        arma_avvio_multiplo(messaggio, context, draft)
 
 
 def asin_in_programmati(destinazione):
-    """Callback compatibile; implementazione in repost.py."""
-    return repost.asin_in_programmati(_servizi_invii, destinazione)
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        links = db.execute("SELECT link FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),str(destinazione))).fetchall()
+    # La funzione viene chiamata in un thread durante la ricerca dei candidati.
+    return {asin for (link,) in links if (asin := risolvi_asin_da_link(link))}
 
 
 def candidati_repost(canale, quantita):
-    """Callback compatibile; implementazione in repost.py."""
-    return repost.candidati_repost(_servizi_invii, canale, quantita)
+    """Storico completo per il repost; metadata storici NON validano offerte attuali."""
+    destinazione = _chat_id_per_canale(canale)
+    adesso = datetime.now(timezone.utc)
+    limite = adesso - timedelta(days=7)
+    with sqlite3.connect(DB_PATH, timeout=30) as db:
+        righe = db.execute("""SELECT asin,link,pubblicata_il,nome,foto_file_id,categoria
+            FROM recap_offerte WHERE CAST(telegram_chat_id AS TEXT)=?
+            AND COALESCE(origine,'manuale')<>'raccolta'
+            ORDER BY pubblicata_il DESC,id DESC""", (destinazione,)).fetchall()
+    in_coda = asin_in_programmati(destinazione)
+    visti = set()
+    candidati = []
+    for asin, link, data, nome, foto_id, categoria in righe:
+        quando = _data_sqlite(data)
+        if not quando or not limite <= quando.astimezone(timezone.utc) <= adesso:
+            continue
+        asin = asin or risolvi_asin_da_link(link)
+        if not asin or asin in visti:
+            continue
+        visti.add(asin)
+        if asin in in_coda or prodotto_inviato_ultime_24h(asin, destinazione):
+            continue
+        candidati.append({'link': 'https://www.amazon.it/dp/' + asin,
+                          'nome': nome, 'foto_file_id': foto_id, 'categoria': categoria})
+    # Preferire prodotti con nome e foto salvati; mescolare solo a parita' di completezza.
+    random.shuffle(candidati)
+    candidati.sort(key=lambda r: bool(r.get('nome')) + bool(r.get('foto_file_id')), reverse=True)
+    return candidati[:min(300,max(30,quantita*6))]
 
 
 async def leggi_offerta_repost(link, storico, callback=None):
-    """Callback compatibile; implementazione in repost.py."""
-    return await repost.leggi_offerta_repost(_servizi_invii, link, storico, callback)
+    """Storico per nome/foto; prezzi, sconto, coupon e disponibilita' da lettura corrente."""
+    dati = await leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callback=callback)
+    if not dati:
+        return None, 'prezzo, disponibilita’ o condizione non verificabili (vedi log Railway)'
+    if not offerta_attuale_rilevata(dati):
+        return None, 'nessuno sconto o coupon attuale rilevato'
+    dati['nome'] = dati.get('nome') or storico.get('nome')
+    dati['_foto_storica_repost'] = storico.get('foto_file_id')
+    dati['categoria'] = dati.get('categoria') or storico.get('categoria')
+    if not dati.get('nome') or not (dati.get('immagine') or storico.get('foto_file_id')):
+        return None, 'nome o foto mancanti anche nella cronologia'
+    return dati, None
 
 
 async def repost_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in repost.py."""
-    return await repost.repost_da_pulsante(_servizi_invii, update, context)
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    await update.callback_query.answer()
+    context.user_data.clear()
+    draft = {'tipo':'repost','canale':'tech','minuti':intervallo_multiplo(update.effective_user.id),'pronti':[],'scartati':[],'duplicati':0,'elaborazione':False,'repost_attesa_quantita':True}
+    context.user_data['multiplo'] = draft
+    await update.effective_message.reply_text(
+        "🔁 REPOST — ULTIMI 7 GIORNI\n\nScegli canale e intervallo, poi scrivi quanti prodotti vuoi ripubblicare (1–50).\nEscludo prodotti già inviati nelle ultime 24 ore e già programmati nello stesso canale.\nControllo dati, prezzi, disponibilità e coupon. Dopo il riepilogo: conferma subito oppure avvio automatico tra 2 minuti. Gli invii rispettano la fascia manuale/multiplo.",
+        reply_markup=tastiera_multiplo(draft))
+    return RAPIDO
 
 
 async def rapido_da_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return await invio_multiplo.rapido_da_comando(_servizi_invii, update, context)
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    if update.callback_query:
+        await update.callback_query.answer()
+    context.user_data.clear()
+    draft = {'canale': 'tech', 'minuti': intervallo_multiplo(update.effective_user.id), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
+    context.user_data['multiplo'] = draft
+    await update.effective_message.reply_text("📦 INVIO MULTIPLO\n\nScegli canale e intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.", reply_markup=tastiera_multiplo(draft))
+    return RAPIDO
 
 
 async def rapido_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return await invio_multiplo.rapido_da_pulsante(_servizi_invii, update, context)
+    return await rapido_da_comando(update, context)
 
 
 async def prepara_repost(messaggio, context, draft):
-    """Callback compatibile; implementazione in repost.py."""
-    return await repost.prepara_repost(_servizi_invii, messaggio, context, draft)
+    try:
+        links = await asyncio.to_thread(candidati_repost,draft['canale'],draft['richiesti'])
+        if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
+            return
+        draft['candidati'] = len(links)
+        if not links:
+            draft['elaborazione'] = False
+            draft['repost_attesa_quantita'] = True
+            await messaggio.reply_text('ℹ️ Nessun prodotto disponibile per Repost: servono pubblicazioni negli ultimi 7 giorni, più vecchie di 24 ore e non già in coda. Puoi cambiare canale o annullare.',reply_markup=tastiera_multiplo(draft))
+            return
+        await prepara_lotto_multiplo(messaggio,context,draft,links)
+    except Exception as exc:
+        draft['elaborazione'] = False
+        draft['repost_attesa_quantita'] = True
+        await messaggio.reply_text(f'⚠️ Ricerca Repost interrotta: {type(exc).__name__}. Riprova indicando la quantità.')
 
 
 def offerta_attuale_rilevata(dati):
-    """Callback compatibile; implementazione in repost.py."""
-    return repost.offerta_attuale_rilevata(_servizi_invii, dati)
+    """Non confronta mai il prezzo con quello della pubblicazione storica."""
+    attuale = numero_da_prezzo(dati.get('prezzo'))
+    precedente = numero_da_prezzo(dati.get('vecchio_prezzo'))
+    return bool((attuale is not None and attuale > 0 and precedente is not None and precedente > attuale)
+                or frase_coupon(dati.get('coupon')))
 
 
 def tastiera_confronto_cronologia(pronto=False):
@@ -9360,18 +9731,218 @@ async def decidi_ricontrollo_cronologia(update: Update, context: ContextTypes.DE
 
 
 async def prepara_lotto_multiplo(messaggio, context, draft, links, seconda_passata=False):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return await invio_multiplo.prepara_lotto_multiplo(_servizi_invii, messaggio, context, draft, links, seconda_passata)
+    visti = set()
+    da_riprovare = []
+    try:
+        for indice, candidato in enumerate(links, 1):
+            storico = candidato if isinstance(candidato, dict) else {}
+            link = storico.get('link') if storico else candidato
+            if draft.get('richiesti') and len(draft['pronti']) >= draft['richiesti']:
+                break
+
+            if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
+                return
+            # Nel Repost il numero richiesto è l'obiettivo; la lista più ampia
+            # contiene solo possibili sostituti per gli articoli scartati.
+            if draft.get('tipo') == 'repost':
+                stato = (f"🔁 REPOST: {len(draft['pronti'])}/{draft['richiesti']} post pronti\n"
+                         f"🔎 Candidato esaminato: {indice} (gli altri sono riserve)")
+            else:
+                stato = f"🔎 Prodotto {indice}/{len(links)} — preparazione in corso…"
+            try:
+                await messaggio.edit_text(stato, reply_markup=tastiera_annulla_elaborazione())
+            except Exception:
+                pass
+            asin_iniziale = await asyncio.to_thread(risolvi_asin_da_link, link)
+            if draft.get('tipo') != 'singolo_cronologia' and prodotto_inviato_ultime_24h(asin_iniziale, _chat_id_per_canale(draft['canale'])):
+                draft['scartati'].append(f"{link} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
+                continue
+            async def mostra_tentativo_multiplo(numero):
+                if numero < 3:
+                    try:
+                        if context.user_data.get('multiplo') is draft and not draft.get('annullato'):
+                            await messaggio.edit_text(f'🔎 Tentativo {numero}/3 — {len(draft["pronti"])}/{draft.get("richiesti", len(links))} post pronti. Riprovo…', reply_markup=tastiera_annulla_elaborazione())
+                    except Exception:
+                        pass
+            if draft.get('tipo') == 'repost':
+                dati, motivo_repost = await leggi_offerta_repost(link, storico, mostra_tentativo_multiplo)
+            else:
+                dati = await leggi_offerta_con_sei_tentativi(link, richiedi_immagine=True, callback=mostra_tentativo_multiplo)
+                motivo_repost = None
+            if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
+                return
+            if not dati:
+                if not seconda_passata:
+                    da_riprovare.append(candidato)
+                    print(f'Invio multiplo: {link} in coda per seconda passata dopo 20 secondi.')
+                else:
+                    draft['scartati'].append(f'{link} — {motivo_repost or "lettura non completata dopo 6 tentativi (vedi log Railway)"}')
+                continue
+            tipo = tipo_o_fallback(link, dati)
+            dati['tipologia_amazon'] = tipo
+            if draft.get('tipo') == 'repost' and not offerta_attuale_rilevata(dati):
+                draft['scartati'].append(f"{link} — nessuno sconto attuale né coupon rilevato")
+                continue
+            try:
+                asin = dati.get('asin') or asin_iniziale
+                if draft.get('tipo') != 'singolo_cronologia' and prodotto_inviato_ultime_24h(asin, _chat_id_per_canale(draft['canale'])):
+                    draft['scartati'].append(f"{link} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
+                    continue
+                if asin in visti:
+                    draft['duplicati'] += 1
+                    continue
+                affiliato = link_affiliato_multiplo(link, asin)
+                foto_storica = dati.get('_foto_storica_repost') if draft.get('tipo') == 'repost' else None
+                if foto_storica:
+                    foto = foto_storica
+                else:
+                    foto = await prepara_foto_automatica(dati['immagine'])
+                if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
+                    return
+                # Upload nella chat amministratore: salva un file_id persistente,
+                # senza dipendere da file temporanei o URL al momento dell'invio.
+                anteprima = await messaggio.reply_photo(photo=foto, caption=f"📦 Preparato {indice}/{len(links)}: {str(dati['nome'])[:700]}")
+                if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
+                    return
+                visti.add(asin)
+                draft['pronti'].append({'nome': ' '.join(str(dati['nome']).split())[:500], 'prezzo': pulisci_prezzo(dati['prezzo']), 'vecchio_prezzo': pulisci_prezzo(dati['vecchio_prezzo']) if dati.get('vecchio_prezzo') else 'NO', 'link': affiliato, 'foto_file_id': anteprima.photo[-1].file_id, 'categoria': dati.get('categoria'), 'asin': asin, 'link_originale': link, 'coupon': dati.get('coupon')})
+            except Exception as exc:
+                draft['scartati'].append(f"{link} — {str(exc)[:120]}")
+        if da_riprovare and not seconda_passata and context.user_data.get('multiplo') is draft and not draft.get('annullato'):
+            try:
+                await messaggio.edit_text(
+                    f'⏳ Prima passata terminata. {len(da_riprovare)} prodotti in attesa: riprovo tra 20 secondi (3 tentativi ciascuno).',
+                    reply_markup=tastiera_annulla_elaborazione(),
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(20)
+            if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
+                return
+            await prepara_lotto_multiplo(messaggio, context, draft, da_riprovare, seconda_passata=True)
+            return
+        if context.user_data.get('multiplo') is draft and not draft.get('annullato'):
+            draft['elaborazione'] = False
+            if draft.get('tipo') == 'singolo_cronologia':
+                await mostra_confronto_cronologia(messaggio,context,draft)
+            else:
+                await riepilogo_multiplo(messaggio, draft, context)
+    except Exception as exc:
+        draft['elaborazione'] = False
+        if context.user_data.get('multiplo') is draft:
+            await messaggio.reply_text(f"⚠️ Preparazione interrotta: {type(exc).__name__}. Puoi confermare i prodotti già pronti o annullare.", reply_markup=tastiera_multiplo(draft))
 
 
 async def ricevi_rapido(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return await invio_multiplo.ricevi_rapido(_servizi_invii, update, context)
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    draft = context.user_data.get('multiplo')
+    if not draft:
+        return await rapido_da_comando(update, context)
+    if draft.get('elaborazione'):
+        await update.message.reply_text("⏳ Sto preparando il lotto. Attendi il riepilogo oppure usa /annulla.")
+        return RAPIDO
+    if draft.pop('timing_personalizzato', False):
+        try:
+            minuti = int(update.message.text.strip())
+            if not 1 <= minuti <= 1440:
+                raise ValueError
+        except ValueError:
+            draft['timing_personalizzato'] = True
+            await update.message.reply_text("Inserisci un numero intero da 1 a 1440 minuti.")
+            return RAPIDO
+        draft['minuti'] = intervallo_multiplo(update.effective_user.id, minuti)
+        if draft["pronti"]:
+            await riepilogo_multiplo(update.message, draft, context)
+        else:
+            await update.message.reply_text(f"✅ Intervallo salvato: {minuti} minuti.", reply_markup=tastiera_multiplo(draft))
+        return RAPIDO
+    if draft.get('repost_attesa_quantita'):
+        testo = update.message.text.strip()
+        if not testo.isdigit() or not 1 <= int(testo) <= 50:
+            await update.message.reply_text('Scrivi quanti prodotti vuoi ripubblicare: un numero da 1 a 50.')
+            return RAPIDO
+        if not (os.environ.get('AMAZON_PARTNER_TAG') or os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip():
+            await update.message.reply_text('⚠️ Imposta AMAZON_PARTNER_TAG su Railway con il tuo tag affiliato prima di avviare Repost.')
+            return RAPIDO
+        quantita = int(testo)
+        draft['elaborazione'] = True
+        draft['richiesti'] = quantita
+        draft.pop('repost_attesa_quantita', None)
+        attesa = await update.message.reply_text(
+            f'🔁 REPOST — Obiettivo: {quantita} post.\n'
+            'Potrei esaminare più prodotti come riserve se alcuni non sono validi.\n'
+            'Premi ANNULLA per interrompere.',
+            reply_markup=tastiera_annulla_elaborazione())
+        context.application.create_task(prepara_repost(attesa,context,draft),update=update)
+        return RAPIDO
+    if draft.get('pronti'):
+        await update.message.reply_text("Conferma o annulla il lotto già preparato prima di inviare altri link.")
+        return RAPIDO
+    if not (os.environ.get('AMAZON_PARTNER_TAG') or os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip():
+        await update.message.reply_text("⚠️ Prima imposta AMAZON_PARTNER_TAG nelle variabili Railway con il TUO tag affiliato Amazon, poi reinvia i link.")
+        return RAPIDO
+    links = re.findall(r'https?://[^\s<>]+', update.message.text)
+    links = [x.rstrip('.,;)]') for x in links]
+    validi = []
+    for link in links:
+        host = (urlparse(link).hostname or '').lower()
+        if host in {'amazon.it', 'www.amazon.it', 'amzn.to', 'amzn.eu', 'link.amazon', 'link.amazon.it', 'a.co'} or host.endswith('.amazon.it'):
+            validi.append(link)
+    if not validi or len(validi) > 50:
+        await update.message.reply_text("Invia da 1 a 50 link Amazon Italia validi, uno per riga.")
+        return RAPIDO
+    unici = list(dict.fromkeys(validi))
+    draft['duplicati'] = len(validi)-len(unici)
+    draft['scartati'] = [f"{len(links)-len(validi)} link non Amazon Italia ignorati"] if len(links) != len(validi) else []
+    draft['elaborazione'] = True
+    attesa = await update.message.reply_text(f"🔎 Preparo {len(unici)} prodotti. Puoi usare /annulla per interrompere.")
+    context.application.create_task(prepara_lotto_multiplo(attesa, context, draft, unici), update=update)
+    return RAPIDO
 
 
 async def gestisci_multiplo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_multiplo.py."""
-    return await invio_multiplo.gestisci_multiplo(_servizi_invii, update, context)
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    draft = context.user_data.get('multiplo')
+    if not draft:
+        await query.message.reply_text("Lotto non più disponibile. Apri nuovamente Invio multiplo.")
+        return ConversationHandler.END
+    azione = query.data
+    if azione == 'multi_annulla':
+        draft['annullato'] = True
+        context.user_data.pop('multiplo', None)
+        await query.edit_message_text("🛑 Elaborazione annullata. Nessun nuovo post verrà preparato o programmato.\nLa lettura Amazon già avviata potrebbe terminare in background, ma il risultato sarà ignorato.")
+        return ConversationHandler.END
+    if draft.get('elaborazione') or draft.get('conferma_in_corso'):
+        await query.message.reply_text("⏳ Attendi il completamento dell'operazione in corso.")
+        return RAPIDO
+    if azione == 'multi_timing':
+        draft.pop('timer_token', None)
+        await query.message.reply_text("⏱ Scegli l'intervallo tra i post:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"{m} min", callback_data=f"multi_min_{m}") for m in (10,20,30)], [InlineKeyboardButton(f"{m} min", callback_data=f"multi_min_{m}") for m in (40,60)], [InlineKeyboardButton("✏️ Personalizzato", callback_data="multi_personalizzato")]]))
+    elif azione == 'multi_personalizzato':
+        draft['timing_personalizzato'] = True
+        await query.message.reply_text("Scrivi l'intervallo desiderato in minuti (1–1440):")
+    elif azione.startswith('multi_min_'):
+        draft['minuti'] = intervallo_multiplo(update.effective_user.id, int(azione.rsplit('_',1)[1]))
+        draft.pop('timing_personalizzato', None)
+        if draft["pronti"]:
+            await riepilogo_multiplo(query.message, draft, context)
+        else:
+            await query.message.reply_text(f"✅ Intervallo: {draft['minuti']} minuti", reply_markup=tastiera_multiplo(draft))
+    elif azione.startswith('multi_canale_'):
+        draft['canale'] = azione.rsplit('_',1)[1]
+        if draft['pronti']:
+            await riepilogo_multiplo(query.message, draft, context)
+        else:
+            await query.message.reply_text(f"✅ Canale: {draft['canale'].upper()}. " + ("Scrivi quanti prodotti vuoi ripubblicare (1–50)." if draft.get("tipo") == "repost" else "Incolla i link."), reply_markup=tastiera_multiplo(draft))
+    elif azione == 'multi_avvia' and draft['pronti']:
+        riuscito = await avvia_lotto_multiplo(query.message, context, draft)
+        if riuscito:
+            return ConversationHandler.END
+    return RAPIDO
 
 
 
@@ -9458,7 +10029,7 @@ async def ricevi_ora_programmazione(
         return PROGRAMMA_ORA
 
     conflitti = trova_conflitto(
-        data_locale, context.user_data["telegram_chat_id"]
+        data_locale
     )
 
     if conflitti:
@@ -9540,7 +10111,7 @@ async def ricevi_ora_programmazione(
     )
 
     da_reinvio = context.user_data.get("programmazione_da_reinvio", False)
-    reset_flusso(context)
+    context.user_data.clear()
 
     await update.message.reply_text(
         "✅ OFFERTA PROGRAMMATA!\n\n"
@@ -9556,7 +10127,7 @@ async def ricevi_ora_programmazione(
     )
 
     if da_reinvio:
-        await invia_lista_programmati(update.message, destinazione=canale_corrente(context).chat_id)
+        await invia_lista_programmati(update.message)
 
     return ConversationHandler.END
 
@@ -9569,7 +10140,7 @@ async def ricevi_ora_programmazione(
 DISTANZA_MINIMA_MINUTI = 29
 
 
-def programmazioni_del_giorno(data_locale, destinazione=CHANNEL_ID):
+def programmazioni_del_giorno(data_locale):
 
     inizio_locale = datetime.combine(
         data_locale,
@@ -9605,12 +10176,10 @@ def programmazioni_del_giorno(data_locale, destinazione=CHANNEL_ID):
             invio_previsto
         FROM programmazioni
         WHERE stato = 'attesa'
-          AND CAST(COALESCE(telegram_chat_id, ?) AS TEXT)=?
           AND invio_previsto >= ?
           AND invio_previsto < ?
         ORDER BY invio_previsto ASC
     """, (
-        str(CHANNEL_ID), str(destinazione),
         inizio_utc,
         fine_utc,
     ))
@@ -9655,11 +10224,10 @@ def programmazioni_del_giorno(data_locale, destinazione=CHANNEL_ID):
 
 def trova_conflitto(
     data_locale,
-    destinazione=CHANNEL_ID,
 ):
 
     eventi = programmazioni_del_giorno(
-        data_locale.date(), destinazione
+        data_locale.date()
     )
 
     conflitti = []
@@ -9694,11 +10262,10 @@ def trova_conflitto(
 
 def suggerisci_prossimo_slot(
     data_giorno,
-    destinazione=CHANNEL_ID,
 ):
 
     eventi = programmazioni_del_giorno(
-        data_giorno, destinazione
+        data_giorno
     )
 
     # Orari consigliati di base
@@ -9733,7 +10300,7 @@ def suggerisci_prossimo_slot(
             continue
 
         conflitti = trova_conflitto(
-            candidato, destinazione
+            candidato
         )
 
         if not conflitti:
@@ -9777,7 +10344,7 @@ def suggerisci_prossimo_slot(
     while candidato <= fine:
 
         conflitti = trova_conflitto(
-            candidato, destinazione
+            candidato
         )
 
         if not conflitti:
@@ -9873,7 +10440,7 @@ async def conferma_orario_vicino(
     )
 
     da_reinvio = context.user_data.get("programmazione_da_reinvio", False)
-    reset_flusso(context)
+    context.user_data.clear()
 
     await query.message.reply_text(
         "✅ OFFERTA PROGRAMMATA!\n\n"
@@ -9889,7 +10456,7 @@ async def conferma_orario_vicino(
     )
 
     if da_reinvio:
-        await invia_lista_programmati(query.message, destinazione=canale_corrente(context).chat_id)
+        await invia_lista_programmati(query.message)
 
     return ConversationHandler.END
 
@@ -9935,8 +10502,7 @@ def leggi_programmato(programmazione_id):
             COALESCE(template, 'pulito'),
             foto_file_id,
             invio_previsto,
-            stato,
-            telegram_chat_id
+            stato
         FROM programmazioni
         WHERE id = ?
     """, (programmazione_id,))
@@ -9959,7 +10525,6 @@ def leggi_programmato(programmazione_id):
         "foto_file_id": riga[7],
         "invio_previsto": riga[8],
         "stato": riga[9],
-        "telegram_chat_id": riga[10],
     }
 
 
@@ -10010,7 +10575,6 @@ def aggiorna_messaggio_programmato(
 
 async def invia_lista_programmati(
     messaggio,
-    destinazione=CHANNEL_ID,
 ):
 
     riallinea_programmati_fascia()
@@ -10024,10 +10588,10 @@ async def invia_lista_programmati(
             prezzo,
             invio_previsto
         FROM programmazioni
-        WHERE stato = 'attesa' AND CAST(COALESCE(telegram_chat_id, ?) AS TEXT)=?
+        WHERE stato = 'attesa'
         ORDER BY invio_previsto ASC
         LIMIT 100
-    """, (str(CHANNEL_ID),str(destinazione)))
+    """)
 
     righe_db = cur.fetchall()
 
@@ -10039,7 +10603,7 @@ async def invia_lista_programmati(
         if dt:
             giorni_lista.add(dt.date())
     eventi_caffe = []
-    for canale in (destinazione,):
+    for canale in (CHANNEL_ID, CASA_CHANNEL_ID):
         eventi_caffe.extend(descrizione_pause_programmate(canale, giorni_lista))
     # Elenco cronologico con indicazione del canale per i post speciali.
     if not righe_db and not eventi_caffe:
@@ -10086,7 +10650,7 @@ async def invia_lista_programmati(
 
         elementi.append((data_locale or datetime.now(ROMA_TZ),
             f"#{programmazione_id} • {quando}\n📦 {nome} — {prezzo} €\n"))
-    for canale in (destinazione,):
+    for canale in (CHANNEL_ID, CASA_CHANNEL_ID):
         nome_canale = 'CASA' if str(canale) == str(CASA_CHANNEL_ID) else 'TECH'
         for inizio, descrizione in descrizione_pause_programmate(canale, giorni_lista):
             elementi.append((inizio, f"{descrizione} · {nome_canale}\n"))
@@ -10150,7 +10714,9 @@ async def mostra_programmati(
     ):
         context.user_data.pop(chiave, None)
 
-    await invia_lista_programmati(messaggio, destinazione=canale_corrente(context).chat_id)
+    await invia_lista_programmati(
+        messaggio
+    )
 
     return PROG_SELEZIONE
 
@@ -10183,8 +10749,6 @@ async def seleziona_programmato(
         programmazione_id
     )
 
-    if not ARCHIVIO.dettaglio('programmazioni', canale_corrente(context).chat_id, programmazione_id):
-        post = None
     if (
         not post
         or post["stato"] != "attesa"
@@ -10239,7 +10803,7 @@ async def invia_scheda_programmato(
     if messaggio_html:
         messaggio_post = messaggio_post.replace("__RICERCA_HTML__", "", 1)
     testo = (
-        f"📅 POST PROGRAMMATO #{post['id']} — {next((c.nome for c in CANALI.values() if c.chat_id == str(post['telegram_chat_id'])), post['telegram_chat_id'])}\n"
+        f"📅 POST PROGRAMMATO #{post['id']}\n"
         f"🕒 {quando}\n\n"
         "👀 ANTEPRIMA\n\n"
         + crea_caption_con_link(
@@ -10318,7 +10882,9 @@ async def gestisci_programmato(
             None,
         )
 
-        await invia_lista_programmati(query.message, destinazione=canale_corrente(context).chat_id)
+        await invia_lista_programmati(
+            query.message
+        )
 
         return PROG_SELEZIONE
 
@@ -10462,7 +11028,9 @@ async def gestisci_programmato(
             None,
         )
 
-        await invia_lista_programmati(query.message, destinazione=canale_corrente(context).chat_id)
+        await invia_lista_programmati(
+            query.message
+        )
 
         return PROG_SELEZIONE
 
@@ -10912,7 +11480,7 @@ async def edit_programmato_dataora(
         return PROG_EDIT_DATA_ORA
 
     conflitti = trova_conflitto(
-        data_locale, canale_corrente(context).chat_id
+        data_locale
     )
 
     conflitti = [
@@ -11192,55 +11760,571 @@ def crea_messaggio(context):
 
 
 async def prova_foto_automatica_o_chiedi(update, context):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.prova_foto_automatica_o_chiedi(_servizi_invii, update, context)
+    """Cerca e brandizza la foto; se non riesce passa alla scelta manuale."""
+    messaggio = update.message if update.message else update.callback_query.message
+    foto_url = context.user_data.get("foto_url_automatica")
+    if not foto_url:
+        link = context.user_data.get("link")
+        try:
+            prodotto = await asyncio.to_thread(leggi_prodotto_amazon, link)
+        except Exception as errore:
+            print(f"Errore ricerca foto pagina Amazon: {errore}")
+            prodotto = None
+        if prodotto:
+            foto_url = prodotto.get("immagine")
+            context.user_data["foto_url_automatica"] = foto_url
+
+    if foto_url:
+        attesa = await messaggio.reply_text(
+            "🖼 Foto trovata. Creo automaticamente la locandina BestPrice24h…"
+        )
+        try:
+            foto_brandizzata = await asyncio.to_thread(crea_immagine_brandizzata, foto_url)
+            context.user_data["foto_file_id"] = foto_brandizzata
+            await attesa.edit_text("✅ Foto trovata e locandina creata.")
+            return await mostra_anteprima(update, context)
+        except Exception as errore:
+            print(f"Errore locandina automatica manuale: {errore}")
+            context.user_data.pop("foto_file_id", None)
+            await attesa.edit_text(
+                "⚠️ Non sono riuscito a preparare automaticamente la foto."
+            )
+
+    return await chiedi_immagine(update, context)
 
 
-async def chiedi_immagine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.chiedi_immagine(_servizi_invii, update, context)
+async def chiedi_immagine(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    tastiera = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📷 AGGIUNGI IMMAGINE",
+                    callback_data="foto_aggiungi",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "➡️ CONTINUA SENZA IMMAGINE",
+                    callback_data="foto_salta",
+                )
+            ],
+        ]
+    )
+
+    if update.message:
+        await update.message.reply_text(
+            "🖼 Vuoi aggiungere un'immagine al post?",
+            reply_markup=tastiera,
+        )
+    else:
+        await update.callback_query.message.reply_text(
+            "🖼 Vuoi aggiungere un'immagine al post?",
+            reply_markup=tastiera,
+        )
+
+    return FOTO_SCELTA
 
 
-async def scelta_immagine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.scelta_immagine(_servizi_invii, update, context)
+async def scelta_immagine(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "foto_salta":
+        context.user_data.pop(
+            "foto_file_id",
+            None,
+        )
+
+        await query.edit_message_text(
+            "➡️ Continuo senza immagine."
+        )
+
+        return await mostra_anteprima(
+            update,
+            context,
+        )
+
+    if query.data == "foto_aggiungi":
+        await query.edit_message_text(
+            "📷 Inviami la foto del prodotto."
+        )
+        return FOTO_ATTESA
+
+    return FOTO_SCELTA
 
 
-async def ricevi_immagine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.ricevi_immagine(_servizi_invii, update, context)
+async def ricevi_immagine(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message.photo:
+        await update.message.reply_text(
+            "❌ Inviami una foto valida."
+        )
+        return FOTO_ATTESA
+
+    foto = update.message.photo[-1]
+    try:
+        file_telegram = await foto.get_file()
+        contenuto = await file_telegram.download_as_bytearray()
+        foto_brandizzata = await asyncio.to_thread(
+            crea_immagine_brandizzata_da_bytes,
+            bytes(contenuto),
+        )
+        context.user_data["foto_file_id"] = foto_brandizzata
+        await update.message.reply_text("✅ Immagine aggiunta e locandina creata.")
+    except Exception as errore:
+        print(f"Errore brandizzazione foto manuale: {errore}")
+        context.user_data["foto_file_id"] = foto.file_id
+        await update.message.reply_text(
+            "⚠️ Ho aggiunto la foto originale perché non sono riuscito a creare la locandina."
+        )
+
+    return await mostra_anteprima(
+        update,
+        context,
+    )
 
 
 # =========================================================
 # ANTEPRIMA
 # =========================================================
 
-async def mostra_anteprima(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.mostra_anteprima(_servizi_invii, update, context)
+async def mostra_anteprima(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    messaggio = crea_messaggio(
+        context
+    )
+
+    context.user_data["messaggio"] = messaggio
+
+    link = context.user_data.get(
+        "link",
+        "",
+    )
+
+    tastiera = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📤 PUBBLICA ORA",
+                    callback_data="pubblica",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🕒 PROGRAMMA INVIO",
+                    callback_data="programma",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🎨 FORMATO AUTOMATICO",
+                    callback_data="cambia_template",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "❌ ANNULLA",
+                    callback_data="annulla",
+                )
+            ],
+        ]
+    )
+
+    testo = (
+        "👀 ANTEPRIMA\n\n"
+        "──────────────\n\n"
+        + crea_caption_con_link(messaggio, link)
+    )
+
+    foto_file_id = context.user_data.get(
+        "foto_file_id"
+    )
+
+    if update.message:
+
+        if foto_file_id:
+            inviato = await update.message.reply_photo(
+                photo=foto_file_id,
+                caption=testo,
+                parse_mode="HTML",
+                reply_markup=tastiera,
+            )
+            if inviato.photo:
+                context.user_data["foto_file_id"] = inviato.photo[-1].file_id
+        else:
+            await update.message.reply_text(
+                testo,
+                parse_mode="HTML",
+                reply_markup=tastiera,
+            )
+
+    else:
+
+        if foto_file_id:
+            inviato = await update.callback_query.message.reply_photo(
+                photo=foto_file_id,
+                caption=testo,
+                parse_mode="HTML",
+                reply_markup=tastiera,
+            )
+            if inviato.photo:
+                context.user_data["foto_file_id"] = inviato.photo[-1].file_id
+        else:
+            await update.callback_query.message.reply_text(
+                testo,
+                parse_mode="HTML",
+                reply_markup=tastiera,
+            )
+
+    return CONFERMA
 
 
 # =========================================================
 # CONTROLLO DISTANZA INVII MANUALI
 # =========================================================
 
-def minuti_rimanenti_prima_del_prossimo_invio(destinazione=CHANNEL_ID):
-    adesso = datetime.now(timezone.utc)
-    with sqlite3.connect(DB_PATH) as db:
-        dates = db.execute("SELECT pubblicata_il FROM recap_offerte WHERE CAST(telegram_chat_id AS TEXT)=?", (str(destinazione),)).fetchall()
-    times = [_data_sqlite(row[0]) for row in dates if _data_sqlite(row[0])]
-    if not times:
+def minuti_rimanenti_prima_del_prossimo_invio():
+
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+
+    cur.execute("""
+        SELECT pubblicata_il
+        FROM recap_offerte
+        ORDER BY pubblicata_il DESC
+        LIMIT 1
+    """)
+
+    riga = cur.fetchone()
+    db.close()
+
+    if not riga or not riga[0]:
         return 0
-    return max(0, int((DISTANZA_MINIMA_MINUTI * 60 - (adesso-max(times)).total_seconds() + 59) // 60))
+
+    try:
+        ultimo_invio = datetime.fromisoformat(riga[0])
+
+        if ultimo_invio.tzinfo is None:
+            ultimo_invio = ultimo_invio.replace(tzinfo=ROMA_TZ)
+        else:
+            ultimo_invio = ultimo_invio.astimezone(ROMA_TZ)
+
+        trascorsi = (
+            datetime.now(ROMA_TZ) - ultimo_invio
+        ).total_seconds() / 60
+
+        rimanenti = DISTANZA_MINIMA_MINUTI - trascorsi
+
+        if rimanenti <= 0:
+            return 0
+
+        # Arrotondiamo per eccesso: a 30 minuti con limite 31 mostra 1 minuto.
+        return max(1, int(rimanenti) + (0 if rimanenti.is_integer() else 1))
+
+    except Exception:
+        return 0
 
 
 # =========================================================
 # CONFERMA / PUBBLICAZIONE
 # =========================================================
 
-async def conferma(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.conferma(_servizi_invii, update, context)
+async def conferma(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not await controlla_autorizzazione(update):
+        return ConversationHandler.END
+
+    query = update.callback_query
+
+    await query.answer()
+
+    # PROGRAMMA INVIO
+    if query.data == "programma":
+
+        tastiera = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "📅 OGGI",
+                        callback_data="prog_giorno_0",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "📅 DOMANI",
+                        callback_data="prog_giorno_1",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "📅 TRA 2 GIORNI",
+                        callback_data="prog_giorno_2",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "❌ ANNULLA",
+                        callback_data="annulla",
+                    )
+                ],
+            ]
+        )
+
+        await query.message.reply_text(
+            "📅 PROGRAMMA INVIO\n\n"
+            "Scegli il giorno:",
+            reply_markup=tastiera,
+        )
+
+        return CONFERMA
+
+    # GIORNO SCELTO
+    if query.data.startswith("prog_giorno_"):
+
+        try:
+
+            giorni = int(
+                query.data.replace(
+                    "prog_giorno_",
+                    "",
+                )
+            )
+
+        except ValueError:
+
+            return CONFERMA
+
+        data_scelta = (
+            datetime.now(ROMA_TZ).date()
+            + timedelta(days=giorni)
+        )
+
+        context.user_data[
+            "data_programmata"
+        ] = data_scelta.isoformat()
+
+        etichetta = (
+            "oggi"
+            if giorni == 0
+            else "domani"
+            if giorni == 1
+            else "tra 2 giorni"
+        )
+
+        eventi = programmazioni_del_giorno(
+            data_scelta
+        )
+
+        if eventi:
+
+            orari_occupati = ", ".join(
+                evento["datetime"].strftime(
+                    "%H:%M"
+                )
+                for evento in eventi
+            )
+
+        else:
+
+            orari_occupati = "nessuno"
+
+        suggerito = suggerisci_prossimo_slot(
+            data_scelta
+        )
+
+        if suggerito:
+
+            suggerimento_testo = (
+                "💡 Prossimo spazio consigliato: "
+                f"{suggerito.strftime('%H:%M')}\n\n"
+            )
+
+        else:
+
+            suggerimento_testo = (
+                "⚠️ Non trovo altri spazi "
+                "consigliati oggi.\n\n"
+            )
+
+        await query.message.reply_text(
+            f"🕒 Hai scelto {etichetta}.\n\n"
+            f"📅 Orari già programmati: "
+            f"{orari_occupati}\n\n"
+            f"{suggerimento_testo}"
+            "Ora scrivi solo l'orario."
+        )
+
+        return PROGRAMMA_ORA
+
+    # ANNULLA
+    if query.data == "annulla":
+        return await annulla(update, context)
+
+    # CAMBIA TEMPLATE
+    if query.data == "cambia_template":
+        await query.message.reply_text('🎨 Il formato è unico e automatico: Offerta sotto il 30%, Super offerta dal 30% al 69%, Sconto extra dal 70%. Coupon e categoria vengono inclusi quando disponibili.')
+        return CONFERMA
+
+    # TEMPLATE SELEZIONATO
+    if query.data.startswith("tpl_"):
+
+        template = query.data.replace(
+            "tpl_",
+            "",
+        )
+
+        context.user_data["template"] = template
+
+        await query.edit_message_text(
+            f"✅ Template selezionato: {template}"
+        )
+
+        return await mostra_anteprima(
+            update,
+            context,
+        )
+
+    # PUBBLICA
+    if query.data == "pubblica":
+
+        ora = datetime.now(ROMA_TZ)
+        if prossimo_orario_manuale(ora) != ora:
+            dati = context.user_data
+            if not dati.get('messaggio') or not dati.get('link'):
+                await query.message.reply_text('❌ Dati dell’offerta mancanti.')
+                return CONFERMA
+            pid, quando = salva_programmazione(dati.get('nome'), dati['messaggio'], dati['link'], dati.get('prezzo'), ora, dati.get('telegram_chat_id', CHANNEL_ID))
+            salva_foto_programmazione(pid, dati.get('foto_file_id'))
+            context.user_data.clear()
+            await query.message.reply_text(f"🌙 Fuori fascia: offerta aggiunta a Programmati per {quando:%d/%m/%Y %H:%M} (ora italiana).",reply_markup=menu_pubblicazione())
+            return ConversationHandler.END
+
+        minuti_rimanenti = minuti_rimanenti_prima_del_prossimo_invio()
+
+        if minuti_rimanenti > 0:
+            await query.message.reply_text(
+                f"⏳ È ancora presto. Attendi ancora {minuti_rimanenti} minuto/i.\n\n"
+                f"Tra un post e l'altro devono passare almeno "
+                f"{DISTANZA_MINIMA_MINUTI} minuti."
+            )
+            return CONFERMA
+
+        messaggio = context.user_data.get("messaggio")
+        link = context.user_data.get("link")
+        nome = context.user_data.get("nome")
+
+        if not messaggio or not link:
+
+            await query.edit_message_text(
+                "❌ Dati dell'offerta mancanti."
+            )
+
+            return ConversationHandler.END
+
+        messaggio_con_link = crea_caption_con_link(messaggio, link)
+
+        bottone_offerta = tastiera_offerta_automatica(link, asin=context.user_data.get("asin"))
+
+        foto_file_id = context.user_data.get(
+            "foto_file_id"
+        )
+
+        if foto_file_id:
+            messaggio_telegram = await context.bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=foto_file_id,
+                caption=messaggio_con_link,
+                parse_mode="HTML",
+                reply_markup=bottone_offerta,
+            )
+        else:
+            messaggio_telegram = await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=messaggio_con_link,
+                parse_mode="HTML",
+                reply_markup=bottone_offerta,
+            )
+
+        await aggiorna_pulsanti_offerta(
+            context.bot, messaggio_telegram, link,
+            asin=context.user_data.get("asin"), chat_id=CHANNEL_ID,
+        )
+
+        foto_monitoraggio = foto_file_id
+        if getattr(messaggio_telegram, "photo", None):
+            foto_monitoraggio = messaggio_telegram.photo[-1].file_id
+        sconto_manuale = calcola_sconto(
+            context.user_data.get("prezzo"),
+            context.user_data.get("vecchio_prezzo", "NO"),
+        ) or 0
+        registra_pubblicazione_monitorata(
+            nome=nome,
+            link=link,
+            message_id=messaggio_telegram.message_id,
+            foto_file_id=foto_monitoraggio,
+            sconto=sconto_manuale,
+            soglia_sconto=sconto_manuale,
+            asin=context.user_data.get("asin"),
+        )
+
+        ultime_offerte.appendleft(
+            {
+                "nome": nome,
+                "link": link,
+                "prezzo": context.user_data.get("prezzo"),
+            }
+        )
+
+        salva_offerta_recap(
+            nome,
+            link,
+            context.user_data.get("prezzo"),
+            context.user_data.get("vecchio_prezzo", "NO"),
+            messaggio=messaggio,
+            foto_file_id=foto_file_id,
+            template=context.user_data.get("template", "pulito"),
+            asin=context.user_data.get("asin") or risolvi_asin_da_link(link),
+            telegram_chat_id=CHANNEL_ID,
+            origine="manuale",
+            sconto=sconto_manuale,
+            telegram_message_id=messaggio_telegram.message_id,
+        )
+
+        context.user_data.clear()
+
+        chat_id = query.message.chat_id
+
+        await query.message.delete()
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "✅ OFFERTA PUBBLICATA!\n\n"
+                "Cosa vuoi fare adesso?"
+            ),
+            reply_markup=menu_dopo_pubblicazione(),
+        )
+
+        return ConversationHandler.END
+
+    return CONFERMA
 
 
 # =========================================================
@@ -12300,7 +13384,7 @@ async def annulla(
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
 
-    reset_flusso(context)
+    context.user_data.clear()
 
     # Funziona sia con /annulla sia con il pulsante inline ANNULLA.
     if update.callback_query:
@@ -13323,7 +14407,6 @@ def main():
     inizializza_recap()
     inizializza_automazione()
     inizializza_tiktok()
-    ARCHIVIO.inizializza(list(CANALI.values()), config_fascia_manuale())
     avvia_api_offerte_web()
 
     app = (
@@ -13333,8 +14416,6 @@ def main():
         .post_init(avvia_programmazioni)
         .build()
     )
-
-    app.add_handler(TypeHandler(Update, proteggi_menu_v2), group=-2)
 
     # Intercetta solo la rubrica; gli altri flussi mantengono i propri handler.
     app.add_handler(TypeHandler(Update, gestisci_oroscopi), group=-1)
@@ -13346,7 +14427,6 @@ def main():
     conversazione = ConversationHandler(
 
         entry_points=[
-            CallbackQueryHandler(gestisci_menu_v2, pattern=r'^v2(?:_|c:)'),
             CallbackQueryHandler(ricontrolla_da_cronologia, pattern=r'^archive_recheck_[0-9]+$'),
 
             CallbackQueryHandler(repost_da_pulsante, pattern='^repost$'),
@@ -13385,7 +14465,6 @@ def main():
         ],
 
         states={
-            menu_canali.INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_impostazione_v2)],
 
             LINK: [
                 MessageHandler(
@@ -14047,5 +15126,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
