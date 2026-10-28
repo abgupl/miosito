@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import invio_multiplo
 import invio_singolo
 import repost
+from database import ArchivioCanali
+from canali import Canale
 
 
 def asin(link):
@@ -46,6 +48,9 @@ class RepostHistoryTests(unittest.TestCase):
             prodotto_inviato_ultime_24h=self.recent,
         )
         self.s.asin_in_programmati = lambda dest: repost.asin_in_programmati(self.s, dest)
+        self.s.ARCHIVIO = ArchivioCanali(self.path)
+        self.s.ARCHIVIO.inizializza([Canale('tech', 'TECH', 'TECH'), Canale('casa', 'CASA', 'CASA')],
+                                   {'attiva': True, 'inizio': '08:30', 'fine': '21:30'})
 
     def recent(self, product, destination):
         with sqlite3.connect(self.path) as db:

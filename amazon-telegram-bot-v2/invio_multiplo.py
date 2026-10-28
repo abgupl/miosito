@@ -17,7 +17,7 @@ def filtra_duplicati_recenti_multiplo(servizi, draft):
             validi.append(prodotto)
     if draft.get('tipo') == 'repost':
         with servizi.sqlite3.connect(servizi.DB_PATH, timeout=30) as db:
-            links_in_coda = db.execute("SELECT link FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(servizi.CHANNEL_ID), servizi._chat_id_per_canale(draft['canale']))).fetchall()
+            links_in_coda = db.execute("SELECT link FROM programmazioni WHERE stato IN ('attesa','in_invio','da_verificare') AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(servizi.CHANNEL_ID), servizi._chat_id_per_canale(draft['canale']))).fetchall()
         asin_in_coda = {servizi.estrai_asin_da_link(link) for link, in links_in_coda}
         restanti = []
         for prodotto in validi:
@@ -29,13 +29,11 @@ def filtra_duplicati_recenti_multiplo(servizi, draft):
     draft['pronti'] = validi
 
 
-def intervallo_multiplo(servizi, utente, valore=None):
-    with servizi.sqlite3.connect(servizi.DB_PATH) as db:
-        db.execute('CREATE TABLE IF NOT EXISTS impostazioni_multiplo (utente TEXT PRIMARY KEY, minuti INTEGER NOT NULL)')
-        if valore is not None:
-            db.execute('INSERT OR REPLACE INTO impostazioni_multiplo VALUES (?, ?)', (str(utente), valore))
-        row = db.execute('SELECT minuti FROM impostazioni_multiplo WHERE utente=?', (str(utente),)).fetchone()
-    return row[0] if row else 30
+def intervallo_multiplo(servizi, utente, valore=None, canale=None):
+    destinazione = servizi._chat_id_per_canale(canale or 'tech')
+    if valore is not None:
+        servizi.ARCHIVIO.salva(destinazione, 'intervallo', valore)
+    return servizi.ARCHIVIO.impostazioni(destinazione)['intervallo']
 
 
 def tastiera_annulla_elaborazione(servizi):
@@ -44,12 +42,16 @@ def tastiera_annulla_elaborazione(servizi):
 
 def tastiera_multiplo(servizi, draft):
     if draft.get('tipo') == 'singolo_cronologia':
-        return servizi.tastiera_confronto_cronologia(bool(draft.get('pronti')) and (not draft.get('elaborazione')))
-    return servizi.InlineKeyboardMarkup([row for row in [[servizi.InlineKeyboardButton('✅ Tech' if draft['canale'] == 'tech' else 'Tech', callback_data='multi_canale_tech'), servizi.InlineKeyboardButton('✅ Casa' if draft['canale'] == 'casa' else 'Casa', callback_data='multi_canale_casa')], [servizi.InlineKeyboardButton(f"⏱ Intervallo: {draft['minuti']} min", callback_data='multi_timing')], [servizi.InlineKeyboardButton('🚀 CONFERMA E AVVIA', callback_data='multi_avvia')] if draft.get('pronti') and (not draft.get('elaborazione')) else [], [servizi.InlineKeyboardButton('❌ ANNULLA', callback_data='multi_annulla')]] if row])
+        return servizi.tastiera_confronto_cronologia(bool(draft.get('pronti')) and not draft.get('elaborazione'))
+    rows = [[servizi.InlineKeyboardButton(f"⏱ Intervallo: {draft['minuti']} min", callback_data='multi_timing')]]
+    if draft.get('pronti') and not draft.get('elaborazione'):
+        rows.append([servizi.InlineKeyboardButton('🚀 CONFERMA E AVVIA', callback_data='multi_avvia')])
+    rows.append([servizi.InlineKeyboardButton('❌ ANNULLA', callback_data='multi_annulla')])
+    return servizi.InlineKeyboardMarkup(rows)
 
 
-def link_affiliato_multiplo(servizi, link, asin):
-    tag = (servizi.os.environ.get('AMAZON_PARTNER_TAG') or servizi.os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip()
+def link_affiliato_multiplo(servizi, link, asin, canale=None):
+    tag = servizi.tag_canale(canale)
     if not tag:
         raise ValueError('Imposta AMAZON_PARTNER_TAG su Railway con il tuo tag affiliato Amazon')
     if not asin:
@@ -59,13 +61,13 @@ def link_affiliato_multiplo(servizi, link, asin):
 
 def piano_multiplo(servizi, prodotti, minuti, destinazione, salva=False, origine='multiplo'):
     """Ricalcola e prenota l'intero lotto in un'unica transazione SQLite."""
-    cfg = servizi.config_fascia_manuale()
+    cfg = servizi.config_fascia_manuale(canale=destinazione)
     with servizi.sqlite3.connect(servizi.DB_PATH, timeout=30) as db:
         db.execute('BEGIN IMMEDIATE')
-        righe = db.execute("SELECT invio_previsto FROM programmazioni WHERE stato='attesa' AND (telegram_chat_id=? OR (telegram_chat_id IS NULL AND ?=?))", (str(destinazione), str(destinazione), str(servizi.CHANNEL_ID))).fetchall()
+        righe = db.execute("SELECT invio_previsto FROM programmazioni WHERE stato IN ('attesa','in_invio','da_verificare') AND (telegram_chat_id=? OR (telegram_chat_id IS NULL AND ?=?))", (str(destinazione), str(destinazione), str(servizi.CHANNEL_ID))).fetchall()
         occupati = [servizi.datetime.fromisoformat(r[0]).astimezone(servizi.timezone.utc) for r in righe]
         passo = servizi.timedelta(minutes=minuti)
-        quando = servizi.datetime.now(servizi.timezone.utc).replace(microsecond=0)
+        quando = servizi.datetime.now(servizi.timezone.utc).replace(microsecond=0) + servizi.timedelta(minutes=servizi.minuti_rimanenti_prima_del_prossimo_invio(destinazione))
         piano = []
         for prodotto in prodotti:
             quando = servizi.slot_manuale_libero(quando, occupati, minuti, dict(cfg, _canale=str(destinazione)))
@@ -157,10 +159,13 @@ async def rapido_da_comando(servizi, update: Update, context: ContextTypes.DEFAU
         return servizi.ConversationHandler.END
     if update.callback_query:
         await update.callback_query.answer()
-    context.user_data.clear()
-    draft = {'canale': 'tech', 'minuti': servizi.intervallo_multiplo(update.effective_user.id), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
+    if not await servizi.richiedi_canale(update, context):
+        return servizi.ConversationHandler.END
+    channel = servizi.canale_corrente(context)
+    servizi.reset_flusso(context)
+    draft = {'canale': channel.chiave, 'minuti': servizi.intervallo_multiplo(update.effective_user.id, canale=channel.chiave), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
     context.user_data['multiplo'] = draft
-    await update.effective_message.reply_text('📦 INVIO MULTIPLO\n\nScegli canale e intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.', reply_markup=servizi.tastiera_multiplo(draft))
+    await update.effective_message.reply_text('📦 INVIO MULTIPLO — ' + channel.nome + '\n\nScegli l’intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nDopo il riepilogo il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare.', reply_markup=servizi.tastiera_multiplo(draft))
     return servizi.RAPIDO
 
 
@@ -226,7 +231,7 @@ async def prepara_lotto_multiplo(servizi, messaggio, context, draft, links, seco
                 if asin in visti:
                     draft['duplicati'] += 1
                     continue
-                affiliato = servizi.link_affiliato_multiplo(link, asin)
+                affiliato = servizi.link_affiliato_multiplo(link, asin, draft['canale'])
                 foto_storica = dati.get('_foto_storica_repost') if draft.get('tipo') == 'repost' else None
                 if foto_storica:
                     foto = foto_storica
@@ -281,7 +286,7 @@ async def ricevi_rapido(servizi, update: Update, context: ContextTypes.DEFAULT_T
             draft['timing_personalizzato'] = True
             await update.message.reply_text('Inserisci un numero intero da 1 a 1440 minuti.')
             return servizi.RAPIDO
-        draft['minuti'] = servizi.intervallo_multiplo(update.effective_user.id, minuti)
+        draft['minuti'] = servizi.intervallo_multiplo(update.effective_user.id, minuti, canale=draft['canale'])
         if draft['pronti']:
             await servizi.riepilogo_multiplo(update.message, draft, context)
         else:
@@ -292,7 +297,7 @@ async def ricevi_rapido(servizi, update: Update, context: ContextTypes.DEFAULT_T
         if not testo.isdigit() or not 1 <= int(testo) <= 50:
             await update.message.reply_text('Scrivi quanti prodotti vuoi ripubblicare: un numero da 1 a 50.')
             return servizi.RAPIDO
-        if not (servizi.os.environ.get('AMAZON_PARTNER_TAG') or servizi.os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip():
+        if not servizi.tag_canale(draft['canale']):
             await update.message.reply_text('⚠️ Imposta AMAZON_PARTNER_TAG su Railway con il tuo tag affiliato prima di avviare Repost.')
             return servizi.RAPIDO
         quantita = int(testo)
@@ -305,7 +310,7 @@ async def ricevi_rapido(servizi, update: Update, context: ContextTypes.DEFAULT_T
     if draft.get('pronti'):
         await update.message.reply_text('Conferma o annulla il lotto già preparato prima di inviare altri link.')
         return servizi.RAPIDO
-    if not (servizi.os.environ.get('AMAZON_PARTNER_TAG') or servizi.os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip():
+    if not servizi.tag_canale(draft['canale']):
         await update.message.reply_text('⚠️ Prima imposta AMAZON_PARTNER_TAG nelle variabili Railway con il TUO tag affiliato Amazon, poi reinvia i link.')
         return servizi.RAPIDO
     links = servizi.re.findall('https?://[^\\s<>]+', update.message.text)
@@ -352,18 +357,14 @@ async def gestisci_multiplo(servizi, update: Update, context: ContextTypes.DEFAU
         draft['timing_personalizzato'] = True
         await query.message.reply_text("Scrivi l'intervallo desiderato in minuti (1–1440):")
     elif azione.startswith('multi_min_'):
-        draft['minuti'] = servizi.intervallo_multiplo(update.effective_user.id, int(azione.rsplit('_', 1)[1]))
+        draft['minuti'] = servizi.intervallo_multiplo(update.effective_user.id, int(azione.rsplit('_', 1)[1]), canale=draft['canale'])
         draft.pop('timing_personalizzato', None)
         if draft['pronti']:
             await servizi.riepilogo_multiplo(query.message, draft, context)
         else:
             await query.message.reply_text(f"✅ Intervallo: {draft['minuti']} minuti", reply_markup=servizi.tastiera_multiplo(draft))
     elif azione.startswith('multi_canale_'):
-        draft['canale'] = azione.rsplit('_', 1)[1]
-        if draft['pronti']:
-            await servizi.riepilogo_multiplo(query.message, draft, context)
-        else:
-            await query.message.reply_text(f"✅ Canale: {draft['canale'].upper()}. " + ('Scrivi quanti prodotti vuoi ripubblicare (1–50).' if draft.get('tipo') == 'repost' else 'Incolla i link.'), reply_markup=servizi.tastiera_multiplo(draft))
+        await query.message.reply_text('La destinazione del lotto è fissa. Usa Cambia canale dal menu per iniziare un nuovo lotto.')
     elif azione == 'multi_avvia' and draft['pronti']:
         riuscito = await servizi.avvia_lotto_multiplo(query.message, context, draft)
         if riuscito:

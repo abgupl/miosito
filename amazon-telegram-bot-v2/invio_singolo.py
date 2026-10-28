@@ -10,8 +10,11 @@ from __future__ import annotations
 async def nuova_da_comando(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END
-    context.user_data.clear()
-    await update.message.reply_text('🔗 Inviami il link Amazon del prodotto:')
+    if not await servizi.richiedi_canale(update, context):
+        return servizi.ConversationHandler.END
+    servizi.reset_flusso(context)
+    context.user_data['telegram_chat_id'] = servizi.canale_corrente(context).chat_id
+    await update.message.reply_text('🔗 ' + servizi.canale_corrente(context).nome + '\nInviami il link Amazon del prodotto:')
     return servizi.LINK
 
 
@@ -20,8 +23,11 @@ async def nuova_da_pulsante(servizi, update: Update, context: ContextTypes.DEFAU
         return servizi.ConversationHandler.END
     query = update.callback_query
     await query.answer()
-    context.user_data.clear()
-    await query.message.reply_text('🔗 Inviami il link Amazon del prodotto:')
+    if not await servizi.richiedi_canale(update, context):
+        return servizi.ConversationHandler.END
+    servizi.reset_flusso(context)
+    context.user_data['telegram_chat_id'] = servizi.canale_corrente(context).chat_id
+    await query.message.reply_text('🔗 ' + servizi.canale_corrente(context).nome + '\nInviami il link Amazon del prodotto:')
     return servizi.LINK
 
 
@@ -32,6 +38,7 @@ async def ricevi_link(servizi, update: Update, context: ContextTypes.DEFAULT_TYP
     if not servizi.link_amazon_valido(link):
         await update.message.reply_text('❌ Non sembra un link Amazon.\n\nInviami un link Amazon valido:')
         return servizi.LINK
+    context.user_data.setdefault('telegram_chat_id', servizi.canale_corrente(context).chat_id)
     context.user_data['link'] = link
     messaggio_attesa = await update.message.reply_text('🔎 Sto provando a leggere automaticamente i dati del prodotto...')
 
@@ -44,8 +51,10 @@ async def ricevi_link(servizi, update: Update, context: ContextTypes.DEFAULT_TYP
     dati = await servizi.leggi_offerta_con_sei_tentativi(link, callback=mostra_tentativo)
     if not dati:
         await messaggio_attesa.edit_text('⏭️ PRODOTTO SALTATO\n\nLettura non completata: prezzo, disponibilità o condizione non verificabili. Controlla i log Railway e riprova con un link Amazon diretto.')
-        context.user_data.clear()
+        servizi.reset_flusso(context)
         return servizi.LINK
+    if servizi.tag_canale(context.user_data['canale_attivo']):
+        context.user_data['link'] = servizi.link_affiliato_multiplo(link, dati.get('asin') or servizi.risolvi_asin_da_link(link), context.user_data['canale_attivo'])
     if dati.get('immagine'):
         context.user_data['foto_url_automatica'] = dati['immagine']
     if dati.get('asin'):
@@ -105,7 +114,9 @@ async def conferma_dati_automatici(servizi, update: Update, context: ContextType
         link = context.user_data.get('link')
         foto_url_automatica = context.user_data.get('foto_url_automatica')
         asin = context.user_data.get('asin')
-        context.user_data.clear()
+        destinazione = context.user_data['telegram_chat_id']
+        servizi.reset_flusso(context)
+        context.user_data['telegram_chat_id'] = destinazione
         context.user_data['link'] = link
         if foto_url_automatica:
             context.user_data['foto_url_automatica'] = foto_url_automatica
@@ -216,7 +227,7 @@ async def mostra_anteprima(servizi, update: Update, context: ContextTypes.DEFAUL
     context.user_data['messaggio'] = messaggio
     link = context.user_data.get('link', '')
     tastiera = servizi.InlineKeyboardMarkup([[servizi.InlineKeyboardButton('📤 PUBBLICA ORA', callback_data='pubblica')], [servizi.InlineKeyboardButton('🕒 PROGRAMMA INVIO', callback_data='programma')], [servizi.InlineKeyboardButton('🎨 FORMATO AUTOMATICO', callback_data='cambia_template')], [servizi.InlineKeyboardButton('❌ ANNULLA', callback_data='annulla')]])
-    testo = '👀 ANTEPRIMA\n\n──────────────\n\n' + servizi.crea_caption_con_link(messaggio, link)
+    testo = '👀 ANTEPRIMA — ' + servizi.canale_corrente(context).nome + '\n\n──────────────\n\n' + servizi.crea_caption_con_link(messaggio, link)
     foto_file_id = context.user_data.get('foto_file_id')
     if update.message:
         if foto_file_id:
@@ -224,13 +235,14 @@ async def mostra_anteprima(servizi, update: Update, context: ContextTypes.DEFAUL
             if inviato.photo:
                 context.user_data['foto_file_id'] = inviato.photo[-1].file_id
         else:
-            await update.message.reply_text(testo, parse_mode='HTML', reply_markup=tastiera)
+            inviato = await update.message.reply_text(testo, parse_mode='HTML', reply_markup=tastiera)
     elif foto_file_id:
         inviato = await update.callback_query.message.reply_photo(photo=foto_file_id, caption=testo, parse_mode='HTML', reply_markup=tastiera)
         if inviato.photo:
             context.user_data['foto_file_id'] = inviato.photo[-1].file_id
     else:
-        await update.callback_query.message.reply_text(testo, parse_mode='HTML', reply_markup=tastiera)
+        inviato = await update.callback_query.message.reply_text(testo, parse_mode='HTML', reply_markup=tastiera)
+    context.user_data['anteprima_id'] = inviato.message_id
     return servizi.CONFERMA
 
 
@@ -239,6 +251,10 @@ async def conferma(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
         return servizi.ConversationHandler.END
     query = update.callback_query
     await query.answer()
+    if query.data in {'pubblica', 'programma', 'cambia_template'} or query.data.startswith('tpl_'):
+        if context.user_data.get('anteprima_id') != query.message.message_id:
+            await query.message.reply_text('Questa anteprima è scaduta. Usa quella dell’offerta attualmente in preparazione.')
+            return servizi.CONFERMA
     if query.data == 'programma':
         tastiera = servizi.InlineKeyboardMarkup([[servizi.InlineKeyboardButton('📅 OGGI', callback_data='prog_giorno_0')], [servizi.InlineKeyboardButton('📅 DOMANI', callback_data='prog_giorno_1')], [servizi.InlineKeyboardButton('📅 TRA 2 GIORNI', callback_data='prog_giorno_2')], [servizi.InlineKeyboardButton('❌ ANNULLA', callback_data='annulla')]])
         await query.message.reply_text('📅 PROGRAMMA INVIO\n\nScegli il giorno:', reply_markup=tastiera)
@@ -251,12 +267,12 @@ async def conferma(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
         data_scelta = servizi.datetime.now(servizi.ROMA_TZ).date() + servizi.timedelta(days=giorni)
         context.user_data['data_programmata'] = data_scelta.isoformat()
         etichetta = 'oggi' if giorni == 0 else 'domani' if giorni == 1 else 'tra 2 giorni'
-        eventi = servizi.programmazioni_del_giorno(data_scelta)
+        eventi = servizi.programmazioni_del_giorno(data_scelta, context.user_data['telegram_chat_id'])
         if eventi:
             orari_occupati = ', '.join((evento['datetime'].strftime('%H:%M') for evento in eventi))
         else:
             orari_occupati = 'nessuno'
-        suggerito = servizi.suggerisci_prossimo_slot(data_scelta)
+        suggerito = servizi.suggerisci_prossimo_slot(data_scelta, context.user_data['telegram_chat_id'])
         if suggerito:
             suggerimento_testo = f"💡 Prossimo spazio consigliato: {suggerito.strftime('%H:%M')}\n\n"
         else:
@@ -274,45 +290,16 @@ async def conferma(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f'✅ Template selezionato: {template}')
         return await servizi.mostra_anteprima(update, context)
     if query.data == 'pubblica':
+        dati = context.user_data
+        destinazione = dati.get('telegram_chat_id')
+        channel = servizi.canale_corrente(context)
+        if not channel or destinazione != channel.chat_id or not dati.get('messaggio') or not dati.get('link'):
+            await query.message.reply_text('❌ Bozza scaduta o canale cambiato. Prepara nuovamente il post.')
+            return servizi.ConversationHandler.END
         ora = servizi.datetime.now(servizi.ROMA_TZ)
-        if servizi.prossimo_orario_manuale(ora) != ora:
-            dati = context.user_data
-            if not dati.get('messaggio') or not dati.get('link'):
-                await query.message.reply_text('❌ Dati dell’offerta mancanti.')
-                return servizi.CONFERMA
-            pid, quando = servizi.salva_programmazione(dati.get('nome'), dati['messaggio'], dati['link'], dati.get('prezzo'), ora, dati.get('telegram_chat_id', servizi.CHANNEL_ID))
-            servizi.salva_foto_programmazione(pid, dati.get('foto_file_id'))
-            context.user_data.clear()
-            await query.message.reply_text(f'🌙 Fuori fascia: offerta aggiunta a Programmati per {quando:%d/%m/%Y %H:%M} (ora italiana).', reply_markup=servizi.menu_pubblicazione())
-            return servizi.ConversationHandler.END
-        minuti_rimanenti = servizi.minuti_rimanenti_prima_del_prossimo_invio()
-        if minuti_rimanenti > 0:
-            await query.message.reply_text(f"⏳ È ancora presto. Attendi ancora {minuti_rimanenti} minuto/i.\n\nTra un post e l'altro devono passare almeno {servizi.DISTANZA_MINIMA_MINUTI} minuti.")
-            return servizi.CONFERMA
-        messaggio = context.user_data.get('messaggio')
-        link = context.user_data.get('link')
-        nome = context.user_data.get('nome')
-        if not messaggio or not link:
-            await query.edit_message_text("❌ Dati dell'offerta mancanti.")
-            return servizi.ConversationHandler.END
-        messaggio_con_link = servizi.crea_caption_con_link(messaggio, link)
-        bottone_offerta = servizi.tastiera_offerta_automatica(link, asin=context.user_data.get('asin'))
-        foto_file_id = context.user_data.get('foto_file_id')
-        if foto_file_id:
-            messaggio_telegram = await context.bot.send_photo(chat_id=servizi.CHANNEL_ID, photo=foto_file_id, caption=messaggio_con_link, parse_mode='HTML', reply_markup=bottone_offerta)
-        else:
-            messaggio_telegram = await context.bot.send_message(chat_id=servizi.CHANNEL_ID, text=messaggio_con_link, parse_mode='HTML', reply_markup=bottone_offerta)
-        await servizi.aggiorna_pulsanti_offerta(context.bot, messaggio_telegram, link, asin=context.user_data.get('asin'), chat_id=servizi.CHANNEL_ID)
-        foto_monitoraggio = foto_file_id
-        if getattr(messaggio_telegram, 'photo', None):
-            foto_monitoraggio = messaggio_telegram.photo[-1].file_id
-        sconto_manuale = servizi.calcola_sconto(context.user_data.get('prezzo'), context.user_data.get('vecchio_prezzo', 'NO')) or 0
-        servizi.registra_pubblicazione_monitorata(nome=nome, link=link, message_id=messaggio_telegram.message_id, foto_file_id=foto_monitoraggio, sconto=sconto_manuale, soglia_sconto=sconto_manuale, asin=context.user_data.get('asin'))
-        servizi.ultime_offerte.appendleft({'nome': nome, 'link': link, 'prezzo': context.user_data.get('prezzo')})
-        servizi.salva_offerta_recap(nome, link, context.user_data.get('prezzo'), context.user_data.get('vecchio_prezzo', 'NO'), messaggio=messaggio, foto_file_id=foto_file_id, template=context.user_data.get('template', 'pulito'), asin=context.user_data.get('asin') or servizi.risolvi_asin_da_link(link), telegram_chat_id=servizi.CHANNEL_ID, origine='manuale', sconto=sconto_manuale, telegram_message_id=messaggio_telegram.message_id)
-        context.user_data.clear()
-        chat_id = query.message.chat_id
-        await query.message.delete()
-        await context.bot.send_message(chat_id=chat_id, text='✅ OFFERTA PUBBLICATA!\n\nCosa vuoi fare adesso?', reply_markup=servizi.menu_dopo_pubblicazione())
+        pid, quando = servizi.salva_programmazione(dati.get('nome'), dati['messaggio'], dati['link'], dati.get('prezzo'), ora, destinazione)
+        servizi.salva_foto_programmazione(pid, dati.get('foto_file_id'))
+        servizi.reset_flusso(context)
+        await query.message.reply_text(f'✅ Post #{pid} confermato per {channel.nome}.\nInvio al primo spazio libero: {quando:%d/%m/%Y %H:%M}, ora italiana. Se lo spazio è libero parte entro circa 30 secondi.', reply_markup=servizi.menu_dopo_pubblicazione())
         return servizi.ConversationHandler.END
     return servizi.CONFERMA

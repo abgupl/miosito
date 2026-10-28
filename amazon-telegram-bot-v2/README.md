@@ -1,89 +1,118 @@
-# BestPrice24h — Telegram bot
+# BestPrice24h — V2 multicanale
 
-Il punto di ingresso del progetto è `manual_bot.py`. Gestisce pubblicazione
-manuale, post programmati, automazioni, raccolte, cronologia, immagini e
-integrazione TikTok. Le funzioni sono contenute nello stesso file.
+La V2 è separata dal progetto originale in `../amazon-telegram-bot/`.
+Il punto di avvio rimane `manual_bot.py`.
 
-## Riorganizzazione V2
+## Menu
 
-Le modalità operative sono estratte in `invio_singolo.py`,
-`invio_multiplo.py` e `repost.py`; il punto di avvio resta
-`manual_bot.py`. I callback delegano ai moduli mantenendo il comportamento
-preesistente. Menu iniziale per canale e isolamento delle impostazioni sono
-ancora da implementare. Dettagli e verifiche in [SVILUPPO.md](SVILUPPO.md).
+`/start` mostra i canali disponibili all'amministratore e **Impostazioni generali**.
+Dopo la selezione, il menu del canale contiene:
+
+- Nuovi post: invio singolo e multiplo.
+- Repost: ricerca casuale nella cronologia del solo canale corrente.
+- Programmati e code: elenco, dettagli, modifica e annullamento dei post in attesa.
+- Cronologia: pubblicazioni del canale, con dettagli e paginazione.
+- Impostazioni canale: intervallo, fascia oraria, tag affiliato e verifica dei permessi Telegram.
+- Cambia canale.
+
+Le impostazioni generali mostrano tag predefinito, fuso orario, canali configurati,
+stato e diagnostica. Destinazioni e amministratori si configurano nelle variabili
+del servizio. La verifica dei permessi Telegram è esplicita: una configurazione
+presente non viene mostrata automaticamente come collegamento verificato.
+
+## Invii e isolamento
+
+La scelta del canale appartiene al singolo amministratore. Cambiare schermata
+annulla le bozze e i timer dei lotti non ancora confermati; le code già salvate
+continuano sulla destinazione originale. I pulsanti di una schermata appartenente
+a un altro canale vengono rifiutati.
+
+Anche **Pubblica ora** inserisce il post nella coda del canale: se lo spazio è
+libero esce entro circa 30 secondi, altrimenti al primo slot consentito.
+Gli invii rispettano fascia oraria e distanza minima. Multiplo e repost mantengono
+l'avvio automatico dopo due minuti dal riepilogo, salvo annullamento.
+
+Il repost legge gli ultimi 7, 30 o 90 giorni, secondo l'impostazione del canale.
+Esclude raccolte, prodotti pubblicati nelle ultime 24 ore e quelli già in coda
+nello stesso canale. Rilegge le pagine Amazon e richiede uno sconto o coupon
+attuale. La scelta è casuale con priorità per i prodotti con nome e foto salvati.
+La ricerca si avvia su richiesta: non è un nuovo servizio di repost ricorrente.
 
 ## Struttura
 
-- `manual_bot.py`: bot Telegram e API HTTP delle offerte.
-- `requirements.txt`: dipendenze Python utilizzate dal bot.
-- `assets/`: loghi e font per le immagini.
-- `sito-web/`: sito che legge le offerte dall'API `/api/offerte` del bot.
+| File | Responsabilità |
+|---|---|
+| `manual_bot.py` | Avvio, coordinamento, callback compatibili e servizi storici |
+| `invio_singolo.py` | Preparazione, anteprima e conferma del singolo post |
+| `invio_multiplo.py` | Preparazione lotti e pianificazione sequenze |
+| `repost.py` | Selezione e verifica dei candidati dalla cronologia |
+| `canali.py` | Registro, autorizzazioni per canale e selezione personale |
+| `database.py` | Impostazioni e query con destinazione esplicita |
+| `menu_canali.py` | Navigazione e configurazione V2 |
+| `assets/` | Loghi e font |
+| `sito-web/` | Sito che legge l'API delle offerte |
+| `tests/` | Verifiche senza invii reali |
 
 ## Avvio
 
-Usare Python 3.11 o successivo. Dalla cartella `amazon-telegram-bot`:
+Usare Python 3.11 o successivo e la cartella V2 come directory di lavoro:
 
 ```bash
 pip install -r requirements.txt
 python manual_bot.py
 ```
 
-Configurare le variabili d'ambiente nel servizio che ospita il bot
-(ad esempio Railway):
-
 | Variabile | Uso |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | Token del bot, obbligatorio |
-| `TELEGRAM_CHAT_ID` | Canale Telegram principale, obbligatorio |
-| `ADMIN_TELEGRAM_ID` | ID Telegram dell'amministratore |
-| `TELEGRAM_CHAT_ID_CASA` | Canale CASA; predefinito `@BestPrice24hCasa` |
-| `AMAZON_PARTNER_TAG` | Tag affiliato Amazon; accetta anche `AMAZON_ASSOCIATE_TAG` |
-| `CLUB_DB_PATH` | Percorso del database SQLite; predefinito `club.db` |
-| `COMMUNITY_URL` | Link facoltativo alla community |
-| `PORT` | Porta del server HTTP per le API |
-| `RAILWAY_PUBLIC_DOMAIN` | Dominio pubblico usato per gli URL delle immagini |
+| `TELEGRAM_BOT_TOKEN` | Token del bot |
+| `TELEGRAM_CHAT_ID` | Destinazione TECH |
+| `TELEGRAM_CHAT_ID_CASA` | Destinazione CASA; predefinita `@BestPrice24hCasa` |
+| `ADMIN_TELEGRAM_ID` | Amministratore principale |
+| `ADMIN_TELEGRAM_IDS` | Eventuali altri amministratori, separati da virgola |
+| `AMAZON_PARTNER_TAG` | Tag affiliato generale; alternativa `AMAZON_ASSOCIATE_TAG` |
+| `CLUB_DB_PATH` | Database persistente della V2; predefinito `club_v2.db` accanto al codice |
+| `BOT_CHANNELS_JSON` | Lista JSON facoltativa di ulteriori canali |
+| `PORT` | Porta HTTP per l'API delle offerte |
+| `RAILWAY_PUBLIC_DOMAIN` | Dominio pubblico per immagini e integrazioni |
 
-Aggiungere il bot come amministratore dei canali con permesso di pubblicazione.
-Conservare il database su un volume persistente per mantenere impostazioni,
-cronologia e post programmati. Conservare la configurazione d'ambiente già
-utilizzata dal servizio.
+Esempio di `BOT_CHANNELS_JSON`:
 
-Il comando di avvio del servizio deve essere `python manual_bot.py`, eseguito
-dalla cartella del bot. Non è necessario un workflow GitHub Actions per avviarlo:
-le automazioni e la pianificazione sono gestite dal processo del bot.
+```json
+[{"chiave":"sport","nome":"🏃 SPORT","chat_id":"@mio_canale_sport","admin_ids":[123456789]}]
+```
 
-### Pubblicazione automatica su TikTok tramite Buffer
+`admin_ids` limita gli amministratori globali che possono gestire quel canale.
+Se omesso, il canale è disponibile a tutti gli amministratori globali.
+Chiavi e destinazioni duplicate vengono rifiutate.
 
-Il bot può programmare due post fotografici TikTok al giorno, ciascuno con due
-offerte già pubblicate sul canale TECH, appartenenti alla stessa categoria e
-approvate nuovamente dal filtro qualità della modalità Selettiva.
-Configura queste variabili su Railway:
+## Dati e passaggio al servizio
 
-| Variabile | Valore |
-|---|---|
-| `BUFFER_API_KEY` | Chiave API personale generata da Buffer |
-| `BUFFER_TIKTOK_CHANNEL_ID` | ID del canale TikTok restituito dalla Buffer API |
-| `TIKTOK_POST_TIMES` | Orari italiani separati da virgola, predefinito `12:30,20:30` |
-| `TIKTOK_AUTO_ENABLED` | `1` per attivare, `0` per sospendere; predefinito `1` |
-| `TIKTOK_MIN_DISCOUNT` | Sconto minimo corrente; predefinito `20` |
+Il vecchio progetto e il suo avvio non sono modificati. Per le prove usare un
+token Telegram distinto e un database separato. Non avviare due processi con lo
+stesso token. Il database del servizio non è incluso nel repository.
 
-`RAILWAY_PUBLIC_DOMAIN` viene fornita automaticamente da Railway e serve a
-Buffer per scaricare la locandina. Il comando amministratore `/tiktok_test`
-genera un'anteprima su Telegram senza pubblicarla e senza consumare lo slot.
+Impostazioni e cronologia sono conservate su SQLite. I nuovi valori per canale
+vengono creati senza sovrascrivere quelli già salvati; la fascia iniziale viene
+copiata dalla configurazione precedente. I vecchi record senza destinazione
+vengono associati a TECH. Per migrare dati usare una copia del database,
+senza condividere il file del vecchio servizio.
 
+Un invio acquisito dal worker passa a `in_invio`; un errore con esito incerto
+viene segnalato come `da_verificare`, senza ripetizione automatica che potrebbe
+duplicare il messaggio. Un invio già in corso non è più annullabile.
 
-### Pannello amministratore TikTok
+Questa fase riguarda le tre modalità principali. Le integrazioni storiche
+(TikTok, rubriche e ricerca API) restano nel coordinatore e non sono ancora
+migrate nel nuovo menu. Se si usa una copia di un database precedente, le
+automazioni già abilitate conservano la loro configurazione.
 
-Nel menu principale del bot: **🎵 AUTOMAZIONE TIKTOK**. Permette di mettere
-in pausa gli invii, scegliere una coppia di orari italiani (11:30/19:30,
-12:30/20:30 oppure 13:00/21:00), impostare lo sconto minimo e consultare gli
-ultimi otto tentativi. Il filtro resta Selettiva. Le impostazioni sono persistenti
-nel database: le variabili di orario e sconto inizializzano solo il primo avvio.
-`TIKTOK_AUTO_ENABLED=0` resta un blocco generale Railway.
+## Verifiche
 
-L'anteprima, anche via `/tiktok_test` nella chat privata amministratore,
-invia immagine e descrizione completa separatamente, senza pubblicare.
-La pausa non cancella post già affidati a Buffer o una richiesta già in corso.
-Lo stato “programmato” indica l'accettazione da Buffer, non la pubblicazione
-confermata da TikTok. Il pulsante **APRI BUFFER** consente il controllo finale.
-Il limite giornaliero resta due anche dopo un cambio di orari.
+```bash
+python -m compileall -q .
+python -m unittest discover -s tests -v
+```
+
+I test usano database temporanei e simulano Telegram e Amazon. Il test di
+integrazione costruisce l'applicazione e attraversa gli handler Telegram reali,
+senza polling e senza rete. Richiede le dipendenze di `requirements.txt`.

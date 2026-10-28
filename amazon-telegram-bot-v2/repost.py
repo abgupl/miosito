@@ -9,7 +9,7 @@ from __future__ import annotations
 
 def asin_in_programmati(servizi, destinazione):
     with servizi.sqlite3.connect(servizi.DB_PATH, timeout=30) as db:
-        links = db.execute("SELECT link FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(servizi.CHANNEL_ID), str(destinazione))).fetchall()
+        links = db.execute("SELECT link FROM programmazioni WHERE stato IN ('attesa','in_invio','da_verificare') AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(servizi.CHANNEL_ID), str(destinazione))).fetchall()
     return {asin for link, in links if (asin := servizi.risolvi_asin_da_link(link))}
 
 
@@ -17,7 +17,8 @@ def candidati_repost(servizi, canale, quantita):
     """Storico completo per il repost; metadata storici NON validano offerte attuali."""
     destinazione = servizi._chat_id_per_canale(canale)
     adesso = servizi.datetime.now(servizi.timezone.utc)
-    limite = adesso - servizi.timedelta(days=7)
+    config = servizi.ARCHIVIO.impostazioni(destinazione)
+    limite = adesso - servizi.timedelta(days=config['repost_giorni'])
     with servizi.sqlite3.connect(servizi.DB_PATH, timeout=30) as db:
         righe = db.execute("SELECT asin,link,pubblicata_il,nome,foto_file_id,categoria\n            FROM recap_offerte WHERE CAST(telegram_chat_id AS TEXT)=?\n            AND COALESCE(origine,'manuale')<>'raccolta'\n            ORDER BY pubblicata_il DESC,id DESC", (destinazione,)).fetchall()
     in_coda = servizi.asin_in_programmati(destinazione)
@@ -58,10 +59,13 @@ async def repost_da_pulsante(servizi, update: Update, context: ContextTypes.DEFA
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END
     await update.callback_query.answer()
-    context.user_data.clear()
-    draft = {'tipo': 'repost', 'canale': 'tech', 'minuti': servizi.intervallo_multiplo(update.effective_user.id), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False, 'repost_attesa_quantita': True}
+    if not await servizi.richiedi_canale(update, context):
+        return servizi.ConversationHandler.END
+    channel = servizi.canale_corrente(context)
+    servizi.reset_flusso(context)
+    draft = {'tipo': 'repost', 'canale': channel.chiave, 'minuti': servizi.intervallo_multiplo(update.effective_user.id, canale=channel.chiave), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False, 'repost_attesa_quantita': True}
     context.user_data['multiplo'] = draft
-    await update.effective_message.reply_text('🔁 REPOST — ULTIMI 7 GIORNI\n\nScegli canale e intervallo, poi scrivi quanti prodotti vuoi ripubblicare (1–50).\nEscludo prodotti già inviati nelle ultime 24 ore e già programmati nello stesso canale.\nControllo dati, prezzi, disponibilità e coupon. Dopo il riepilogo: conferma subito oppure avvio automatico tra 2 minuti. Gli invii rispettano la fascia manuale/multiplo.', reply_markup=servizi.tastiera_multiplo(draft))
+    await update.effective_message.reply_text('🔁 REPOST — ' + channel.nome + '\n\nScrivi quanti prodotti vuoi ripubblicare (1–50).\nEscludo prodotti già inviati nelle ultime 24 ore e già programmati nello stesso canale.\nControllo dati, prezzi, disponibilità e coupon. Dopo il riepilogo: conferma subito oppure avvio automatico tra 2 minuti. Gli invii rispettano la fascia manuale/multiplo.', reply_markup=servizi.tastiera_multiplo(draft))
     return servizi.RAPIDO
 
 
@@ -74,7 +78,7 @@ async def prepara_repost(servizi, messaggio, context, draft):
         if not links:
             draft['elaborazione'] = False
             draft['repost_attesa_quantita'] = True
-            await messaggio.reply_text('ℹ️ Nessun prodotto disponibile per Repost: servono pubblicazioni negli ultimi 7 giorni, più vecchie di 24 ore e non già in coda. Puoi cambiare canale o annullare.', reply_markup=servizi.tastiera_multiplo(draft))
+            await messaggio.reply_text('ℹ️ Nessun prodotto disponibile per Repost: servono pubblicazioni nel periodo configurato, più vecchie di 24 ore e non già in coda. Puoi cambiare canale o annullare.', reply_markup=servizi.tastiera_multiplo(draft))
             return
         await servizi.prepara_lotto_multiplo(messaggio, context, draft, links)
     except Exception as exc:

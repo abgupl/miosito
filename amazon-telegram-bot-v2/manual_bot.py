@@ -156,7 +156,7 @@ CASA_CATEGORIE = {
     "illuminazione",
 }
 ADMIN_ID = os.environ.get("ADMIN_TELEGRAM_ID")
-DB_PATH = os.environ.get("CLUB_DB_PATH", "club.db")
+DB_PATH = os.environ.get("CLUB_DB_PATH", str(Path(__file__).resolve().parent / "club_v2.db"))
 ROMA_TZ = ZoneInfo("Europe/Rome")
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "bestprice24h_logo.png"
 AMAZON_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "amazon_logo.png"
@@ -2275,7 +2275,11 @@ async def controlla_recap(app):
 # =========================================================
 
 
-def config_fascia_manuale(chiave=None, valore=None):
+def config_fascia_manuale(chiave=None, valore=None, canale=None):
+    if canale is not None:
+        if chiave is not None:
+            ARCHIVIO.salva(str(canale), chiave, valore)
+        return ARCHIVIO.impostazioni(str(canale))
     with sqlite3.connect(DB_PATH, timeout=30) as db:
         db.execute("CREATE TABLE IF NOT EXISTS fascia_manuale (chiave TEXT PRIMARY KEY, valore TEXT NOT NULL)")
         if chiave is not None:
@@ -2311,7 +2315,7 @@ def finestre_pausa_caffe(canale, giorno):
     registrata non genera una seconda finestra soltanto perche' cambia l'orario.
     """
     cfg = configurazione_oroscopo()
-    nome = 'casa' if str(canale) == str(CASA_CHANNEL_ID) else 'tech'
+    nome = next((c.chiave for c in CANALI.values() if c.chat_id == str(canale)), None)
     giorno_iso = giorno.isoformat() if hasattr(giorno, 'isoformat') else str(giorno)
     with sqlite3.connect(DB_PATH, timeout=30) as db:
         pubblicazioni = db.execute(
@@ -2367,7 +2371,7 @@ async def attendi_finestra_offerte(canale):
     while True:
         adesso = datetime.now(ROMA_TZ)
         ripresa = prossimo_fuori_pausa(adesso, canale)
-        ripresa = prossimo_orario_manuale(ripresa)
+        ripresa = prossimo_orario_manuale(ripresa, config_fascia_manuale(canale=canale))
         if ripresa <= adesso:
             return
         await asyncio.sleep(min(30, max(1, (ripresa - adesso).total_seconds())))
@@ -2402,7 +2406,6 @@ def slot_manuale_libero(data, occupati, minuti, config):
 
 def riallinea_programmati_fascia():
     """Riposiziona fuori fascia e arretrati, preservando ordine e intervalli."""
-    cfg = config_fascia_manuale()
     ora = datetime.now(timezone.utc).replace(microsecond=0)
     modificati = 0
     with sqlite3.connect(DB_PATH, timeout=30) as db:
@@ -2416,6 +2419,7 @@ def riallinea_programmati_fascia():
             precedente = precedente.astimezone(timezone.utc)
             base = max(precedente, ora) if precedente < ora-timedelta(seconds=30) else precedente
             canale = str(chat or CHANNEL_ID)
+            cfg = config_fascia_manuale(canale=canale)
             nuovo = slot_manuale_libero(base, occupati.setdefault(canale, []), minuti or DISTANZA_MINIMA_MINUTI, dict(cfg, _canale=canale))
             occupati[canale].append(nuovo)
             if nuovo.astimezone(timezone.utc) != precedente:
@@ -2574,11 +2578,13 @@ def salva_programmazione(
         .astimezone(timezone.utc)
     )
 
-    cfg = config_fascia_manuale()
+    cfg = dict(config_fascia_manuale(canale=telegram_chat_id or CHANNEL_ID), _canale=str(telegram_chat_id or CHANNEL_ID))
+    primo_consentito = datetime.now(ROMA_TZ) + timedelta(minutes=minuti_rimanenti_prima_del_prossimo_invio(telegram_chat_id or CHANNEL_ID))
+    invio_previsto_locale = max(invio_previsto_locale, primo_consentito)
     db = sqlite3.connect(DB_PATH, timeout=30)
     cur = db.cursor()
     cur.execute('BEGIN IMMEDIATE')
-    righe = cur.execute("SELECT invio_previsto FROM programmazioni WHERE stato='attesa' AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),str(telegram_chat_id or CHANNEL_ID))).fetchall()
+    righe = cur.execute("SELECT invio_previsto FROM programmazioni WHERE stato IN ('attesa','in_invio','da_verificare') AND CAST(COALESCE(telegram_chat_id,?) AS TEXT)=?", (str(CHANNEL_ID),str(telegram_chat_id or CHANNEL_ID))).fetchall()
     occupati = [_data_sqlite(r[0]) for r in righe if _data_sqlite(r[0])]
     invio_previsto_locale = slot_manuale_libero(invio_previsto_locale, occupati, DISTANZA_MINIMA_MINUTI, cfg)
     invio_previsto_utc = invio_previsto_locale.astimezone(timezone.utc)
@@ -2663,6 +2669,10 @@ async def invia_offerta_programmata(
         telegram_chat_id,
     ) = programmazione
     destinazione = telegram_chat_id or CHANNEL_ID
+    with sqlite3.connect(DB_PATH) as db_stato:
+        row = db_stato.execute("SELECT stato FROM programmazioni WHERE id=? AND CAST(telegram_chat_id AS TEXT)=?", (programmazione_id, str(destinazione))).fetchone()
+    if not row or row[0] != 'attesa':
+        return
 
     with sqlite3.connect(DB_PATH) as db_duplicati:
         origine_riga = db_duplicati.execute(
@@ -2694,6 +2704,10 @@ async def invia_offerta_programmata(
 
     # Ricontrolla la pausa anche se la coda e' stata preparata ore prima.
     await attendi_finestra_offerte(destinazione)
+    with sqlite3.connect(DB_PATH) as db_stato:
+        acquisita = db_stato.execute("UPDATE programmazioni SET stato='in_invio' WHERE id=? AND CAST(telegram_chat_id AS TEXT)=? AND stato='attesa'", (programmazione_id, str(destinazione))).rowcount
+    if not acquisita:
+        return
     if foto_file_id:
         messaggio_telegram = await bot.send_photo(
             chat_id=destinazione,
@@ -2783,9 +2797,6 @@ async def controlla_programmazioni(app):
 
             riallinea_programmati_fascia()
             adesso_locale = datetime.now(ROMA_TZ)
-            if prossimo_orario_manuale(adesso_locale) != adesso_locale:
-                await asyncio.sleep(30)
-                continue
 
             db = sqlite3.connect(DB_PATH)
             cur = db.cursor()
@@ -2817,8 +2828,8 @@ async def controlla_programmazioni(app):
 
             for programmazione in programmazioni:
                 ora_controllo = datetime.now(ROMA_TZ)
-                if prossimo_orario_manuale(ora_controllo) != ora_controllo:
-                    break
+                if prossimo_orario_manuale(ora_controllo, config_fascia_manuale(canale=programmazione[6] or CHANNEL_ID)) != ora_controllo:
+                    continue
                 if prossimo_fuori_pausa(ora_controllo, programmazione[6]) > ora_controllo:
                     riallinea_programmati_fascia()
                     continue
@@ -2832,6 +2843,8 @@ async def controlla_programmazioni(app):
 
                 except Exception as errore:
 
+                    with sqlite3.connect(DB_PATH) as db_stato:
+                        db_stato.execute("UPDATE programmazioni SET stato='da_verificare' WHERE id=? AND stato='in_invio'", (programmazione[0],))
                     print(
                         "Errore invio programmato: "
                         f"{errore}"
@@ -2879,7 +2892,7 @@ async def avvia_programmazioni(app):
 
 def autorizzato(update: Update) -> bool:
 
-    if not ADMIN_ID:
+    if not ADMIN_ID and not os.environ.get('ADMIN_TELEGRAM_IDS'):
         return False
 
     user = update.effective_user
@@ -2887,7 +2900,7 @@ def autorizzato(update: Update) -> bool:
     if not user:
         return False
 
-    return str(user.id) == str(ADMIN_ID)
+    return str(user.id) in {x.strip() for x in (str(ADMIN_ID or '') + ',' + os.environ.get('ADMIN_TELEGRAM_IDS', '')).split(',') if x.strip()}
 
 
 async def controlla_autorizzazione(update: Update):
@@ -6717,7 +6730,7 @@ def _aggiorna_slot_automatico(
 
 
 def _chat_id_per_canale(canale):
-    return str(CASA_CHANNEL_ID if canale == "casa" else CHANNEL_ID)
+    return canali.chat_per_chiave(CANALI, canale)
 
 
 def _data_sqlite(valore):
@@ -7648,8 +7661,9 @@ async def _modifica_post_terminato(
         """
         UPDATE recap_offerte SET stato='terminata'
         WHERE asin = (SELECT asin FROM invii_automatici WHERE id = ?)
+          AND telegram_chat_id = ? AND telegram_message_id = ?
         """,
-        (invio_id,),
+        (invio_id, str(destinazione), message_id),
     )
     db.commit()
     db.close()
@@ -8304,43 +8318,23 @@ async def controlla_offerte_terminate(app):
 # =========================================================
 
 def menu_principale():
-
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("📤 PUBBLICA OFFERTA", callback_data="publish_menu")],
-            [InlineKeyboardButton("🔎 CERCA OFFERTE", callback_data="offer_search")],
-            [InlineKeyboardButton("🤖 INVIO AUTOMATICO", callback_data="auto_channels")],
-            [InlineKeyboardButton("📅 POST PROGRAMMATI", callback_data="programmati")],
-            [InlineKeyboardButton("📚 CRONOLOGIA", callback_data="history_menu")],
-            [InlineKeyboardButton("🎵 AUTOMAZIONE TIKTOK", callback_data="tiktok_menu")],
-            [InlineKeyboardButton("☕ RUBRICA", callback_data="rub_menu")],
-            [InlineKeyboardButton("⚙️ IMPOSTAZIONI", callback_data="settings_menu")],
-        ]
-    )
+    return menu_canali.menu_iniziale(_servizi_invii)
 
 
 def menu_pubblicazione():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔗 INSERIMENTO DA LINK", callback_data="nuova")],
-        [InlineKeyboardButton("📦 INVIO MULTIPLO", callback_data="rapido")],
-        [InlineKeyboardButton("🔁 REPOST", callback_data="repost")],
-        [InlineKeyboardButton("🕒 FASCIA ORARIA MANUALE E MULTIPLO", callback_data="mf_menu")],
-        [InlineKeyboardButton("⬅️ TORNA AL MENU PRINCIPALE", callback_data="menu_admin")],
+        [InlineKeyboardButton('📝 Invio singolo', callback_data='nuova')],
+        [InlineKeyboardButton('📦 Invio multiplo', callback_data='rapido')],
+        [InlineKeyboardButton('⬅️ Menu canale', callback_data='menu_admin')],
     ])
 
 
-async def mostra_menu_pubblicazione(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await controlla_autorizzazione(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "📤 PUBBLICA OFFERTA\n\n"
-        "Scegli come vuoi inserire il prodotto.\n\n"
-        "Le offerte automatiche vengono inviate al canale corretto in base "
-        "alla categoria del prodotto.",
-        reply_markup=menu_pubblicazione(),
-    )
+async def mostra_menu_pubblicazione(update, context):
+    if not await controlla_autorizzazione(update) or not await richiedi_canale(update, context):
+        return ConversationHandler.END
+    await update.callback_query.answer()
+    await update.effective_message.reply_text('✍️ NUOVI POST — ' + canale_corrente(context).nome, reply_markup=menu_pubblicazione())
+    return ConversationHandler.END
 
 
 def menu_storico():
@@ -8448,16 +8442,8 @@ async def esporta_log_diagnostici(update: Update, context: ContextTypes.DEFAULT_
                                     filename=data.name, caption=f"📋 Log {kind}: {len(entries)} eventi")
 
 
-async def mostra_menu_impostazioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await controlla_autorizzazione(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "⚙️ IMPOSTAZIONI\n\n"
-        "Gestisci canali, grafica, filtri e stato generale del bot.",
-        reply_markup=menu_impostazioni(),
-    )
+async def mostra_menu_impostazioni(update, context):
+    return await menu_canali.gestisci(_servizi_invii, update, context, data_override='v2_settings')
 
 
 async def mostra_gestione_canali(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8530,23 +8516,14 @@ def menu_dopo_pubblicazione():
     )
 
 
-async def torna_menu_admin(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def torna_menu_admin(update, context):
     if not await controlla_autorizzazione(update):
-        return
-
-    query = update.callback_query
-    await query.answer()
-
-    await query.edit_message_text(
-        "🔥 AMAZON OFFERTE BOT\n\n"
-        "🛠 Modalità amministratore\n\n"
-        "Cosa vuoi fare?",
-        reply_markup=menu_principale(),
-    )
+        return ConversationHandler.END
+    await update.callback_query.answer()
+    reset_flusso(context)
+    channel = canale_corrente(context)
+    await update.effective_message.reply_text('📢 GESTIONE ' + channel.nome if channel else '📢 SCEGLI IL CANALE', reply_markup=menu_canali.menu_canale(_servizi_invii, channel) if channel else menu_canali.menu_iniziale(_servizi_invii, update.effective_user.id))
+    return ConversationHandler.END
 
 
 
@@ -8618,12 +8595,14 @@ async def start(
     # ADMIN
     # =====================================================
     if autorizzato(update):
+        reset_flusso(context)
+        context.user_data.pop('canale_attivo', None)
 
         await update.message.reply_text(
             "🔥 AMAZON OFFERTE BOT\n\n"
             "🛠 Modalità amministratore\n\n"
-            "Cosa vuoi fare?",
-            reply_markup=menu_principale(),
+            "Scegli il canale da gestire:",
+            reply_markup=menu_canali.menu_iniziale(_servizi_invii, update.effective_user.id),
         )
 
         return ConversationHandler.END
@@ -8951,7 +8930,70 @@ def leggi_prodotto_creators_da_link(link):
 import invio_singolo
 import invio_multiplo
 import repost
+import canali
+import menu_canali
+from database import ArchivioCanali
 _servizi_invii = sys.modules[__name__]
+
+CANALI = canali.carica_canali(os.environ)
+ARCHIVIO = ArchivioCanali(DB_PATH)
+
+def reset_flusso(context):
+    canali.reset_flusso(context)
+
+def canale_corrente(context):
+    return canali.selezionato(context, CANALI)
+
+async def richiedi_canale(update, context):
+    channel = canali.selezionato(context, CANALI, update.effective_user.id)
+    if channel is None:
+        await update.effective_message.reply_text('Seleziona prima il canale da gestire.', reply_markup=menu_canali.menu_iniziale(_servizi_invii, update.effective_user.id))
+        return False
+    return True
+
+def tag_canale(key):
+    override = ARCHIVIO.impostazioni(CANALI[key].chat_id)['tag'] if key else ''
+    return override or (os.environ.get('AMAZON_PARTNER_TAG') or os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip()
+
+async def gestisci_menu_v2(update, context):
+    return await menu_canali.gestisci(_servizi_invii, update, context)
+
+async def ricevi_impostazione_v2(update, context):
+    return await menu_canali.ricevi_impostazione(_servizi_invii, update, context)
+
+async def proteggi_menu_v2(update, context):
+    channel = canali.selezionato(context, CANALI, update.effective_user.id if update.effective_user else None)
+    if update.message and not (update.message.text or '').startswith('/') and context.user_data.get('prog_id'):
+        post = ARCHIVIO.dettaglio('programmazioni', channel.chat_id, context.user_data['prog_id']) if channel else None
+        if not post or post['stato'] != 'attesa':
+            await update.message.reply_text('Post non più modificabile nel canale corrente. Riapri Programmati e code.')
+            raise ApplicationHandlerStop
+    q = update.callback_query
+    if not q or not autorizzato(update):
+        return
+    data = q.data or ''
+    if data.startswith(('oro_segno:', 'quiz_r:')) or data == 'offer_price_unavailable':
+        return
+    if channel and (data == 'programmati' or data == 'prog_esci'):
+        return
+    if channel and data.startswith('prog_') and not data.startswith('prog_giorno_'):
+        post = ARCHIVIO.dettaglio('programmazioni', channel.chat_id, context.user_data.get('prog_id', -1))
+        if post and post['stato'] == 'attesa':
+            return
+    if data.startswith('v2_') or data == 'settings_menu' or data.startswith(('diag_logs_', 'diag_export_')):
+        return
+    channel = canali.selezionato(context, CANALI, update.effective_user.id)
+    if data.startswith('v2c:'):
+        if channel and data.split(':', 2)[1] == channel.chiave:
+            return
+    elif channel and (data in {'nuova','rapido','repost','publish_menu','menu_admin','annulla',
+                               'dati_ok','dati_manual','dati_riprova','foto_aggiungi','foto_salta',
+                               'pubblica','programma','cambia_template','conferma_orario_vicino','cambia_orario'}
+                      or re.fullmatch(r'prog_giorno_[012]|tpl_(pulito|aggressivo|tech)|multi_(timing|personalizzato|min_(10|20|30|40|60)|avvia|annulla)', data)):
+        return
+    await q.answer('Schermata precedente o canale diverso. Usa /start oppure il menu corrente.', show_alert=True)
+    raise ApplicationHandlerStop
+
 
 
 # =========================================================
@@ -9126,9 +9168,9 @@ def filtra_duplicati_recenti_multiplo(draft):
     return invio_multiplo.filtra_duplicati_recenti_multiplo(_servizi_invii, draft)
 
 
-def intervallo_multiplo(utente, valore=None):
+def intervallo_multiplo(utente, valore=None, canale=None):
     """Callback compatibile; implementazione in invio_multiplo.py."""
-    return invio_multiplo.intervallo_multiplo(_servizi_invii, utente, valore)
+    return invio_multiplo.intervallo_multiplo(_servizi_invii, utente, valore, canale)
 
 
 def tastiera_annulla_elaborazione():
@@ -9141,9 +9183,9 @@ def tastiera_multiplo(draft):
     return invio_multiplo.tastiera_multiplo(_servizi_invii, draft)
 
 
-def link_affiliato_multiplo(link, asin):
+def link_affiliato_multiplo(link, asin, canale=None):
     """Callback compatibile; implementazione in invio_multiplo.py."""
-    return invio_multiplo.link_affiliato_multiplo(_servizi_invii, link, asin)
+    return invio_multiplo.link_affiliato_multiplo(_servizi_invii, link, asin, canale)
 
 
 def piano_multiplo(prodotti, minuti, destinazione, salva=False, origine='multiplo'):
@@ -9416,7 +9458,7 @@ async def ricevi_ora_programmazione(
         return PROGRAMMA_ORA
 
     conflitti = trova_conflitto(
-        data_locale
+        data_locale, context.user_data["telegram_chat_id"]
     )
 
     if conflitti:
@@ -9498,7 +9540,7 @@ async def ricevi_ora_programmazione(
     )
 
     da_reinvio = context.user_data.get("programmazione_da_reinvio", False)
-    context.user_data.clear()
+    reset_flusso(context)
 
     await update.message.reply_text(
         "✅ OFFERTA PROGRAMMATA!\n\n"
@@ -9514,7 +9556,7 @@ async def ricevi_ora_programmazione(
     )
 
     if da_reinvio:
-        await invia_lista_programmati(update.message)
+        await invia_lista_programmati(update.message, destinazione=canale_corrente(context).chat_id)
 
     return ConversationHandler.END
 
@@ -9527,7 +9569,7 @@ async def ricevi_ora_programmazione(
 DISTANZA_MINIMA_MINUTI = 29
 
 
-def programmazioni_del_giorno(data_locale):
+def programmazioni_del_giorno(data_locale, destinazione=CHANNEL_ID):
 
     inizio_locale = datetime.combine(
         data_locale,
@@ -9563,10 +9605,12 @@ def programmazioni_del_giorno(data_locale):
             invio_previsto
         FROM programmazioni
         WHERE stato = 'attesa'
+          AND CAST(COALESCE(telegram_chat_id, ?) AS TEXT)=?
           AND invio_previsto >= ?
           AND invio_previsto < ?
         ORDER BY invio_previsto ASC
     """, (
+        str(CHANNEL_ID), str(destinazione),
         inizio_utc,
         fine_utc,
     ))
@@ -9611,10 +9655,11 @@ def programmazioni_del_giorno(data_locale):
 
 def trova_conflitto(
     data_locale,
+    destinazione=CHANNEL_ID,
 ):
 
     eventi = programmazioni_del_giorno(
-        data_locale.date()
+        data_locale.date(), destinazione
     )
 
     conflitti = []
@@ -9649,10 +9694,11 @@ def trova_conflitto(
 
 def suggerisci_prossimo_slot(
     data_giorno,
+    destinazione=CHANNEL_ID,
 ):
 
     eventi = programmazioni_del_giorno(
-        data_giorno
+        data_giorno, destinazione
     )
 
     # Orari consigliati di base
@@ -9687,7 +9733,7 @@ def suggerisci_prossimo_slot(
             continue
 
         conflitti = trova_conflitto(
-            candidato
+            candidato, destinazione
         )
 
         if not conflitti:
@@ -9731,7 +9777,7 @@ def suggerisci_prossimo_slot(
     while candidato <= fine:
 
         conflitti = trova_conflitto(
-            candidato
+            candidato, destinazione
         )
 
         if not conflitti:
@@ -9827,7 +9873,7 @@ async def conferma_orario_vicino(
     )
 
     da_reinvio = context.user_data.get("programmazione_da_reinvio", False)
-    context.user_data.clear()
+    reset_flusso(context)
 
     await query.message.reply_text(
         "✅ OFFERTA PROGRAMMATA!\n\n"
@@ -9843,7 +9889,7 @@ async def conferma_orario_vicino(
     )
 
     if da_reinvio:
-        await invia_lista_programmati(query.message)
+        await invia_lista_programmati(query.message, destinazione=canale_corrente(context).chat_id)
 
     return ConversationHandler.END
 
@@ -9889,7 +9935,8 @@ def leggi_programmato(programmazione_id):
             COALESCE(template, 'pulito'),
             foto_file_id,
             invio_previsto,
-            stato
+            stato,
+            telegram_chat_id
         FROM programmazioni
         WHERE id = ?
     """, (programmazione_id,))
@@ -9912,6 +9959,7 @@ def leggi_programmato(programmazione_id):
         "foto_file_id": riga[7],
         "invio_previsto": riga[8],
         "stato": riga[9],
+        "telegram_chat_id": riga[10],
     }
 
 
@@ -9962,6 +10010,7 @@ def aggiorna_messaggio_programmato(
 
 async def invia_lista_programmati(
     messaggio,
+    destinazione=CHANNEL_ID,
 ):
 
     riallinea_programmati_fascia()
@@ -9975,10 +10024,10 @@ async def invia_lista_programmati(
             prezzo,
             invio_previsto
         FROM programmazioni
-        WHERE stato = 'attesa'
+        WHERE stato = 'attesa' AND CAST(COALESCE(telegram_chat_id, ?) AS TEXT)=?
         ORDER BY invio_previsto ASC
         LIMIT 100
-    """)
+    """, (str(CHANNEL_ID),str(destinazione)))
 
     righe_db = cur.fetchall()
 
@@ -9990,7 +10039,7 @@ async def invia_lista_programmati(
         if dt:
             giorni_lista.add(dt.date())
     eventi_caffe = []
-    for canale in (CHANNEL_ID, CASA_CHANNEL_ID):
+    for canale in (destinazione,):
         eventi_caffe.extend(descrizione_pause_programmate(canale, giorni_lista))
     # Elenco cronologico con indicazione del canale per i post speciali.
     if not righe_db and not eventi_caffe:
@@ -10037,7 +10086,7 @@ async def invia_lista_programmati(
 
         elementi.append((data_locale or datetime.now(ROMA_TZ),
             f"#{programmazione_id} • {quando}\n📦 {nome} — {prezzo} €\n"))
-    for canale in (CHANNEL_ID, CASA_CHANNEL_ID):
+    for canale in (destinazione,):
         nome_canale = 'CASA' if str(canale) == str(CASA_CHANNEL_ID) else 'TECH'
         for inizio, descrizione in descrizione_pause_programmate(canale, giorni_lista):
             elementi.append((inizio, f"{descrizione} · {nome_canale}\n"))
@@ -10101,9 +10150,7 @@ async def mostra_programmati(
     ):
         context.user_data.pop(chiave, None)
 
-    await invia_lista_programmati(
-        messaggio
-    )
+    await invia_lista_programmati(messaggio, destinazione=canale_corrente(context).chat_id)
 
     return PROG_SELEZIONE
 
@@ -10136,6 +10183,8 @@ async def seleziona_programmato(
         programmazione_id
     )
 
+    if not ARCHIVIO.dettaglio('programmazioni', canale_corrente(context).chat_id, programmazione_id):
+        post = None
     if (
         not post
         or post["stato"] != "attesa"
@@ -10190,7 +10239,7 @@ async def invia_scheda_programmato(
     if messaggio_html:
         messaggio_post = messaggio_post.replace("__RICERCA_HTML__", "", 1)
     testo = (
-        f"📅 POST PROGRAMMATO #{post['id']}\n"
+        f"📅 POST PROGRAMMATO #{post['id']} — {next((c.nome for c in CANALI.values() if c.chat_id == str(post['telegram_chat_id'])), post['telegram_chat_id'])}\n"
         f"🕒 {quando}\n\n"
         "👀 ANTEPRIMA\n\n"
         + crea_caption_con_link(
@@ -10269,9 +10318,7 @@ async def gestisci_programmato(
             None,
         )
 
-        await invia_lista_programmati(
-            query.message
-        )
+        await invia_lista_programmati(query.message, destinazione=canale_corrente(context).chat_id)
 
         return PROG_SELEZIONE
 
@@ -10415,9 +10462,7 @@ async def gestisci_programmato(
             None,
         )
 
-        await invia_lista_programmati(
-            query.message
-        )
+        await invia_lista_programmati(query.message, destinazione=canale_corrente(context).chat_id)
 
         return PROG_SELEZIONE
 
@@ -10867,7 +10912,7 @@ async def edit_programmato_dataora(
         return PROG_EDIT_DATA_ORA
 
     conflitti = trova_conflitto(
-        data_locale
+        data_locale, canale_corrente(context).chat_id
     )
 
     conflitti = [
@@ -11179,46 +11224,14 @@ async def mostra_anteprima(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CONTROLLO DISTANZA INVII MANUALI
 # =========================================================
 
-def minuti_rimanenti_prima_del_prossimo_invio():
-
-    db = sqlite3.connect(DB_PATH)
-    cur = db.cursor()
-
-    cur.execute("""
-        SELECT pubblicata_il
-        FROM recap_offerte
-        ORDER BY pubblicata_il DESC
-        LIMIT 1
-    """)
-
-    riga = cur.fetchone()
-    db.close()
-
-    if not riga or not riga[0]:
+def minuti_rimanenti_prima_del_prossimo_invio(destinazione=CHANNEL_ID):
+    adesso = datetime.now(timezone.utc)
+    with sqlite3.connect(DB_PATH) as db:
+        dates = db.execute("SELECT pubblicata_il FROM recap_offerte WHERE CAST(telegram_chat_id AS TEXT)=?", (str(destinazione),)).fetchall()
+    times = [_data_sqlite(row[0]) for row in dates if _data_sqlite(row[0])]
+    if not times:
         return 0
-
-    try:
-        ultimo_invio = datetime.fromisoformat(riga[0])
-
-        if ultimo_invio.tzinfo is None:
-            ultimo_invio = ultimo_invio.replace(tzinfo=ROMA_TZ)
-        else:
-            ultimo_invio = ultimo_invio.astimezone(ROMA_TZ)
-
-        trascorsi = (
-            datetime.now(ROMA_TZ) - ultimo_invio
-        ).total_seconds() / 60
-
-        rimanenti = DISTANZA_MINIMA_MINUTI - trascorsi
-
-        if rimanenti <= 0:
-            return 0
-
-        # Arrotondiamo per eccesso: a 30 minuti con limite 31 mostra 1 minuto.
-        return max(1, int(rimanenti) + (0 if rimanenti.is_integer() else 1))
-
-    except Exception:
-        return 0
+    return max(0, int((DISTANZA_MINIMA_MINUTI * 60 - (adesso-max(times)).total_seconds() + 59) // 60))
 
 
 # =========================================================
@@ -12287,7 +12300,7 @@ async def annulla(
     if not await controlla_autorizzazione(update):
         return ConversationHandler.END
 
-    context.user_data.clear()
+    reset_flusso(context)
 
     # Funziona sia con /annulla sia con il pulsante inline ANNULLA.
     if update.callback_query:
@@ -13310,6 +13323,7 @@ def main():
     inizializza_recap()
     inizializza_automazione()
     inizializza_tiktok()
+    ARCHIVIO.inizializza(list(CANALI.values()), config_fascia_manuale())
     avvia_api_offerte_web()
 
     app = (
@@ -13319,6 +13333,8 @@ def main():
         .post_init(avvia_programmazioni)
         .build()
     )
+
+    app.add_handler(TypeHandler(Update, proteggi_menu_v2), group=-2)
 
     # Intercetta solo la rubrica; gli altri flussi mantengono i propri handler.
     app.add_handler(TypeHandler(Update, gestisci_oroscopi), group=-1)
@@ -13330,6 +13346,7 @@ def main():
     conversazione = ConversationHandler(
 
         entry_points=[
+            CallbackQueryHandler(gestisci_menu_v2, pattern=r'^v2(?:_|c:)'),
             CallbackQueryHandler(ricontrolla_da_cronologia, pattern=r'^archive_recheck_[0-9]+$'),
 
             CallbackQueryHandler(repost_da_pulsante, pattern='^repost$'),
@@ -13368,6 +13385,7 @@ def main():
         ],
 
         states={
+            menu_canali.INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_impostazione_v2)],
 
             LINK: [
                 MessageHandler(
