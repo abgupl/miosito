@@ -59,6 +59,28 @@ with tempfile.TemporaryDirectory() as tmp:
              patch.object(type(app.bot),'answer_callback_query',new=AsyncMock()) as answer, \
              patch.object(type(app.bot),'edit_message_text',new=AsyncMock(return_value=sent)) as edit:
             await click('v2_home')
+            await click('v2_settings')
+            await click('v2_monitor')
+            assert 'DISATTIVATO' in send.call_args.kwargs['text']
+            await click('v2_monitor_on')
+            assert runtime.monitoraggio.attivo(runtime.DB_PATH)
+            await click('v2_monitor_off')
+            assert not runtime.monitoraggio.attivo(runtime.DB_PATH)
+            # With the switch off no monitored products are even loaded.
+            with patch.object(runtime,'_offerte_da_verificare') as scan, \
+                 patch.object(runtime.asyncio,'sleep',new=AsyncMock(side_effect=asyncio.CancelledError)):
+                try:
+                    await runtime.controlla_offerte_terminate(app)
+                except asyncio.CancelledError:
+                    pass
+                scan.assert_not_called()
+            with patch.object(runtime,'_prodotti_raccolta_da_verificare') as casa_scan, \
+                 patch.object(runtime,'_prodotti_raccolta_tech_da_verificare') as tech_scan:
+                await runtime.controlla_raccolte_casa_terminate(app)
+                await runtime.controlla_raccolte_tech_terminate(app)
+                casa_scan.assert_not_called()
+                tech_scan.assert_not_called()
+            await click('v2_home')
             await click('v2_select_casa')
             await click('v2c:casa:posts')
             await click('nuova')

@@ -191,3 +191,9 @@ La schermata iniziale mostra, nell’ordine: lista canali; Aggiungi canale; Rubr
 Il ritorno dall’automazione apre il menu del canale; Menu principale apre sempre la lista iniziale. Le schermate di inserimento, i pannelli automatici, le anteprime e gli editor dispongono di pulsanti di uscita. L’aggiunta del canale consente di tornare al passo precedente senza perdere tutta la bozza.
 
 Verifiche: 44 test, con navigazione degli handler reali su TECH, CASA e un canale SPORT simulato; nessun invio reale.
+
+## Monitoraggio globale dei post
+
+In Impostazioni → Monitoraggio post si può attivare o disattivare il controllo delle offerte già pubblicate e delle raccolte. Il valore iniziale è DISATTIVATO ed è persistente nel database. Vale per tutti i canali e tutte le modalità di invio che registrano i post nel monitoraggio. Non arresta invii programmati, quiz o oroscopi e non abilita le Creators API. Le richieste già in corso possono terminare; i controlli successivi rispettano lo stato aggiornato. Un nuovo stato viene rilevato entro circa 30 secondi quando il worker è in attesa; il normale intervallo di monitoraggio rimane di 30 minuti.
+
+Validazione aggiornamento: 46 test senza invii reali.

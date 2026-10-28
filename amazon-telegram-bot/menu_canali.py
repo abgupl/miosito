@@ -1,5 +1,6 @@
 """Menu V2 con callback legati al canale della schermata."""
 import re
+import monitoraggio
 from canali import reset_flusso, selezionato
 
 INPUT = 'V2_IMPOSTAZIONE'
@@ -62,6 +63,22 @@ async def gestisci(s, update, context, data_override=None):
         context.user_data.pop('canale_attivo', None)
         await mostra(s, update, '📢 SCEGLI IL CANALE DA GESTIRE', menu_iniziale(s, update.effective_user.id))
         return s.ConversationHandler.END
+    if data in {'v2_monitor_on', 'v2_monitor_off'}:
+        if not all(c.accessibile(update.effective_user.id) for c in s.CANALI.values()):
+            await mostra(s, update, 'Questa impostazione globale richiede accesso a tutti i canali.',
+                         tastiera(s, [[('⬅️ Impostazioni', 'v2_settings')]]))
+            return s.ConversationHandler.END
+        monitoraggio.imposta(s.DB_PATH, data == 'v2_monitor_on')
+        data = 'v2_monitor'
+    if data == 'v2_monitor':
+        enabled = monitoraggio.attivo(s.DB_PATH)
+        await mostra(s, update, '🔎 MONITORAGGIO POST PUBBLICATI\n\nStato: ' + ('ATTIVO' if enabled else 'DISATTIVATO') +
+                     '\n\nImpostazione unica per tutti i canali presenti e futuri. Controlla prezzi, disponibilità e sconti dei post tracciati, incluse le raccolte, indipendentemente dalla modalità di invio.'
+                     '\nDa disattivato non cerca aggiornamenti e non modifica i post già pubblicati. Una richiesta già partita può terminare.'
+                     '\nGli invii programmati e la rubrica continuano a funzionare. L’attivazione non ripristina le Creators API.',
+                     tastiera(s, [[('⏸ Disattiva' if enabled else '▶️ Attiva monitoraggio', 'v2_monitor_off' if enabled else 'v2_monitor_on')],
+                                  [('⬅️ Impostazioni', 'v2_settings')], [('🏠 Menu principale', 'v2_home')]]))
+        return s.ConversationHandler.END
     if data == 'v2_settings':
         reset_flusso(context)
         await mostra(s, update,
@@ -70,7 +87,8 @@ async def gestisci(s, update, context, data_override=None):
                      'Tag affiliato predefinito: ' + (s.tag_canale(None) or 'non configurato') + '\n\n'
                      'I canali ereditano il tag generale finché non impostano il proprio.\n'
                      'Destinazioni e amministratori si configurano nelle variabili del servizio.',
-                     tastiera(s, [[('📢 Canali configurati', 'v2_channels')],
+                     tastiera(s, [[('🔎 Monitoraggio post: ' + ('ATTIVO' if monitoraggio.attivo(s.DB_PATH) else 'DISATTIVATO'), 'v2_monitor')],
+                                  [('📢 Canali configurati', 'v2_channels')],
                                   [('📊 Stato del bot', 'v2_status')],
                                   [('📋 Log e diagnostica', 'diag_logs_all_0')],
                                   [('⬅️ Scelta canale', 'v2_home')]]))

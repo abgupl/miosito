@@ -1,3 +1,4 @@
+import monitoraggio
 from interfaccia_legacy import navigazione_coordinatore
 import os
 import asyncio
@@ -7475,6 +7476,7 @@ def _salva_aggiornamento_offerta(invio_id, prodotto, corpo_messaggio):
     db.close()
 
 
+@monitoraggio.solo_se_attivo
 async def _aggiorna_post_offerta_attiva(
     bot, invio_id, prodotto, categoria, message_id, telegram_chat_id=None
 ):
@@ -7759,12 +7761,15 @@ async def _aggiorna_caption_raccolta_casa(bot, raccolta_id):
     db.close()
 
 
+@monitoraggio.solo_se_attivo
 async def controlla_raccolte_casa_terminate(app):
     """Controlla ogni articolo del collage e aggiorna una sola volta la didascalia."""
     righe = _prodotti_raccolta_da_verificare()
     raccolte_modificate = set()
     nomi_terminati = []
     for posizione in range(0, len(righe), 10):
+        if not monitoraggio.attivo(DB_PATH):
+            return
         gruppo = righe[posizione:posizione + 10]
         asins = [riga[2] for riga in gruppo if riga[2]]
         if not asins:
@@ -7774,6 +7779,8 @@ async def controlla_raccolte_casa_terminate(app):
             prodotto_id, raccolta_id, asin, nome, _,
             prezzo_memorizzato, vecchio_memorizzato, sconto_memorizzato,
         ) in gruppo:
+            if not monitoraggio.attivo(DB_PATH):
+                return
             prodotto = prodotti_api.get(asin)
             if prodotto:
                 _aggiorna_verifica_prodotto_raccolta(prodotto_id, False)
@@ -8010,12 +8017,15 @@ async def _aggiorna_caption_raccolta_tech(bot, raccolta_id):
     db.close()
 
 
+@monitoraggio.solo_se_attivo
 async def controlla_raccolte_tech_terminate(app):
     """Controlla ogni articolo del collage e aggiorna una sola volta la didascalia."""
     righe = _prodotti_raccolta_tech_da_verificare()
     raccolte_modificate = set()
     nomi_terminati = []
     for posizione in range(0, len(righe), 10):
+        if not monitoraggio.attivo(DB_PATH):
+            return
         gruppo = righe[posizione:posizione + 10]
         asins = [riga[2] for riga in gruppo if riga[2]]
         if not asins:
@@ -8025,6 +8035,8 @@ async def controlla_raccolte_tech_terminate(app):
             prodotto_id, raccolta_id, asin, nome, _,
             prezzo_memorizzato, vecchio_memorizzato, sconto_memorizzato,
         ) in gruppo:
+            if not monitoraggio.attivo(DB_PATH):
+                return
             prodotto = prodotti_api.get(asin)
             if prodotto:
                 _aggiorna_verifica_prodotto_raccolta_tech(prodotto_id, False)
@@ -8095,8 +8107,13 @@ _conferme_sconto_zero_monitoraggio = {}
 async def controlla_offerte_terminate(app):
     while True:
         try:
+            if not monitoraggio.attivo(DB_PATH):
+                await asyncio.sleep(30)
+                continue
             offerte = _offerte_da_verificare()
             for posizione in range(0, len(offerte), 10):
+                if not monitoraggio.attivo(DB_PATH):
+                    break
                 gruppo = offerte[posizione:posizione + 10]
                 asins = [riga[1] for riga in gruppo if riga[1]]
                 if not asins:
@@ -8118,6 +8135,8 @@ async def controlla_offerte_terminate(app):
                     prezzo_memorizzato,
                     vecchio_memorizzato,
                 ) in gruppo:
+                    if not monitoraggio.attivo(DB_PATH):
+                        break
                     prodotto = prodotti.get(asin)
                     if prodotto:
                         _aggiorna_verifica_offerta(invio_id, False)
@@ -8205,7 +8224,10 @@ async def controlla_offerte_terminate(app):
         except Exception as errore:
             print(f"Errore controllo offerte terminate: {errore}")
 
-        await asyncio.sleep(1800)
+        for _ in range(60):
+            if not monitoraggio.attivo(DB_PATH):
+                break
+            await asyncio.sleep(30)
 
 
 # =========================================================
