@@ -22,7 +22,7 @@ def home(channel_url, admin=False):
     rows = [
         [("🎬 Richiedi un film", "new:film"), ("📺 Richiedi una serie", "new:serie")],
         [("📋 Le mie richieste", "mine:0"), ("📲 Scarica le app", "platforms")],
-        [("📖 Guida all’installazione", "guide"), ("📢 Apri il canale", "url:"+channel_url)],
+        [("📖 Guida all’installazione", "guide")],
     ]
     if admin:
         rows.append([("🔧 Amministrazione", "admin")])
