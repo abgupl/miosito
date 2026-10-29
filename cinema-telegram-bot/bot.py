@@ -2,7 +2,7 @@
 import json
 import logging
 
-from telegram import Update, BotCommand
+from telegram import Update
 from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
@@ -240,7 +240,9 @@ class CinemaBot:
         member = await application.bot.get_chat_member(self.config.channel, me.id)
         if member.status not in {"administrator", "creator"}:
             raise RuntimeError("Il bot deve essere amministratore del canale prima dell’avvio.")
-        await application.bot.set_my_commands([BotCommand("start", "Apri il menu"), BotCommand("menu", "Torna al menu principale"), BotCommand("cancel", "Annulla e torna al menu")])
+        # Nessun elenco pubblico di comandi: i menu restano nei messaggi.
+        # /start, /menu e /cancel continuano a funzionare se digitati.
+        await application.bot.delete_my_commands()
         application.job_queue.run_repeating(self.notifications, interval=30, first=5)
 
     async def error(self, update, context):
