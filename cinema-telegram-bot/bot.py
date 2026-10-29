@@ -43,11 +43,11 @@ class CinemaBot:
             member = await context.bot.get_chat_member(self.config.channel, update.effective_user.id)
             if is_member(member):
                 return True
-            text = "🔒 Accesso riservato agli iscritti al canale. Entra nel canale e verifica l’accesso."
+            text = "🔒 Accesso riservato agli iscritti al canale privato. L’ingresso è consentito solo su invito del gestore."
         except TelegramError:
             text = "Non riesco a verificare l’iscrizione. Riprova tra poco; se il problema continua contatta il gestore."
         context.user_data.clear()
-        await self.show(update, Screen(text, [[("📢 Apri il canale", "url:"+self.config.channel_url)], [("🔄 Verifica accesso", "home")]], None))
+        await self.show(update, Screen(text, [[("🔄 Verifica accesso", "home")]], None))
         return False
 
     async def handle(self, update, context):
