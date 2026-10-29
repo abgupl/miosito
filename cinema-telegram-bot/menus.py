@@ -10,7 +10,7 @@ class Screen:
     parent: str | None = "home"
 
     def markup(self):
-        rows = [[Button(label, url=target[4:]) if target.startswith("url:") else Button(label, callback_data=target) for label,target in row] for row in self.rows]
+        rows = [[Button(label, url=target[4:]) if target.startswith("url:") else Button(label, callback_data=target)] for row in self.rows for label, target in row]
         if self.parent is not None:
             rows.append([Button("⬅️ Indietro", callback_data=self.parent)])
             if self.parent != "home":
