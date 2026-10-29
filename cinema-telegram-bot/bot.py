@@ -1,5 +1,6 @@
 """Bot richieste e app, avvio: python bot.py (Python 3.10+)."""
 import logging
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -114,6 +115,8 @@ class CinemaBot:
             # Ricava l’etichetta prima di modificare il messaggio contenente il pulsante.
             if route == 'reportsend':
                 context.user_data['report_user'] = update.effective_user
+            if route == 'submit':
+                context.user_data['request_user'] = update.effective_user
             label = self.click_label(update.callback_query, route) if update.callback_query else None
             screen = self.route(route, context, user, admin)
             if update.callback_query:
@@ -122,6 +125,8 @@ class CinemaBot:
                 if route.startswith('stats'):
                     screen = self.route(route, context, user, admin)
             await self.show(update, screen)
+            if route in {'submit','reportsend'}:
+                await self.admin_notifications(context)
         except (ValueError, KeyError, IndexError, TypeError):
             await self.show(update, Screen("Questa schermata non è più disponibile. Torna al menu principale.", []))
 
@@ -168,7 +173,7 @@ class CinemaBot:
             return Screen(f"Confermi la segnalazione?\n\nApp: {draft['app']}\nProblema: {REPORT_REASONS[draft['reason']]}\nNote: {draft.get('note') or 'Nessuna'}", [[('✅ Invia segnalazione','reportsend')]], 'reportreason:'+draft['reason'])
         if route == 'reportsend':
             draft = state.pop('report')
-            rid = db.report(state.pop('report_user'), draft['app'], REPORT_REASONS[draft['reason']], draft.get('note',''))
+            rid = db.report(state.pop('report_user'), draft['app'], REPORT_REASONS[draft['reason']], draft.get('note',''), cfg.admins)
             return Screen(f'✅ Segnalazione #{rid} inviata al gestore.', [])
         if route.startswith('reports:'):
             page = max(0,int(route.split(':')[1]))
@@ -211,7 +216,7 @@ class CinemaBot:
             return Screen(f"Confermi la richiesta?\n\nTipo: {draft['kind']}\nTitolo: {draft['title']}\nDettagli: {draft.get('details') or 'Nessuno'}", [[("✅ Conferma", "submit")], [("✏️ Modifica titolo", "new:"+draft['kind'])]], "details")
         if route == "submit":
             draft = state.pop('draft')
-            rid, new = db.request(draft['kind'], draft['title'], draft.get('details', ''), user)
+            rid, new = db.request(draft['kind'], draft['title'], draft.get('details', ''), user, cfg.admins, state.pop('request_user',None))
             return Screen(("✅ Richiesta registrata." if new else "Questa richiesta esiste già: ora la trovi nelle tue richieste.")+"\nSe il titolo viene segnato disponibile, riceverai un avviso.", [[("📋 Apri richiesta", f"request:{rid}:0")]])
         if route.startswith(("mine:", "all:")):
             prefix, page = route.split(":")
@@ -540,6 +545,7 @@ class CinemaBot:
         await self.show(update, screen)
 
     async def notifications(self, context):
+        await self.admin_notifications(context)
         rows = self.store.db.execute("SELECT n.*, r.title FROM notifications n JOIN requests r ON r.id=n.request_id WHERE r.status='available' LIMIT 30").fetchall()
         for row in rows:
             try:
@@ -553,6 +559,27 @@ class CinemaBot:
                 continue  # Avviso persistente: nuovo tentativo al prossimo giro.
             with self.store.db:
                 self.store.db.execute("DELETE FROM notifications WHERE request_id=? AND user_id=?", (row['request_id'], row['user_id']))
+
+    async def admin_notifications(self, context):
+        rows = self.store.db.execute('SELECT * FROM admin_notifications WHERE next_at<=? ORDER BY id LIMIT 30',(int(time.time()),)).fetchall()
+        for row in rows:
+            if row['admin_id'] not in self.config.admins:
+                with self.store.db:
+                    self.store.db.execute('DELETE FROM admin_notifications WHERE id=?',(row['id'],))
+                continue
+            try:
+                member = await context.bot.get_chat_member(self.config.channel,row['admin_id'])
+                if not is_member(member):
+                    raise Forbidden('Amministratore non iscritto')
+                label = '📋 Apri richiesta' if row['target'].startswith('manage:') else '🔎 Apri segnalazione'
+                await context.bot.send_message(row['admin_id'],row['text'],reply_markup=Screen('',[[(label,row['target'])]],None).markup(),disable_web_page_preview=True)
+            except TelegramError as error:
+                delay = max(30,int(getattr(error,'retry_after',30))) if not isinstance(error,Forbidden) else 3600
+                with self.store.db:
+                    self.store.db.execute('UPDATE admin_notifications SET next_at=? WHERE id=?',(int(time.time())+delay,row['id']))
+                continue
+            with self.store.db:
+                self.store.db.execute('DELETE FROM admin_notifications WHERE id=?',(row['id'],))
 
     async def startup(self, application):
         me = await application.bot.get_me()
