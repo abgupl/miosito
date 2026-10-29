@@ -18,9 +18,21 @@ class Config:
         token = os.environ.get("CINEMA_BOT_TOKEN", "").strip()
         channel = os.environ.get("CINEMA_CHANNEL_ID", "").strip()
         url = os.environ.get("CINEMA_CHANNEL_URL", "").strip()
-        admins = frozenset(int(x.strip()) for x in os.environ.get("CINEMA_ADMIN_IDS", "").split(",") if x.strip())
-        if not token or not channel or not admins or not url.startswith("https://t.me/"):
-            raise ValueError("Imposta CINEMA_BOT_TOKEN, CINEMA_CHANNEL_ID, CINEMA_CHANNEL_URL e CINEMA_ADMIN_IDS.")
+        raw_admins = os.environ.get("CINEMA_ADMIN_IDS", "").strip()
+        missing = [name for name, value in (
+            ("CINEMA_BOT_TOKEN", token),
+            ("CINEMA_CHANNEL_ID", channel),
+            ("CINEMA_ADMIN_IDS", raw_admins),
+        ) if not value]
+        if missing:
+            raise ValueError("Variabili mancanti: " + ", ".join(missing) + ".")
+        try:
+            admins = frozenset(int(x.strip()) for x in raw_admins.split(",") if x.strip())
+        except ValueError:
+            raise ValueError("CINEMA_ADMIN_IDS deve contenere ID numerici positivi separati da virgole.") from None
+        if not admins or any(uid <= 0 for uid in admins):
+            raise ValueError("CINEMA_ADMIN_IDS deve contenere ID numerici positivi separati da virgole.")
+        # Compatibilità con le vecchie configurazioni: il link non è più richiesto né mostrato.
         channel = int(channel) if channel.lstrip("-").isdigit() else channel
         path = Path(os.environ.get("CINEMA_DB_PATH", str(Path(__file__).parent / "data" / "cinema.sqlite3")))
         return cls(token, channel, url, admins, path, os.environ.get("CINEMA_SERVER", "017"))
