@@ -17,7 +17,7 @@ def context(member="member"):
 
 
 def update(route=None, text=None, user=1):
-    message = NS(text=text, reply_text=AsyncMock())
+    message = NS(text=text, reply_text=AsyncMock(), delete=AsyncMock())
     query = NS(data=route, answer=AsyncMock(), edit_message_text=AsyncMock()) if route else None
     return NS(effective_chat=NS(type="private"), effective_user=NS(id=user), effective_message=message, callback_query=query)
 
