@@ -26,40 +26,57 @@ def is_member(member):
 class CinemaBot:
     def __init__(self, config, store):
         self.config, self.store = config, store
+        self._screens = {}
+
+    async def discard(self, message):
+        if message is None:
+            return
+        try:
+            await message.delete()
+        except TelegramError:
+            # Telegram può rifiutare la cancellazione dei messaggi più vecchi.
+            pass
 
     async def show(self, update, screen):
-        """Riutilizza il messaggio-menu; i comandi/testi aprono una nuova schermata."""
-        if screen.photo:
-            source = screen.photo
-            if source == 'assets/stream_house.jpeg':
-                with (Path(__file__).parent / source).open('rb') as asset:
-                    await update.effective_message.reply_photo(asset, caption=screen.text if len(screen.text)<=1024 else None, reply_markup=screen.markup() if len(screen.text)<=1024 else None)
-            else:
-                await update.effective_message.reply_photo(source, caption=screen.text if len(screen.text)<=1024 else None, reply_markup=screen.markup() if len(screen.text)<=1024 else None)
-            if len(screen.text)>1024:
-                await update.effective_message.reply_text(screen.text,reply_markup=screen.markup(),disable_web_page_preview=True)
-            if update.callback_query:
-                try:
-                    await update.callback_query.message.delete()
-                except TelegramError:
-                    pass
-            return
-        if update.callback_query and getattr(getattr(update.callback_query,'message',None),'photo',None):
-            await update.effective_message.reply_text(screen.text,reply_markup=screen.markup(),disable_web_page_preview=True)
+        """Mantiene soltanto la schermata attiva e acquisisce gli input senza lasciarli in chat."""
+        chat_id = getattr(update.effective_chat, 'id', update.effective_user.id)
+        previous = self._screens.get(chat_id, [])
+        query = update.callback_query
+        origin = getattr(query, 'message', None) if query else None
+        current = []
+        if query and not screen.photo and not getattr(origin, 'photo', None):
             try:
-                await update.callback_query.message.delete()
-            except TelegramError:
-                pass
-            return
-        if update.callback_query:
-            try:
-                await update.callback_query.edit_message_text(screen.text, reply_markup=screen.markup(), disable_web_page_preview=True)
-                return
+                await query.edit_message_text(screen.text, reply_markup=screen.markup(), disable_web_page_preview=True)
+                current = [origin] if origin is not None else []
             except BadRequest as error:
                 if "message is not modified" in str(error).lower():
-                    return
-                # Un vecchio messaggio non modificabile non deve bloccare la navigazione.
-        await update.effective_message.reply_text(screen.text, reply_markup=screen.markup(), disable_web_page_preview=True)
+                    current = [origin] if origin is not None else []
+                else:
+                    query = None
+        else:
+            query = None
+        if query is None:
+            if screen.photo:
+                caption = screen.text if len(screen.text) <= 1024 else None
+                markup = screen.markup() if caption else None
+                if screen.photo == 'assets/stream_house.jpeg':
+                    with (Path(__file__).parent / screen.photo).open('rb') as asset:
+                        current.append(await update.effective_message.reply_photo(asset, caption=caption, reply_markup=markup))
+                else:
+                    current.append(await update.effective_message.reply_photo(screen.photo, caption=caption, reply_markup=markup))
+            if not screen.photo or len(screen.text) > 1024:
+                current.append(await update.effective_message.reply_text(screen.text, reply_markup=screen.markup(), disable_web_page_preview=True))
+        # Pubblica prima la nuova schermata, poi rimuove le precedenti.
+        keep = {getattr(m, 'message_id', None) for m in current if m is not None}
+        removed = set()
+        for message in previous + ([origin] if origin is not None else []):
+            mid = getattr(message, 'message_id', None)
+            if message is not None and mid not in keep and mid not in removed:
+                await self.discard(message)
+                removed.add(mid)
+        self._screens[chat_id] = current
+        if not update.callback_query:
+            await self.discard(update.effective_message)
 
     async def guard(self, update, context):
         if not update.effective_user or not update.effective_chat or update.effective_chat.type != "private":
