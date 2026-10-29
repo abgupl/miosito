@@ -54,7 +54,7 @@ class StatisticsReports(unittest.IsolatedAsyncioTestCase):
         ctx=context()
         await self.click('addapp:0',ctx,user=1)
         await self.bot.handle(update(text='App prova'),ctx)
-        self.assertEqual(len(self.db.apps()),9)
+        self.assertEqual(len(self.db.apps()),10)
         self.assertEqual(ctx.user_data['appdraft']['step'],'name')
         await self.click('wizard:next:name',ctx,user=1)
         self.assertEqual(ctx.user_data['appdraft']['step'],'platforms')
@@ -73,10 +73,11 @@ class StatisticsReports(unittest.IsolatedAsyncioTestCase):
         await self.bot.handle(update(text='12345'),ctx)
         await self.click('wizard:next:code',ctx,user=1)
         await self.click('wizard:next:notes',ctx,user=1)
+        await self.click('wizard:next:photo',ctx,user=1)
         self.assertEqual(ctx.user_data['appdraft']['step'],'review')
-        self.assertEqual(len(self.db.apps()),9)
-        await self.click('wizard:save',ctx,user=1)
         self.assertEqual(len(self.db.apps()),10)
+        await self.click('wizard:save',ctx,user=1)
+        self.assertEqual(len(self.db.apps()),11)
         app=self.db.apps()[-1]
         self.assertEqual(app['name'],'App prova')
         self.assertEqual(app['platforms'],['android','fire'])
@@ -155,7 +156,7 @@ class StatisticsReports(unittest.IsolatedAsyncioTestCase):
             db.record_click(actor,'guide','Guida','id1')
             self.assertEqual(db.stats_summary()['total'],1)
             self.assertEqual(len(db.reports()),1)
-            self.assertEqual(len(db.apps()),9)
+            self.assertEqual(len(db.apps()),10)
             db.db.close()
 
 

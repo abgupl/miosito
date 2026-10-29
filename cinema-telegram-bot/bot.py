@@ -1,5 +1,6 @@
 """Bot richieste e app, avvio: python bot.py (Python 3.10+)."""
 import logging
+from pathlib import Path
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -14,8 +15,8 @@ from storage import Store, PLATFORMS, STATUSES, validate_app
 LOG = logging.getLogger(__name__)
 PAGE = 6
 REPORT_REASONS = {"link": "Link di download non funzionante", "missing": "App non disponibile", "start": "L’app non si avvia", "other": "Altro problema"}
-APP_FIELDS = ['name','platforms','url','code','notes']
-APP_LABELS = {'name':'Nome app','platforms':'Piattaforme compatibili','url':'Link di download','code':'Codice Downloader','notes':'Note e istruzioni'}
+APP_FIELDS = ['name','platforms','url','code','notes','photo']
+APP_LABELS = {'name':'Nome app','platforms':'Piattaforme compatibili','url':'Link di download','code':'Codice Downloader','notes':'Note e istruzioni','photo':'Foto o logo'}
 
 
 def is_member(member):
@@ -28,6 +29,28 @@ class CinemaBot:
 
     async def show(self, update, screen):
         """Riutilizza il messaggio-menu; i comandi/testi aprono una nuova schermata."""
+        if screen.photo:
+            source = screen.photo
+            if source == 'assets/stream_house.jpeg':
+                with (Path(__file__).parent / source).open('rb') as asset:
+                    await update.effective_message.reply_photo(asset, caption=screen.text if len(screen.text)<=1024 else None, reply_markup=screen.markup() if len(screen.text)<=1024 else None)
+            else:
+                await update.effective_message.reply_photo(source, caption=screen.text if len(screen.text)<=1024 else None, reply_markup=screen.markup() if len(screen.text)<=1024 else None)
+            if len(screen.text)>1024:
+                await update.effective_message.reply_text(screen.text,reply_markup=screen.markup(),disable_web_page_preview=True)
+            if update.callback_query:
+                try:
+                    await update.callback_query.message.delete()
+                except TelegramError:
+                    pass
+            return
+        if update.callback_query and getattr(getattr(update.callback_query,'message',None),'photo',None):
+            await update.effective_message.reply_text(screen.text,reply_markup=screen.markup(),disable_web_page_preview=True)
+            try:
+                await update.callback_query.message.delete()
+            except TelegramError:
+                pass
+            return
         if update.callback_query:
             try:
                 await update.callback_query.edit_message_text(screen.text, reply_markup=screen.markup(), disable_web_page_preview=True)
@@ -62,7 +85,7 @@ class CinemaBot:
         route = update.callback_query.data if update.callback_query else "home"
         if not isinstance(route, str):
             route = "home"
-        if not update.callback_query and update.effective_message.text and not update.effective_message.text.startswith("/"):
+        if not update.callback_query and not (update.effective_message.text or "").startswith("/"):
             await self.input(update, context, admin)
             return
         # Ogni salto di menu annulla l'attesa di input, conservando la bozza per Indietro.
@@ -210,11 +233,11 @@ class CinemaBot:
             app = db.app(int(aid))
             if app is None or platform not in app['platforms']:
                 raise ValueError()
-            return Screen(self.app_text(app), [[("⬇️ Scarica", f"download:{aid}:{platform}")], [("🛠 Segnala un problema", f"reportapp:{aid}:0:{platform}")]], "platform:"+platform)
+            return Screen(self.app_text(app), ([[ ("⬇️ Scarica", f"download:{aid}:{platform}")] ] if app["url"] else [])+ [[("🛠 Segnala un problema", f"reportapp:{aid}:0:{platform}")]], "platform:"+platform, app.get("photo", ""))
         if route.startswith('download:'):
             _, aid, platform = route.split(':')
             app = db.app(int(aid))
-            if app is None or platform not in app['platforms']:
+            if app is None or platform not in app['platforms'] or not app['url']:
                 raise ValueError()
             return Screen(f"Download di {app['name']}\nApri il collegamento:", [[('⬇️ Apri download','url:'+app['url'])]],f'app:{aid}:{platform}')
         if route.startswith("appsadmin:"):
@@ -233,6 +256,7 @@ class CinemaBot:
             if app is None:
                 raise ValueError()
             app = {k:v for k,v in app.items() if k != "id"}
+            app.setdefault('photo','')
             state['appdraft'] = {'id':aid,'page':page,'values':app,'step':'name'}
             return self.app_wizard('wizard:step:name',context)
         if route.startswith('wizard:'):
@@ -266,7 +290,7 @@ class CinemaBot:
                 selected.append(field)
             field = 'platforms'
         elif action == 'clear':
-            if field not in {'code','notes'} or field != draft['step']:
+            if field not in {'url','code','notes','photo'} or field != draft['step']:
                 raise ValueError()
             values[field] = ''
         elif action == 'next':
@@ -305,8 +329,8 @@ class CinemaBot:
         state.pop('input',None)
         values = draft['values']
         if field == 'review':
-            text = 'Riepilogo app\n\n'+'\n\n'.join(APP_LABELS[k]+': '+(', '.join(PLATFORMS[p] for p in values[k]) if k=='platforms' else values[k] or 'Nessuno') for k in APP_FIELDS)
-            return Screen(text,[[('✅ Conferma e salva','wizard:save')]],'wizard:step:notes')
+            text = 'Riepilogo app\n\n'+'\n\n'.join(APP_LABELS[k]+': '+(', '.join(PLATFORMS[p] for p in values[k]) if k=='platforms' else ('Immagine presente' if values[k] else 'Nessuna') if k=='photo' else values[k] or 'Nessuno') for k in APP_FIELDS)
+            return Screen(text,[[('✅ Conferma e salva','wizard:save')]],'wizard:step:photo')
         index = APP_FIELDS.index(field)
         parent = 'wizard:step:'+APP_FIELDS[index-1] if index else f"appsadmin:{draft['page']}"
         text = f"Passaggio {index+1}/{len(APP_FIELDS)} · {APP_LABELS[field]}\n\n"
@@ -319,15 +343,16 @@ class CinemaBot:
         else:
             state['input'] = 'appfield:'+field
             text += {'name':'Scrivi il nome dell’app (massimo 80 caratteri).',
-                     'url':'Invia il link completo di download, iniziando con http:// o https://.',
+                     'url':'Invia il link completo, oppure conferma senza link.',
+                     'photo':'Invia una foto o un logo come foto Telegram, oppure conferma senza foto.',
                      'code':'Invia il codice numerico Downloader, oppure conferma senza codice.',
                      'notes':'Scrivi le note o le istruzioni (massimo 1500 caratteri), oppure conferma senza note.'}[field]
-            text += '\n\nValore: '+(values[field] or ('Nessuno' if field in {'code','notes'} else 'Da inserire'))
+            text += '\n\nValore: '+(('Immagine presente' if values[field] else 'Nessuna') if field=='photo' else values[field] or ('Nessuno' if field in {'url','code','notes','photo'} else 'Da inserire'))
         # Il valore viene confermato esplicitamente prima di passare allo step seguente.
-        if values[field] or field in {'code','notes'}:
+        if values[field] or field in {'url','code','notes','photo'}:
             rows.append([('✅ Conferma','wizard:next:'+field)])
-        if field in {'code','notes'} and values[field]:
-            rows.append([('Senza codice' if field=='code' else 'Senza note','wizard:clear:'+field)])
+        if field in {'url','code','notes','photo'} and values[field]:
+            rows.append([('Rimuovi valore','wizard:clear:'+field)])
         if draft['id'] is not None and field=='name':
             rows.append([('🗑 Rimuovi app',f"deleteapp:{draft['id']}:{draft['page']}")])
         return Screen(text,rows,parent)
@@ -481,7 +506,13 @@ class CinemaBot:
             field = mode.split(':')[1]
             draft = state['appdraft']
             try:
-                value = text.strip()
+                photos = getattr(update.effective_message,'photo',None)
+                if field == 'photo':
+                    if not photos:
+                        raise ValueError('Invia la foto come immagine Telegram.')
+                    value = photos[-1].file_id
+                else:
+                    value = text.strip()
                 self.validate_field(field,value)
                 draft['values'][field] = value
                 screen = self.app_wizard_screen(draft,state,field)

@@ -58,13 +58,13 @@ class StorageTests(Base):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)/"test.sqlite3"
             first = Store(path)
-            self.assertEqual(len(first.apps()), 9)
+            self.assertEqual(len(first.apps()), 10)
             first.delete_app(1)
             rid, _ = first.request("film", "Test", "", 9)
             first.status(rid, "available")
             first.db.close()
             second = Store(path)
-            self.assertEqual(len(second.apps()), 8)
+            self.assertEqual(len(second.apps()), 9)
             self.assertEqual(second.get_request(rid,9)['status'], "available")
             self.assertEqual(second.db.execute("SELECT count(*) FROM notifications").fetchone()[0], 1)
             second.db.close()
@@ -179,7 +179,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(b.text == "⬅️ Indietro" for row in markup.inline_keyboard for b in row))
         await self.bot.handle(update(text='Nuovo nome'), ctx)
         self.assertEqual(self.db.app(1)['name'], 'Sky Glass')
-        for field in ['name','platforms','url','code','notes']:
+        for field in ['name','platforms','url','code','notes','photo']:
             await self.bot.handle(update('wizard:next:'+field),ctx)
         await self.bot.handle(update('wizard:save'),ctx)
         self.assertEqual(self.db.app(1)['name'], "Nuovo nome")

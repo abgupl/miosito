@@ -8,6 +8,7 @@ class Screen:
     text: str
     rows: list
     parent: str | None = "home"
+    photo: str = ""
 
     def markup(self):
         rows = [[Button(label, url=target[4:]) if target.startswith("url:") else Button(label, callback_data=target)] for row in self.rows for label, target in row]

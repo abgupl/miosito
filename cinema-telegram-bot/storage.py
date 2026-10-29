@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import urlparse
 
-PLATFORMS = {"android": "Android", "fire": "Fire TV Stick", "ios": "iPhone e iPad", "windows": "Windows", "mac": "Mac Intel"}
+PLATFORMS = {"android": "Android", "fire": "Fire TV Stick", "ios": "iPhone e iPad", "windows": "Windows", "mac": "Mac Intel", "appletv": "Apple TV"}
 STATUSES = {"received": "Ricevuta", "working": "In lavorazione", "available": "Disponibile", "unavailable": "Non reperibile"}
 
 
@@ -14,7 +14,7 @@ def validate_app(value):
     name, url = value.get("name"), value.get("url")
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
         raise ValueError("Nome obbligatorio, massimo 80 caratteri.")
-    if not isinstance(url, str) or len(url) > 1000 or urlparse(url).scheme not in {"http", "https"} or not urlparse(url).netloc:
+    if not isinstance(url, str) or (url and (len(url) > 1000 or urlparse(url).scheme not in {"http", "https"} or not urlparse(url).netloc)):
         raise ValueError("Inserisci un link http o https valido.")
     platforms = value.get("platforms")
     if not isinstance(platforms, list) or not platforms or any(not isinstance(p, str) or p not in PLATFORMS for p in platforms):
@@ -24,7 +24,10 @@ def validate_app(value):
         raise ValueError("Il codice Downloader deve essere una stringa numerica.")
     if not isinstance(notes, str) or len(notes) > 1500:
         raise ValueError("Note: massimo 1500 caratteri.")
-    return dict(name=name.strip(), url=url, platforms=list(dict.fromkeys(platforms)), code=code, notes=notes)
+    photo = value.get('photo', '')
+    if not isinstance(photo,str) or len(photo)>1000:
+        raise ValueError('Foto non valida.')
+    return dict(name=name.strip(), url=url, platforms=list(dict.fromkeys(platforms)), code=code, notes=notes, photo=photo)
 
 
 class Store:
@@ -77,6 +80,10 @@ class Store:
                 self.save_app(dict(name=name, url=url, platforms=[platform], code="", notes="Link fornito dal gestore."))
             self.db.execute("INSERT INTO meta VALUES ('seeded')")
         self.db.commit()
+        if not self.db.execute("SELECT 1 FROM meta WHERE key='stream_house_appletv'").fetchone():
+            with self.db:
+                self.db.execute('INSERT INTO apps(data) VALUES (?)', (json.dumps(dict(name='Stream House',url='',platforms=['appletv'],code='',notes='Cerca Stream House su App Store della tua Apple TV. Usa la foto per riconoscere l’app.',photo='assets/stream_house.jpeg'),ensure_ascii=False),))
+                self.db.execute("INSERT INTO meta VALUES ('stream_house_appletv')")
 
     def request(self, kind, title, details, user):
         key = json.dumps([kind, " ".join(title.casefold().split()), " ".join(details.casefold().split())])

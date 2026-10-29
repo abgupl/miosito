@@ -69,3 +69,7 @@ Scarica apre una schermata con il link esterno: si conta la richiesta di downloa
 Segnala un problema app è disponibile dal menu e dalle schede app: link non funzionante, app non disponibile, app che non si avvia o altro. È possibile scegliere Altra app se manca dall’elenco, aggiungere una descrizione e confermare l’invio. Le segnalazioni sono consultabili soltanto dagli amministratori, con nome, username, ID del mittente, app, motivo e descrizione. Il gestore può segnarle come risolte; non viene inviato un messaggio automatico di risoluzione.
 
 Validazione aggiornamento: 21 test automatici con Telegram simulato, incluse conferme della procedura app, statistiche, permessi, persistenza e segnalazioni.
+
+## Apple TV e immagini app
+
+Apple TV include Stream House con la foto fornita dal gestore e senza link di download. Una migrazione aggiunge questa scheda una volta sola anche ai database già esistenti. La procedura guidata di aggiunta/modifica ora comprende un sesto passaggio Foto o logo: inviare una foto Telegram e confermare. È facoltativo; per le app esistenti confermare il nome e gli altri valori fino al passaggio foto. Il link è facoltativo: senza link non compare Scarica. I file ID delle foto sono salvati nel database; usare lo stesso bot Telegram per mantenerli validi. La foto iniziale di Stream House è inclusa nella cartella assets.
