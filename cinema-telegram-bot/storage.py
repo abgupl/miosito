@@ -63,6 +63,9 @@ class Store:
           PRIMARY KEY(user_id,button_id));
         CREATE TABLE IF NOT EXISTS analytics_receipts (
           callback_id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS admin_notifications (
+          id INTEGER PRIMARY KEY, admin_id INTEGER NOT NULL, text TEXT NOT NULL,
+          target TEXT NOT NULL, next_at INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS app_reports (
           id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,
           username TEXT NOT NULL, name TEXT NOT NULL,
@@ -85,13 +88,17 @@ class Store:
                 self.db.execute('INSERT INTO apps(data) VALUES (?)', (json.dumps(dict(name='Stream House',url='',platforms=['appletv'],code='',notes='Cerca Stream House su App Store della tua Apple TV. Usa la foto per riconoscere l’app.',photo='assets/stream_house.jpeg'),ensure_ascii=False),))
                 self.db.execute("INSERT INTO meta VALUES ('stream_house_appletv')")
 
-    def request(self, kind, title, details, user):
+    def request(self, kind, title, details, user, admins=(), actor=None):
         key = json.dumps([kind, " ".join(title.casefold().split()), " ".join(details.casefold().split())])
         with self.db:
             row = self.db.execute("SELECT id FROM requests WHERE dedup=?", (key,)).fetchone()
             new = row is None
             rid = self.db.execute("INSERT INTO requests(kind,title,details,dedup) VALUES (?,?,?,?)", (kind,title,details,key)).lastrowid if new else row[0]
             self.db.execute("INSERT OR IGNORE INTO followers VALUES (?,?)", (rid,user))
+            if new:
+                who = self.actor_label(actor, user)
+                text = f"{'🎬 Nuova richiesta film' if kind=='film' else '📺 Nuova richiesta serie'}\n\n👤 Utente: {who}\n🎞 Titolo: {title}\n📝 Dettagli: {details or 'Nessuno'}\n📌 Stato: Ricevuta"
+                self.queue_admins(admins,text,f'manage:{rid}:0')
         return rid, new
 
     def get_request(self, rid, user=None):
@@ -174,9 +181,22 @@ class Store:
         return self.db.execute("""SELECT u.*,c.count AS total,c.last_at FROM analytics_users u
             JOIN analytics_clicks c ON c.user_id=u.id WHERE c.button_id=? ORDER BY total DESC,u.id""", (bid,)).fetchall()
 
-    def report(self, user, app_name, reason, note):
+    def report(self, user, app_name, reason, note, admins=()):
         with self.db:
-            return self.db.execute("INSERT INTO app_reports(user_id,username,name,app_name,reason,note) VALUES (?,?,?,?,?,?)", (user.id,getattr(user,'username',None) or '',getattr(user,'full_name',None) or str(user.id),app_name,reason,note)).lastrowid
+            rid = self.db.execute("INSERT INTO app_reports(user_id,username,name,app_name,reason,note) VALUES (?,?,?,?,?,?)", (user.id,getattr(user,'username',None) or '',getattr(user,'full_name',None) or str(user.id),app_name,reason,note)).lastrowid
+            text = f"🛠 Nuova segnalazione app\n\n👤 Utente: {self.actor_label(user,user.id)}\n📲 App: {app_name}\n⚠️ Problema: {reason}\n📝 Dettagli: {note or 'Nessuno'}"
+            self.queue_admins(admins,text,f'reportview:{rid}:0')
+            return rid
+
+    @staticmethod
+    def actor_label(actor, uid):
+        name = ' '.join((getattr(actor,'full_name',None) or str(uid)).split())[:100]
+        username = getattr(actor,'username',None)
+        return name+(f' (@{username})' if username else '')+f' · ID {uid}'
+
+    def queue_admins(self, admins, text, target):
+        for admin in set(admins):
+            self.db.execute('INSERT INTO admin_notifications(admin_id,text,target) VALUES (?,?,?)',(admin,text,target))
 
     def reports(self):
         return self.db.execute("SELECT * FROM app_reports ORDER BY status='open' DESC,id DESC").fetchall()
