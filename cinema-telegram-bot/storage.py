@@ -47,6 +47,24 @@ class Store:
         CREATE TABLE IF NOT EXISTS notifications (
           request_id INTEGER REFERENCES requests(id), user_id INTEGER NOT NULL,
           PRIMARY KEY(request_id,user_id));
+        CREATE TABLE IF NOT EXISTS analytics_users (
+          id INTEGER PRIMARY KEY, username TEXT NOT NULL, name TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS analytics_buttons (
+          id INTEGER PRIMARY KEY, key TEXT UNIQUE NOT NULL, label TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS analytics_clicks (
+          user_id INTEGER REFERENCES analytics_users(id),
+          button_id INTEGER REFERENCES analytics_buttons(id),
+          count INTEGER NOT NULL DEFAULT 1,
+          first_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          last_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(user_id,button_id));
+        CREATE TABLE IF NOT EXISTS analytics_receipts (
+          callback_id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS app_reports (
+          id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,
+          username TEXT NOT NULL, name TEXT NOT NULL,
+          app_name TEXT NOT NULL, reason TEXT NOT NULL, note TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'open', created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
         """)
         if not self.db.execute("SELECT 1 FROM meta WHERE key='seeded'").fetchone():
             names = [("Sky Glass", "829789"), ("Legend 4", "528188"), ("Blue Legend+", "973091"), ("000 Player", "6913771"), ("Next+", "6073149"), ("Castora", "7539534")]
@@ -115,3 +133,47 @@ class Store:
     def delete_app(self, aid):
         with self.db:
             self.db.execute("DELETE FROM apps WHERE id=?", (aid,))
+
+    def record_click(self, user, key, label, callback_id=None):
+        """Conta una pressione accettata, una sola volta per callback Telegram."""
+        username = getattr(user, 'username', None) or ''
+        name = ' '.join((getattr(user, 'full_name', None) or str(user.id)).split())[:100]
+        with self.db:
+            if callback_id is not None:
+                cursor = self.db.execute("INSERT OR IGNORE INTO analytics_receipts VALUES (?)", (callback_id,))
+                if not cursor.rowcount:
+                    return
+            self.db.execute("INSERT INTO analytics_users VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET username=excluded.username,name=excluded.name", (user.id,username,name))
+            self.db.execute("INSERT INTO analytics_buttons(key,label) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET label=excluded.label", (key,label))
+            bid = self.db.execute("SELECT id FROM analytics_buttons WHERE key=?", (key,)).fetchone()[0]
+            self.db.execute("""INSERT INTO analytics_clicks(user_id,button_id) VALUES (?,?)
+                ON CONFLICT(user_id,button_id) DO UPDATE SET count=count+1,last_at=CURRENT_TIMESTAMP""", (user.id,bid))
+
+    def stats_summary(self):
+        return self.db.execute("SELECT coalesce(sum(count),0) AS total,count(DISTINCT user_id) AS users,count(DISTINCT button_id) AS buttons,min(first_at) AS since FROM analytics_clicks").fetchone()
+
+    def stats_users(self):
+        return self.db.execute("""SELECT u.*,sum(c.count) AS total,max(c.last_at) AS last_at
+            FROM analytics_users u JOIN analytics_clicks c ON c.user_id=u.id
+            GROUP BY u.id ORDER BY total DESC,u.id""").fetchall()
+
+    def stats_buttons(self, user=None):
+        where, args = ("", ()) if user is None else ("WHERE c.user_id=?", (user,))
+        return self.db.execute(f"""SELECT b.*,sum(c.count) AS total,count(DISTINCT c.user_id) AS users,max(c.last_at) AS last_at
+            FROM analytics_buttons b JOIN analytics_clicks c ON c.button_id=b.id
+            {where} GROUP BY b.id ORDER BY total DESC,b.id""", args).fetchall()
+
+    def stats_button_users(self, bid):
+        return self.db.execute("""SELECT u.*,c.count AS total,c.last_at FROM analytics_users u
+            JOIN analytics_clicks c ON c.user_id=u.id WHERE c.button_id=? ORDER BY total DESC,u.id""", (bid,)).fetchall()
+
+    def report(self, user, app_name, reason, note):
+        with self.db:
+            return self.db.execute("INSERT INTO app_reports(user_id,username,name,app_name,reason,note) VALUES (?,?,?,?,?,?)", (user.id,getattr(user,'username',None) or '',getattr(user,'full_name',None) or str(user.id),app_name,reason,note)).lastrowid
+
+    def reports(self):
+        return self.db.execute("SELECT * FROM app_reports ORDER BY status='open' DESC,id DESC").fetchall()
+
+    def resolve_report(self, rid):
+        with self.db:
+            self.db.execute("UPDATE app_reports SET status='resolved' WHERE id=?", (rid,))

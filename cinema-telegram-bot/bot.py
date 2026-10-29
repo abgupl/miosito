@@ -1,6 +1,7 @@
 """Bot richieste e app, avvio: python bot.py (Python 3.10+)."""
-import json
 import logging
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.error import BadRequest, Forbidden, TelegramError
@@ -8,10 +9,13 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Mess
 
 from config import Config
 from menus import Screen, home
-from storage import Store, PLATFORMS, STATUSES
+from storage import Store, PLATFORMS, STATUSES, validate_app
 
 LOG = logging.getLogger(__name__)
 PAGE = 6
+REPORT_REASONS = {"link": "Link di download non funzionante", "missing": "App non disponibile", "start": "L’app non si avvia", "other": "Altro problema"}
+APP_FIELDS = ['name','platforms','url','code','notes']
+APP_LABELS = {'name':'Nome app','platforms':'Piattaforme compatibili','url':'Link di download','code':'Codice Downloader','notes':'Note e istruzioni'}
 
 
 def is_member(member):
@@ -63,11 +67,20 @@ class CinemaBot:
             return
         # Ogni salto di menu annulla l'attesa di input, conservando la bozza per Indietro.
         context.user_data.pop("input", None)
-        if route.startswith(("admin", "all:", "manage:", "status:", "appsadmin", "editapp:", "deleteapp:", "removeapp:", "addapp")) and not admin:
+        if route.startswith(("admin", "all:", "manage:", "status:", "appsadmin", "editapp:", "deleteapp:", "removeapp:", "addapp", "wizard:", "stats", "reports:", "reportview:", "reportresolve:")) and not admin:
             await self.show(update, Screen("Questa funzione è riservata all’amministratore.", []))
             return
         try:
+            # Ricava l’etichetta prima di modificare il messaggio contenente il pulsante.
+            if route == 'reportsend':
+                context.user_data['report_user'] = update.effective_user
+            label = self.click_label(update.callback_query, route) if update.callback_query else None
             screen = self.route(route, context, user, admin)
+            if update.callback_query:
+                key = self.click_key(route, label)
+                self.store.record_click(update.effective_user, key, self.analytics_label(route,key,label), getattr(update.callback_query, 'id', None))
+                if route.startswith('stats'):
+                    screen = self.route(route, context, user, admin)
             await self.show(update, screen)
         except (ValueError, KeyError, IndexError, TypeError):
             await self.show(update, Screen("Questa schermata non è più disponibile. Torna al menu principale.", []))
@@ -78,7 +91,63 @@ class CinemaBot:
             state.clear()
             return home(cfg.channel_url, admin)
         if route == "admin":
-            return Screen("Amministrazione", [[("📥 Gestisci richieste", "all:0")], [("📲 Gestisci app", "appsadmin:0")]])
+            return Screen("Amministrazione", [[("📥 Gestisci richieste", "all:0")], [("📲 Gestisci app", "appsadmin:0")], [("🛠 Segnalazioni app", "reports:0")], [("📊 Statistiche", "stats")]])
+        if route.startswith('stats'):
+            return self.stats_screen(route)
+        if route.startswith('reportapps:'):
+            page = max(0, int(route.split(':')[1]))
+            apps = db.apps()
+            page = min(page, max(0,(len(apps)-1)//PAGE))
+            buttons = [[(a['name'], f"reportapp:{a['id']}:{page}")] for a in apps[page*PAGE:(page+1)*PAGE]]
+            buttons += self.pagination('reportapps', page, len(apps))
+            buttons.append([("Altra app / App non in elenco", f"reportapp:0:{page}")])
+            return Screen('Quale app presenta il problema?', buttons)
+        if route.startswith('reportapp:'):
+            parts = route.split(':')
+            _, aid, page = parts[:3]
+            source = parts[3] if len(parts)>3 else None
+            app = db.app(int(aid)) if int(aid) else {'name':'Altra app / App non in elenco'}
+            if app is None or (source is not None and source not in app.get('platforms', [])):
+                raise ValueError()
+            state['report'] = {'app':app['name'], 'aid':int(aid), 'page':int(page), 'source':source}
+            parent = f'app:{aid}:{source}' if source else 'reportapps:'+page
+            return Screen(f"App: {app['name']}\n\nQual è il problema?", [[(label,'reportreason:'+key)] for key,label in REPORT_REASONS.items()], parent)
+        if route.startswith('reportreason:'):
+            reason = route.split(':')[1]
+            if reason not in REPORT_REASONS:
+                raise ValueError()
+            draft = state['report']
+            draft['reason'] = reason
+            state['input'] = 'reportnote'
+            parent = f"reportapp:{draft['aid']}:{draft['page']}"+((':'+draft['source']) if draft.get('source') else '')
+            return Screen('Descrivi il problema (massimo 500 caratteri). Se hai scelto «Altra app», indica anche il nome.\nPuoi anche saltare questo passaggio.', [[('Salta','reportskip')]], parent)
+        if route in {'reportskip','reportconfirm'}:
+            draft = state['report']
+            if route == 'reportskip':
+                draft['note'] = ''
+            return Screen(f"Confermi la segnalazione?\n\nApp: {draft['app']}\nProblema: {REPORT_REASONS[draft['reason']]}\nNote: {draft.get('note') or 'Nessuna'}", [[('✅ Invia segnalazione','reportsend')]], 'reportreason:'+draft['reason'])
+        if route == 'reportsend':
+            draft = state.pop('report')
+            rid = db.report(state.pop('report_user'), draft['app'], REPORT_REASONS[draft['reason']], draft.get('note',''))
+            return Screen(f'✅ Segnalazione #{rid} inviata al gestore.', [])
+        if route.startswith('reports:'):
+            page = max(0,int(route.split(':')[1]))
+            reports = db.reports()
+            page = min(page,max(0,(len(reports)-1)//PAGE))
+            buttons = [[(f"#{r['id']} · {r['app_name'][:35]} · {'Aperta' if r['status']=='open' else 'Risolta'}",f"reportview:{r['id']}:{page}")] for r in reports[page*PAGE:(page+1)*PAGE]]
+            buttons += self.pagination('reports',page,len(reports))
+            return Screen('Segnalazioni app\n'+('Seleziona una segnalazione.' if reports else 'Nessuna segnalazione.'),buttons,'admin')
+        if route.startswith(('reportview:','reportresolve:')):
+            action,rid,page = route.split(':')
+            if action == 'reportresolve':
+                db.resolve_report(int(rid))
+            report = db.db.execute('SELECT * FROM app_reports WHERE id=?',(int(rid),)).fetchone()
+            if report is None:
+                raise ValueError()
+            identity = self.identity(dict(id=report['user_id'],name=report['name'],username=report['username']))
+            text = f"Segnalazione #{rid}\nDa: {identity}\nApp: {report['app_name']}\nProblema: {report['reason']}\nNote: {report['note'] or 'Nessuna'}\nStato: {'Aperta' if report['status']=='open' else 'Risolta'}\nData: {self.local_time(report['created'])}"
+            buttons = [[('✅ Segna risolta',f'reportresolve:{rid}:{page}')]] if report['status']=='open' else []
+            return Screen(text,buttons,'reports:'+page)
         if route == "guide":
             return Screen(f"📖 Guida all’installazione\n\n1. Apri «Scarica le app» e scegli il dispositivo.\n2. Seleziona un’app e segui le indicazioni della sua scheda.\n3. Dove richiesto, inserisci l’indirizzo server: {cfg.server}\n4. Usa le credenziali personali ricevute dal gestore, se richieste.\n\nFire TV Stick: se l’app prevede Downloader, inserisci il codice riportato nella scheda.\niPhone/iPad: apri il link App Store (la disponibilità può dipendere dalla regione).\nWindows e Mac: usa il file relativo al tuo sistema; il collegamento Mac fornito è per Intel.\n\nPer dubbi sulla configurazione specifica contatta il gestore.", [])
         if route.startswith("new:"):
@@ -141,7 +210,13 @@ class CinemaBot:
             app = db.app(int(aid))
             if app is None or platform not in app['platforms']:
                 raise ValueError()
-            return Screen(self.app_text(app), [[("⬇️ Scarica", "url:"+app['url'])]], "platform:"+platform)
+            return Screen(self.app_text(app), [[("⬇️ Scarica", f"download:{aid}:{platform}")], [("🛠 Segnala un problema", f"reportapp:{aid}:0:{platform}")]], "platform:"+platform)
+        if route.startswith('download:'):
+            _, aid, platform = route.split(':')
+            app = db.app(int(aid))
+            if app is None or platform not in app['platforms']:
+                raise ValueError()
+            return Screen(f"Download di {app['name']}\nApri il collegamento:", [[('⬇️ Apri download','url:'+app['url'])]],f'app:{aid}:{platform}')
         if route.startswith("appsadmin:"):
             page = max(0, int(route.split(":")[1]))
             apps = db.apps()
@@ -154,14 +229,14 @@ class CinemaBot:
             parts = route.split(":")
             aid = int(parts[1]) if parts[0] == "editapp" else None
             page = int(parts[-1])
-            app = db.app(aid) if aid is not None else dict(name="Nome app",url="https://example.com/app",platforms=["android"],code="",notes="")
+            app = db.app(aid) if aid is not None else dict(name="",url="",platforms=[],code="",notes="")
             if app is None:
                 raise ValueError()
             app = {k:v for k,v in app.items() if k != "id"}
-            state['input'] = "app"
-            state['app_edit'] = (aid, page)
-            rows = [[("🗑 Rimuovi app", f"deleteapp:{aid}:{page}")]] if aid is not None else []
-            return Screen("Invia la scheda completa in formato JSON per salvarla.\nPiattaforme: android, fire, ios, windows, mac.\n\n"+json.dumps(app, ensure_ascii=False, indent=2), rows, f"appsadmin:{page}")
+            state['appdraft'] = {'id':aid,'page':page,'values':app,'step':'name'}
+            return self.app_wizard('wizard:step:name',context)
+        if route.startswith('wizard:'):
+            return self.app_wizard(route,context)
         if route.startswith(("deleteapp:", "removeapp:")):
             action, aid, page = route.split(":")
             aid, page = int(aid), int(page)
@@ -173,6 +248,197 @@ class CinemaBot:
             db.delete_app(aid)
             return Screen("App rimossa.", [], f"appsadmin:{page}")
         raise ValueError("Route sconosciuta")
+
+    def app_wizard(self, route, context):
+        state = context.user_data
+        draft = state['appdraft']
+        values = draft['values']
+        parts = route.split(':')
+        action = parts[1]
+        field = parts[2] if len(parts)>2 else draft['step']
+        if action == 'platform':
+            if draft['step'] != 'platforms' or field not in PLATFORMS:
+                raise ValueError()
+            selected = values['platforms']
+            if field in selected:
+                selected.remove(field)
+            else:
+                selected.append(field)
+            field = 'platforms'
+        elif action == 'clear':
+            if field not in {'code','notes'} or field != draft['step']:
+                raise ValueError()
+            values[field] = ''
+        elif action == 'next':
+            if field not in APP_FIELDS or draft['step'] != field:
+                raise ValueError()
+            try:
+                self.validate_field(field,values[field])
+            except ValueError as error:
+                return self.app_wizard_screen(draft,state,field,str(error))
+            pos = APP_FIELDS.index(field)
+            field = APP_FIELDS[pos+1] if pos+1<len(APP_FIELDS) else 'review'
+        elif action == 'save':
+            if draft['step'] != 'review':
+                raise ValueError()
+            if draft['id'] is not None and self.store.app(draft['id']) is None:
+                raise ValueError('App rimossa')
+            self.store.save_app(values,draft['id'])
+            page = draft['page']
+            state.pop('appdraft')
+            state.pop('input',None)
+            return Screen('✅ App salvata.',[],f'appsadmin:{page}')
+        elif action != 'step':
+            raise ValueError()
+        return self.app_wizard_screen(draft,state,field)
+
+    @staticmethod
+    def validate_field(field,value):
+        sample = dict(name='App',platforms=['android'],url='https://example.com',code='',notes='')
+        sample[field] = value
+        validate_app(sample)
+
+    def app_wizard_screen(self,draft,state,field,error=None):
+        if field not in APP_FIELDS+['review']:
+            raise ValueError()
+        draft['step'] = field
+        state.pop('input',None)
+        values = draft['values']
+        if field == 'review':
+            text = 'Riepilogo app\n\n'+'\n\n'.join(APP_LABELS[k]+': '+(', '.join(PLATFORMS[p] for p in values[k]) if k=='platforms' else values[k] or 'Nessuno') for k in APP_FIELDS)
+            return Screen(text,[[('✅ Conferma e salva','wizard:save')]],'wizard:step:notes')
+        index = APP_FIELDS.index(field)
+        parent = 'wizard:step:'+APP_FIELDS[index-1] if index else f"appsadmin:{draft['page']}"
+        text = f"Passaggio {index+1}/{len(APP_FIELDS)} · {APP_LABELS[field]}\n\n"
+        rows = []
+        if error:
+            text += error+'\n\n'
+        if field == 'platforms':
+            text += 'Seleziona una o più piattaforme, poi conferma.'
+            rows = [[(('✅ ' if k in values[field] else '⬜️ ')+v,'wizard:platform:'+k)] for k,v in PLATFORMS.items()]
+        else:
+            state['input'] = 'appfield:'+field
+            text += {'name':'Scrivi il nome dell’app (massimo 80 caratteri).',
+                     'url':'Invia il link completo di download, iniziando con http:// o https://.',
+                     'code':'Invia il codice numerico Downloader, oppure conferma senza codice.',
+                     'notes':'Scrivi le note o le istruzioni (massimo 1500 caratteri), oppure conferma senza note.'}[field]
+            text += '\n\nValore: '+(values[field] or ('Nessuno' if field in {'code','notes'} else 'Da inserire'))
+        # Il valore viene confermato esplicitamente prima di passare allo step seguente.
+        if values[field] or field in {'code','notes'}:
+            rows.append([('✅ Conferma','wizard:next:'+field)])
+        if field in {'code','notes'} and values[field]:
+            rows.append([('Senza codice' if field=='code' else 'Senza note','wizard:clear:'+field)])
+        if draft['id'] is not None and field=='name':
+            rows.append([('🗑 Rimuovi app',f"deleteapp:{draft['id']}:{draft['page']}")])
+        return Screen(text,rows,parent)
+
+    @staticmethod
+    def click_label(query, route):
+        message = getattr(query, 'message', None)
+        markup = getattr(message, 'reply_markup', None)
+        if markup:
+            for row in markup.inline_keyboard:
+                for button in row:
+                    if button.callback_data == route:
+                        return button.text[:100]
+        labels = {'home':'Indietro', 'new:film':'Richiedi un film', 'new:serie':'Richiedi una serie',
+                  'guide':'Guida all’installazione','platforms':'Scarica le app','admin':'Amministrazione',
+                  'submit':'Conferma richiesta','stats':'Statistiche','reportsend':'Invia segnalazione'}
+        return labels.get(route, route.split(':')[0])
+
+    @staticmethod
+    def click_key(route, label):
+        if 'Indietro' in label:
+            return 'navigation:back'
+        if 'Modifica titolo' in label:
+            return 'edit_title:'+route.split(':')[-1]
+        parts = route.split(':')
+        prefix = parts[0]
+        if prefix == 'wizard':
+            return route
+        if 'Precedente' in label or 'Successiva' in label:
+            return 'page:'+prefix+(':previous' if 'Precedente' in label else ':next')
+        if prefix in {'new','platform','app','download','editapp','reportapp','reportreason'}:
+            return ':'.join(parts[:2])
+        if prefix == 'status':
+            return 'status:'+parts[-1]
+        return prefix
+
+    def analytics_label(self, route, key, label):
+        if key.startswith('navigation:'):
+            return 'Indietro'
+        if key.startswith('page:'):
+            return ('Pagina precedente' if key.endswith(':previous') else 'Pagina successiva')+' · '+route.split(':')[0]
+        canonical = {'request':'Apri richiesta','manage':'Gestisci una richiesta','mine':'Le mie richieste','all':'Gestisci richieste',
+                     'statsuser':'Statistiche di un utente','statsbutton':'Statistiche di un pulsante',
+                     'reportview':'Apri segnalazione','reportresolve':'Segna segnalazione risolta',
+                     'appsadmin':'Gestisci app','reportapps':'Segnala un problema app'}
+        if key in canonical:
+            return canonical[key]
+        if route.startswith(('download:','app:','reportapp:','editapp:')):
+            app = self.store.app(int(route.split(':')[1]))
+            if app:
+                action = {'download':'Scarica','app':'Apri scheda app','reportapp':'Segnala problema app','editapp':'Modifica app'}[route.split(':')[0]]
+                return action+' · '+app['name']
+        return label
+
+    @staticmethod
+    def identity(row):
+        return f"{row['name'][:80]}"+(f" (@{row['username']})" if row['username'] else '')+f" · ID {row['id']}"
+
+    @staticmethod
+    def local_time(value):
+        if not value:
+            return '—'
+        return datetime.fromisoformat(value).replace(tzinfo=timezone.utc).astimezone(ZoneInfo('Europe/Rome')).strftime('%d/%m/%Y %H:%M')
+
+    def stats_screen(self, route):
+        db = self.store
+        if route == 'stats':
+            totals = db.stats_summary()
+            return Screen(f"📊 Statistiche pulsanti\n\nPressioni totali: {totals['total']}\nUtenti distinti: {totals['users']}\nPulsanti utilizzati: {totals['buttons']}\nPrima pressione: {self.local_time(totals['since'])}\n\nConteggi dall’attivazione della funzione, inclusi gli amministratori. Sono registrate le pressioni accettate dal bot; comandi e messaggi di testo sono esclusi.\nPer i download viene contato «Scarica», non l’apertura del link esterno o il completamento del download.", [[('👥 Per utente','statsusers:0')],[('🔘 Per pulsante','statsbuttons:0')]], 'admin')
+        parts = route.split(':')
+        prefix = parts[0]
+        if prefix in {'statsusers','statsbuttons'}:
+            page = max(0,int(parts[1]))
+            rows = db.stats_users() if prefix == 'statsusers' else db.stats_buttons()
+            page = min(page,max(0,(len(rows)-1)//PAGE))
+            buttons = []
+            for row in rows[page*PAGE:(page+1)*PAGE]:
+                label = (row['name'][:45] if prefix=='statsusers' else row['label'][:45])+f" · {row['total']} pressioni"
+                target = 'statsuser' if prefix=='statsusers' else 'statsbutton'
+                buttons.append([(label,f"{target}:{row['id']}:0:{page}")])
+            buttons += self.pagination(prefix,page,len(rows))
+            return Screen(('Statistiche per utente' if prefix=='statsusers' else 'Statistiche per pulsante')+f" · Pagina {page+1}\n"+('Seleziona una voce.' if rows else 'Nessuna pressione registrata.'),buttons,'stats')
+        if prefix not in {'statsuser','statsbutton'}:
+            raise ValueError()
+        ident,page,origin = (int(x) for x in parts[1:])
+        page,origin = max(0,page),max(0,origin)
+        if prefix == 'statsuser':
+            subject = db.db.execute('SELECT * FROM analytics_users WHERE id=?',(ident,)).fetchone()
+            if subject is None:
+                raise ValueError()
+            rows = db.stats_buttons(ident)
+            title = '👤 '+self.identity(subject)
+            parent = f'statsusers:{origin}'
+        else:
+            subject = db.db.execute('SELECT * FROM analytics_buttons WHERE id=?',(ident,)).fetchone()
+            if subject is None:
+                raise ValueError()
+            rows = db.stats_button_users(ident)
+            title = '🔘 '+subject['label']
+            parent = f'statsbuttons:{origin}'
+        page = min(page,max(0,(len(rows)-1)//PAGE))
+        lines = [title, f"Pressioni totali: {sum(r['total'] for r in rows)}", f'Pagina {page+1}', '']
+        for row in rows[page*PAGE:(page+1)*PAGE]:
+            label = row['label'] if prefix=='statsuser' else self.identity(row)
+            lines.append(f"{label}: {row['total']}\nUltima pressione: {self.local_time(row['last_at'])}\n")
+        buttons = []
+        if page:
+            buttons.append([('◀️ Precedente',f'{prefix}:{ident}:{page-1}:{origin}')])
+        if (page+1)*PAGE < len(rows):
+            buttons.append([('Successiva ▶️',f'{prefix}:{ident}:{page+1}:{origin}')])
+        return Screen('\n'.join(lines),buttons,parent)
 
     @staticmethod
     def pagination(prefix, page, count):
@@ -190,7 +456,15 @@ class CinemaBot:
         state = context.user_data
         mode = state.get('input')
         text = update.effective_message.text or ""
-        if mode == "title":
+        if mode == 'reportnote':
+            draft = state['report']
+            if len(text) > 500:
+                screen = Screen('Descrizione troppo lunga: massimo 500 caratteri.', [], 'reportreason:'+draft['reason'])
+            else:
+                draft['note'] = text.strip()
+                state.pop('input',None)
+                screen = self.route('reportconfirm',context,update.effective_user.id,admin)
+        elif mode == "title":
             if not 1 <= len(text.strip()) <= 150:
                 screen = Screen("Inserisci un titolo da 1 a 150 caratteri.", [], "new:"+state['draft']['kind'])
             else:
@@ -203,19 +477,16 @@ class CinemaBot:
                 state['draft']['details'] = text.strip()
                 state.pop('input', None)
                 screen = self.route("confirm", context, update.effective_user.id, admin)
-        elif mode == "app" and admin:
-            aid, page = state['app_edit']
+        elif mode and mode.startswith('appfield:') and admin:
+            field = mode.split(':')[1]
+            draft = state['appdraft']
             try:
-                if len(text) > 4000:
-                    raise ValueError("Scheda troppo lunga.")
-                value = json.loads(text)
-                if aid is not None and self.store.app(aid) is None:
-                    raise ValueError("App rimossa: torna all'elenco.")
-                self.store.save_app(value, aid)
-                state.pop('input', None)
-                screen = Screen("✅ App salvata.", [], f"appsadmin:{page}")
-            except (ValueError, TypeError) as error:
-                screen = Screen(f"Scheda non valida: {error}\nCorreggi il JSON e invialo nuovamente.", [], f"appsadmin:{page}")
+                value = text.strip()
+                self.validate_field(field,value)
+                draft['values'][field] = value
+                screen = self.app_wizard_screen(draft,state,field)
+            except ValueError as error:
+                screen = self.app_wizard_screen(draft,state,field,str(error))
         else:
             screen = home(self.config.channel_url, admin)
         await self.show(update, screen)

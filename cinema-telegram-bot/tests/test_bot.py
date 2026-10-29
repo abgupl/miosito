@@ -76,6 +76,8 @@ class NavigationTests(Base):
         self.assertEqual(screen.parent, parent, route)
         buttons = [b for row in screen.markup().inline_keyboard for b in row]
         self.assertTrue(any(b.text == "⬅️ Indietro" and b.callback_data == parent for b in buttons), route)
+        self.assertFalse(any('Menu principale' in b.text for b in buttons), route)
+        self.assertTrue(all(len(row)==1 for row in screen.markup().inline_keyboard), route)
         # Verifica che il genitore sia una destinazione funzionante.
         self.bot.route(parent, ctx, 1, True)
         return screen
@@ -90,6 +92,8 @@ class NavigationTests(Base):
             (f"status:{rid}:0:working", "all:0"), ("appsadmin:0", "admin"),
             ("editapp:1:0", "appsadmin:0"), ("addapp:0", "appsadmin:0"),
             ("deleteapp:1:0", "editapp:1:0"), ("removeapp:1:0", "appsadmin:0"),
+            ("stats", "admin"), ("statsusers:0", "stats"), ("statsbuttons:0", "stats"),
+            ("reportapps:0", "home"), ("reports:0", "admin"),
         ]:
             self.check_screen(route, ctx, parent)
         for platform in ["android", "fire", "ios", "windows", "mac"]:
@@ -166,14 +170,18 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.handle(update(text="Non deve creare richieste"), ctx)
         self.assertEqual(len(self.db.requests()), 1)
 
-    async def test_app_edit_and_invalid_json_have_back(self):
+    async def test_app_edit_wizard_has_back_and_saves_after_confirmation(self):
         ctx = context()
         await self.bot.handle(update("editapp:1:0"), ctx)
-        invalid = update(text="non json")
+        invalid = update(text="x"*81)
         await self.bot.handle(invalid, ctx)
         markup = invalid.effective_message.reply_text.call_args.kwargs['reply_markup']
         self.assertTrue(any(b.text == "⬅️ Indietro" for row in markup.inline_keyboard for b in row))
-        await self.bot.handle(update(text='{"name":"Nuovo nome","url":"https://example.com","platforms":["android"],"code":"123"}'), ctx)
+        await self.bot.handle(update(text='Nuovo nome'), ctx)
+        self.assertEqual(self.db.app(1)['name'], 'Sky Glass')
+        for field in ['name','platforms','url','code','notes']:
+            await self.bot.handle(update('wizard:next:'+field),ctx)
+        await self.bot.handle(update('wizard:save'),ctx)
         self.assertEqual(self.db.app(1)['name'], "Nuovo nome")
 
     async def test_notifications_membership_retry_and_blocked_bot(self):
