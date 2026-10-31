@@ -205,3 +205,9 @@ Impostazioni → Stato del bot mostra versione del pannello e commit Railway se 
 ## Grafica e pulsanti
 
 Impostazioni → Grafica e template ripristina l'accesso al pannello informativo legacy sulle tipologie di offerta, soglie di sconto e condizioni Amazon. Non è un editor dei template. La selezione del template del singolo post resta nel relativo flusso. Tutti i pulsanti costruiti dal bot passano dal formato comune di pulsanti.py: prima lettera maiuscola e successive minuscole, senza modificare callback o URL. Le vecchie tastiere già inviate non vengono riscritte. Validazione: 50 test.
+
+## Pausa caffè: sole e luna
+
+Le due didascalie approvate sono distinte e mantengono giorno e data automatici. Oroscopo → Imposta foto sole / Imposta foto luna salva due immagini indipendenti, comuni a tutti i canali. In Anteprima si sceglie la data e poi l'appuntamento sole o luna. La vecchia foto resta il fallback finché non viene sostituita per ciascun appuntamento. Il codice non carica automaticamente le immagini generate: vanno inviate attraverso i due pulsanti. Gli orari salvati e i testi giornalieri dei segni rimangono invariati.
+
+Le tastiere dei sottomenu mantengono un solo ritorno contestuale con etichetta Indietro, senza la scorciatoia aggiuntiva Menu principale. Il ritorno dalla prima pagina di una sezione conduce comunque alla schermata iniziale. Restano disponibili i controlli di paginazione e gli annullamenti delle operazioni. I messaggi precedenti non vengono cancellati. Validazione: 54 test senza invii reali.

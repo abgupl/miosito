@@ -170,7 +170,8 @@ with tempfile.TemporaryDirectory() as tmp:
                 for action in ('auto_categorie','auto_sconto','auto_qualita','auto_duplicates','selective_menu','filter_menu','priority_menu'):
                     await click('v2a:'+channel+':'+action)
                     markup=edit.call_args.kwargs['reply_markup']
-                    assert any(b.callback_data=='v2_home' for row in markup.inline_keyboard for b in row)
+                    assert not any(b.callback_data=='v2_home' for row in markup.inline_keyboard for b in row)
+                    assert sum(b.text=='⬅️ Indietro' for row in markup.inline_keyboard for b in row)==1
                     assert any('⬅' in b.text for row in markup.inline_keyboard for b in row)
                     await click('v2a:'+channel+':auto_menu')
                 await click('v2c:'+channel+':menu')
@@ -229,6 +230,26 @@ with tempfile.TemporaryDirectory() as tmp:
             await click('v2r:global:oro_verifica')
             await click('v2r:global:oro_salva')
             assert len(runtime.testi_oroscopo(day))==12
+            assert 'Sabato 31 ottobre' in runtime.crea_didascalia_oroscopo('2026-10-31',slot=1)
+            assert 'Un caffè con il sole' in runtime.crea_didascalia_oroscopo(day,slot=1)
+            assert 'La tua pausa della sera' in runtime.crea_didascalia_oroscopo(day,slot=2)
+            assert 'tramonto' not in runtime.crea_didascalia_oroscopo(day,slot=2)
+            from types import SimpleNamespace
+            for mode, fid in [('foto_sole','sole-file'),('foto_luna','luna-file')]:
+                await click('v2r:global:oro_'+mode)
+                assert app.user_data[42]['oroscopo_modalita']==mode
+                message=SimpleNamespace(photo=[SimpleNamespace(file_id=fid)],reply_text=AsyncMock())
+                await runtime.ricevi_input_oroscopo(message,SimpleNamespace(user_data={}),mode)
+            cfg=runtime.configurazione_oroscopo()
+            assert runtime.foto_oroscopo(cfg,1)=='sole-file'
+            assert runtime.foto_oroscopo(cfg,2)=='luna-file'
+            with patch.object(type(app.bot),'send_photo',new=AsyncMock(return_value=sent)) as previews:
+                await click('v2r:global:oro_preview:'+day)
+                await click('v2r:global:oro_prova:1:'+day)
+                await click('v2r:global:oro_prova:2:'+day)
+                assert [c.kwargs['photo'] for c in previews.call_args_list]==['sole-file','luna-file']
+                assert 'Un caffè con la luna' in previews.call_args.kwargs['caption']
+
             # Add a new category from the UI; verify persistence and reuse of the same modules.
             await click('v2_home')
             await click('v2_add_channel')

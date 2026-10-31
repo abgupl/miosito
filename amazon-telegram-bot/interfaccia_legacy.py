@@ -35,16 +35,15 @@ def tastiera_scoped(s, markup, namespace, channel):
             result.append(s.InlineKeyboardButton.de_json(payload, None))
         rows.append(result)
     callbacks = [b.callback_data or '' for row in rows for b in row]
-    has_back = any(('⬅' in b.text or 'Annulla' in b.text or 'ANNULLA' in b.text)
+    has_back = any(('⬅' in b.text or 'menu principale' in b.text.lower())
                    for row in rows for b in row)
     if not has_back:
         target = ('v2a:' + channel + ':auto_menu' if namespace == 'v2a' else
                   'v2r:global:rub_menu' if namespace == 'v2r' else
                   'v2_add_back' if channel == 'global' else 'v2c:' + channel + ':posts')
         rows.append([s.InlineKeyboardButton('⬅️ Indietro', callback_data=target)])
-    if 'v2_home' not in callbacks:
-        rows.append([s.InlineKeyboardButton('🏠 Menu principale', callback_data='v2_home')])
-    return s.InlineKeyboardMarkup(rows)
+    from pulsanti import normalizza_righe
+    return s.InlineKeyboardMarkup(normalizza_righe(rows, s.InlineKeyboardButton))
 
 
 class OggettoScoped:

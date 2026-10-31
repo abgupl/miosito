@@ -47,7 +47,7 @@ from telegram import (
     InputMediaPhoto,
 )
 
-from pulsanti import InlineKeyboardButton
+from pulsanti import InlineKeyboardButton, InlineKeyboardMarkup
 
 from telegram.ext import (
     Application,
@@ -12302,13 +12302,22 @@ OROSCOPO_SEGNI = (
     ("♎", "Bilancia"), ("♏", "Scorpione"), ("♐", "Sagittario"),
     ("♑", "Capricorno"), ("♒", "Acquario"), ("♓", "Pesci"),
 )
-OROSCOPO_DIDASCALIA = (
-    "☕ Un caffè con le stelle ✨\n\n"
-    "📅 {data} — L’oroscopo di oggi\n\n"
-    "Tra un impegno e l’altro, concediti una pausa: un sorso di caffè, "
-    "un sorriso e un pensiero dedicato al tuo segno. 💫\n\n"
-    "👇 Tocca il tuo segno e scopri cosa ti suggeriscono le stelle!"
+OROSCOPO_DIDASCALIA_SOLE = (
+    "☀️ Un caffè con il sole ☕\n\n"
+    "📅 {data} — Il tuo oroscopo di oggi\n\n"
+    "Tra un impegno e l’altro, ritagliati un momento tutto tuo: un caffè, "
+    "un sorriso e un piccolo consiglio dalle stelle. ✨\n\n"
+    "👇 Tocca il tuo segno e scopri cosa ti aspetta!"
 )
+OROSCOPO_DIDASCALIA_LUNA = (
+    "🌙 Un caffè con la luna ☕\n\n"
+    "📅 {data} — La tua pausa della sera\n\n"
+    "La giornata rallenta: lascia da parte gli impegni e concediti un momento "
+    "di leggerezza al chiaro di luna. ✨\n\n"
+    "Non hai ancora letto il tuo oroscopo? Oppure vuoi rileggerlo con calma?\n\n"
+    "👇 Tocca il tuo segno e prenditi una pausa!"
+)
+OROSCOPO_DIDASCALIA = OROSCOPO_DIDASCALIA_SOLE
 OROSCOPO_LOCK = asyncio.Lock()
 
 
@@ -12318,12 +12327,13 @@ def crea_didascalia_oroscopo(giorno, slot=0):
     mesi = ("gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
             "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre")
     etichetta = f"{settimana[data.weekday()]} {data.day} {mesi[data.month - 1]}"
-    didascalia = OROSCOPO_DIDASCALIA.format(data=etichetta)
-    if slot == 1:
-        return "☀️ Prima Pausa Caffè\n\n" + didascalia
-    if slot == 2:
-        return "🌙 Seconda Pausa Caffè\n\n" + didascalia
-    return didascalia
+    modello = OROSCOPO_DIDASCALIA_LUNA if slot == 2 else OROSCOPO_DIDASCALIA_SOLE
+    return modello.format(data=etichetta)
+
+
+def foto_oroscopo(config, slot=1):
+    # La vecchia foto resta il fallback per non interrompere le rubriche esistenti.
+    return config.get('foto_luna' if slot == 2 else 'foto_sole') or config.get('foto', '')
 
 
 def inizializza_oroscopi():
@@ -12363,7 +12373,7 @@ def inizializza_oroscopi():
                 db.execute(f"ALTER TABLE oroscopo_snapshot ADD COLUMN {nome} {definizione}")
         defaults = {"attivo": False, "ora": "13:30", "canali": ["tech"],
                     "ora2": "18:30", "secondo_attivo": False,
-                    "foto": "",
+                    "foto": "", "foto_sole": "", "foto_luna": "",
                     "promemoria": "", "esaurimento": ""}
         db.executemany("INSERT OR IGNORE INTO oroscopo_config VALUES (?, ?)",
                        [(k, json.dumps(v, ensure_ascii=False)) for k, v in defaults.items()])
@@ -12477,14 +12487,15 @@ async def invia_anteprima_oroscopo(bot, chat_id, giorno, slot=0, anteprima=True)
     config, testi = configurazione_oroscopo(), testi_oroscopo(giorno)
     if not testi:
         raise ValueError("Nessun testo caricato per questa giornata.")
-    if not config["foto"]:
-        raise ValueError("Prima carica la grafica con 🖼 Imposta foto.")
+    foto = foto_oroscopo(config, slot)
+    if not foto:
+        raise ValueError("Prima carica la foto " + ("luna" if slot == 2 else "sole") + " dal pannello della rubrica.")
     snapshot = os.urandom(8).hex()
     with sqlite3.connect(DB_PATH, timeout=30) as db:
         db.execute("INSERT INTO oroscopo_snapshot(id,giorno,testi,slot,anteprima) VALUES (?, ?, ?, ?, ?)",
                    (snapshot, giorno, json.dumps(testi, ensure_ascii=False), slot, int(anteprima)))
     # Lo snapshot resta immutabile anche se si modificano i testi futuri.
-    return await bot.send_photo(chat_id=chat_id, photo=config["foto"],
+    return await bot.send_photo(chat_id=chat_id, photo=foto,
                                 caption=crea_didascalia_oroscopo(giorno, slot=slot),
                                 reply_markup=tastiera_segni_oroscopo(snapshot))
 
@@ -12501,7 +12512,8 @@ async def mostra_pannello_oroscopo(messaggio, context):
         f"🕒 Primo invio: {cfg['ora']} (Italia)\n"
         f"🕕 Secondo invio: {cfg['ora2']} — {'ON' if cfg['secondo_attivo'] else 'OFF'}\n"
         f"📢 Canali: {', '.join(c.upper() for c in cfg['canali'])}\n"
-        f"🖼 Foto: {'caricata' if cfg['foto'] else 'da caricare'}\n"
+        f"☀️ Foto sole: {'caricata' if foto_oroscopo(cfg, 1) else 'da caricare'}\n"
+        f"🌙 Foto luna: {'caricata' if foto_oroscopo(cfg, 2) else 'da caricare'}\n"
         f"📅 Giornate da oggi: {len(future)}\n"
         f"Ultima data caricata: {future[-1] if future else 'nessuna'}\n"
         f"✅ Post inviati: {invii.get('inviato', 0)}\n"
@@ -12512,7 +12524,8 @@ async def mostra_pannello_oroscopo(messaggio, context):
         [InlineKeyboardButton("📥 Carica oroscopi", callback_data="oro_carica")],
         [InlineKeyboardButton("📅 Calendario / modifica", callback_data="oro_cal:0"),
          InlineKeyboardButton("👁 Anteprima", callback_data="oro_anteprima")],
-        [InlineKeyboardButton("🖼 Imposta foto", callback_data="oro_foto")],
+        [InlineKeyboardButton("☀️ Imposta foto sole", callback_data="oro_foto_sole"),
+         InlineKeyboardButton("🌙 Imposta foto luna", callback_data="oro_foto_luna")],
         [InlineKeyboardButton("⚙️ Impostazioni rubrica", callback_data="oro_impostazioni")],
         [InlineKeyboardButton("📊 Statistiche", callback_data="oro_stats:oggi")],
         [InlineKeyboardButton("⏸ Sospendi" if cfg["attivo"] else "▶️ Attiva", callback_data="oro_attiva")],
@@ -12772,12 +12785,15 @@ async def azione_oroscopo(dato, msg, context):
         context.user_data.pop("oroscopo_import", None)
         await msg.reply_text(f"💾 Salvate {len(giornate)} giornate. Puoi provarle con Anteprima.")
         await mostra_pannello_oroscopo(msg, context)
-    elif dato in {"oro_foto", "oro_ora", "oro_ora1", "oro_ora2"}:
+    elif dato in {"oro_foto", "oro_foto_sole", "oro_foto_luna", "oro_ora", "oro_ora1", "oro_ora2"}:
         campo = dato[4:]
+        if campo == "foto":
+            campo = "foto_sole"
         if campo == "ora1":
             campo = "ora"
         context.user_data["oroscopo_modalita"] = campo
-        istruzioni = {"foto": "🖼 Invia qui la foto della rubrica come immagine Telegram. Verrà riutilizzata ogni giorno.",
+        istruzioni = {"foto_sole": "☀️ Invia la foto per il primo appuntamento come immagine Telegram.",
+                      "foto_luna": "🌙 Invia la foto per il secondo appuntamento come immagine Telegram.",
                       "ora": "🕒 Scrivi il primo orario HH:MM, ad esempio 13:30 (ora italiana).",
                       "ora2": "🕕 Scrivi il secondo orario HH:MM, successivo al primo. Salvandolo attivi il secondo invio."}
         await msg.reply_text(istruzioni[campo], reply_markup=oroscopo_indietro())
@@ -12818,8 +12834,8 @@ async def azione_oroscopo(dato, msg, context):
     elif dato == "oro_attiva":
         if not cfg["attivo"]:
             oggi = datetime.now(ROMA_TZ).date().isoformat()
-            if not cfg["foto"] or not any(g[0] >= oggi for g in giorni_oroscopo()):
-                raise ValueError("Carica una foto e almeno una giornata da oggi in poi prima di attivare.")
+            if not all(foto_oroscopo(cfg, slot) for slot, _ in orari_oroscopo(cfg)) or not any(g[0] >= oggi for g in giorni_oroscopo()):
+                raise ValueError("Carica le foto degli appuntamenti attivi e almeno una giornata da oggi in poi prima di attivare.")
         imposta_oroscopo("attivo", not cfg["attivo"])
         await mostra_pannello_oroscopo(msg, context)
     elif dato.startswith("oro_cal:") or dato == "oro_anteprima":
@@ -12848,16 +12864,24 @@ async def azione_oroscopo(dato, msg, context):
                              reply_markup=InlineKeyboardMarkup(bottoni))
     elif dato.startswith("oro_preview:"):
         giorno = dato.split(":")[1]
-        await msg.reply_text(f"👁 Anteprima privata del {giorno}:")
-        await invia_anteprima_oroscopo(context.bot, msg.chat_id, giorno)
-        await msg.reply_text("Prova i 12 pulsanti qui sopra.", reply_markup=oroscopo_indietro())
+        await msg.reply_text(f"👁 Scegli l’anteprima privata del {giorno}:", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("☀️ Anteprima sole", callback_data=f"oro_prova:1:{giorno}"),
+             InlineKeyboardButton("🌙 Anteprima luna", callback_data=f"oro_prova:2:{giorno}")],
+            [InlineKeyboardButton("⬅️ Indietro", callback_data="oro_anteprima")]]))
+    elif dato.startswith("oro_prova:"):
+        _, numero, giorno = dato.split(":")
+        if numero not in {"1", "2"}:
+            raise ValueError("Appuntamento non valido.")
+        await invia_anteprima_oroscopo(context.bot, msg.chat_id, giorno, slot=int(numero))
+        await msg.reply_text("Prova i 12 pulsanti qui sopra.", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Indietro", callback_data=f"oro_preview:{giorno}")]]))
 
 
 async def ricevi_input_oroscopo(msg, context, modalita):
-    if modalita == "foto":
+    if modalita in {"foto", "foto_sole", "foto_luna"}:
         if not msg.photo:
             raise ValueError("Invia una foto come immagine, non come documento.")
-        imposta_oroscopo("foto", msg.photo[-1].file_id)
+        imposta_oroscopo("foto_sole" if modalita == "foto" else modalita, msg.photo[-1].file_id)
     elif modalita in {"ora", "ora2"}:
         valore = (msg.text or "").strip()
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", valore):
@@ -12953,7 +12977,7 @@ async def pubblica_oroscopo_giornaliero(app, adesso=None):
                     text=f"⚠️ Nessun oroscopo caricato per {giorno}: oggi la rubrica non viene pubblicata.")
                 imposta_oroscopo("giorno_mancante", giorno)
             return
-        if not cfg["foto"]:
+        if not foto_oroscopo(cfg, slot):
             imposta_oroscopo("attivo", False)
             return
         for canale in cfg["canali"]:

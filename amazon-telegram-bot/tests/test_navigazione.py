@@ -19,13 +19,13 @@ class NavigationTests(unittest.IsolatedAsyncioTestCase):
    markup=InlineKeyboardMarkup([[InlineKeyboardButton('Torna ai canali', callback_data='auto_channels')]])
    values=self.callbacks(tastiera_scoped(self.s,markup,'v2a',channel))
    self.assertIn('v2c:'+channel+':menu',values)
-   self.assertIn('v2_home',values)
+   self.assertNotIn('v2_home',values)
    self.assertNotIn('v2c:'+channel+':automatic',values)
  def test_empty_input_screen_has_scoped_back_and_home(self):
   for namespace,channel,target in [('v2a','tech','v2a:tech:auto_menu'),('v2r','global','v2r:global:rub_menu'),('v2m','casa','v2c:casa:posts')]:
    values=self.callbacks(tastiera_scoped(self.s,None,namespace,channel))
    self.assertIn(target,values)
-   self.assertIn('v2_home',values)
+   self.assertNotIn('v2_home',values)
  def test_manual_actions_and_public_callbacks_remain_compatible(self):
   actions=['dati_ok','foto_salta','prog_giorno_1','quiz_r:2026-10-28:0','oro_segno:1:ariete']
   markup=InlineKeyboardMarkup([[InlineKeyboardButton(x,callback_data=x)] for x in actions])

@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 import monitoraggio
 
-VERSIONE = '2026.10.28-stato-1'
+VERSIONE = '2026.10.31-sole-luna'
 
 
 def data_locale(s, value):
@@ -52,7 +52,7 @@ def riepilogo(s, user_id, pagina=0):
         oro = s.configurazione_oroscopo()
         for label, enabled, slots, table, photo in [
             ('Quiz', quiz['attivo'], [quiz['ora']], 'quiz_giorni', quiz.get('foto')),
-            ('Oroscopo', oro['attivo'], [time for _,time in s.orari_oroscopo(oro)], 'oroscopo_giorni', oro.get('foto'))]:
+            ('Oroscopo', oro['attivo'], [time for _,time in s.orari_oroscopo(oro)], 'oroscopo_giorni', all(oro.get('foto_luna' if slot == 2 else 'foto_sole') or oro.get('foto') for slot, _ in s.orari_oroscopo(oro)))]:
             lines.append(label + ': ' + ('ATTIVO' if enabled else 'DISATTIVATO') + ' · ' + ', '.join(slots))
             if enabled:
                 appointments = [datetime.fromisoformat((now.date()+timedelta(days=d)).isoformat()+'T'+time).replace(tzinfo=s.ROMA_TZ) for d in (0,1) for time in slots]
