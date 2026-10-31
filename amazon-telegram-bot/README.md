@@ -211,3 +211,7 @@ Impostazioni → Grafica e template ripristina l'accesso al pannello informativo
 Le due didascalie approvate sono distinte e mantengono giorno e data automatici. Oroscopo → Imposta foto sole / Imposta foto luna salva due immagini indipendenti, comuni a tutti i canali. In Anteprima si sceglie la data e poi l'appuntamento sole o luna. La vecchia foto resta il fallback finché non viene sostituita per ciascun appuntamento. Il codice non carica automaticamente le immagini generate: vanno inviate attraverso i due pulsanti. Gli orari salvati e i testi giornalieri dei segni rimangono invariati.
 
 Le tastiere dei sottomenu mantengono un solo ritorno contestuale con etichetta Indietro, senza la scorciatoia aggiuntiva Menu principale. Il ritorno dalla prima pagina di una sezione conduce comunque alla schermata iniziale. Restano disponibili i controlli di paginazione e gli annullamenti delle operazioni. I messaggi precedenti non vengono cancellati. Validazione: 54 test senza invii reali.
+
+### Accesso diretto alle anteprime
+
+Il pannello Oroscopo mostra Carica oroscopi e Calendario/modifica affiancati; foto sole e luna nella seconda riga; anteprime sole e luna nella terza. Ogni anteprima apre un calendario dedicato all'appuntamento scelto e conserva la selezione durante la paginazione e il ritorno. Le vecchie callback generiche rimangono compatibili. Verificato con 54 test senza invii reali.

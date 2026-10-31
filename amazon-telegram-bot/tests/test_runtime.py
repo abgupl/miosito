@@ -249,6 +249,22 @@ with tempfile.TemporaryDirectory() as tmp:
                 await click('v2r:global:oro_prova:2:'+day)
                 assert [c.kwargs['photo'] for c in previews.call_args_list]==['sole-file','luna-file']
                 assert 'Un caffè con la luna' in previews.call_args.kwargs['caption']
+                await click('v2r:global:oro_menu')
+                rows=send.call_args.kwargs['reply_markup'].inline_keyboard
+                assert [[b.callback_data for b in row] for row in rows[:3]]==[
+                    ['v2r:global:oro_carica','v2r:global:oro_cal:0'],
+                    ['v2r:global:oro_foto_sole','v2r:global:oro_foto_luna'],
+                    ['v2r:global:oro_anteprima:1:0','v2r:global:oro_anteprima:2:0']]
+                previews.reset_mock()
+                for slot, fid in [(1,'sole-file'),(2,'luna-file')]:
+                    await click(f'v2r:global:oro_anteprima:{slot}:0')
+                    markup=send.call_args.kwargs['reply_markup']
+                    target=next(b.callback_data for row in markup.inline_keyboard for b in row if b.callback_data.startswith('v2r:global:oro_prova:'))
+                    assert target==f'v2r:global:oro_prova:{slot}:{day}:0'
+                    await click(target)
+                    assert previews.call_args.kwargs['photo']==fid
+                    assert send.call_args.kwargs['reply_markup'].inline_keyboard[-1][0].callback_data==f'v2r:global:oro_anteprima:{slot}:0'
+
 
             # Add a new category from the UI; verify persistence and reuse of the same modules.
             await click('v2_home')

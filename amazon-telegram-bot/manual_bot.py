@@ -12521,11 +12521,12 @@ async def mostra_pannello_oroscopo(messaggio, context):
         "Promemoria nella chat admin 24 ore prima dell’ultimo post."
     )
     await messaggio.reply_text(riepilogo, reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("📥 Carica oroscopi", callback_data="oro_carica")],
-        [InlineKeyboardButton("📅 Calendario / modifica", callback_data="oro_cal:0"),
-         InlineKeyboardButton("👁 Anteprima", callback_data="oro_anteprima")],
+        [InlineKeyboardButton("📥 Carica oroscopi", callback_data="oro_carica"),
+         InlineKeyboardButton("📅 Calendario / modifica", callback_data="oro_cal:0")],
         [InlineKeyboardButton("☀️ Imposta foto sole", callback_data="oro_foto_sole"),
          InlineKeyboardButton("🌙 Imposta foto luna", callback_data="oro_foto_luna")],
+        [InlineKeyboardButton("☀️ Anteprima sole", callback_data="oro_anteprima:1:0"),
+         InlineKeyboardButton("🌙 Anteprima luna", callback_data="oro_anteprima:2:0")],
         [InlineKeyboardButton("⚙️ Impostazioni rubrica", callback_data="oro_impostazioni")],
         [InlineKeyboardButton("📊 Statistiche", callback_data="oro_stats:oggi")],
         [InlineKeyboardButton("⏸ Sospendi" if cfg["attivo"] else "▶️ Attiva", callback_data="oro_attiva")],
@@ -12838,29 +12839,35 @@ async def azione_oroscopo(dato, msg, context):
                 raise ValueError("Carica le foto degli appuntamenti attivi e almeno una giornata da oggi in poi prima di attivare.")
         imposta_oroscopo("attivo", not cfg["attivo"])
         await mostra_pannello_oroscopo(msg, context)
-    elif dato.startswith("oro_cal:") or dato == "oro_anteprima":
+    elif dato.startswith(("oro_cal:", "oro_anteprima:")) or dato == "oro_anteprima":
         righe = giorni_oroscopo()
         if not righe:
             raise ValueError("Carica prima una giornata di prova.")
-        pagina = max(0, int(dato.split(":")[1])) if ":" in dato else 0
+        parti = dato.split(":")
+        slot_anteprima = int(parti[1]) if dato.startswith("oro_anteprima:") else None
+        if slot_anteprima is not None and slot_anteprima not in {1, 2}:
+            raise ValueError("Appuntamento non valido.")
+        pagina = max(0, int(parti[2] if slot_anteprima else parti[1])) if len(parti) > 1 else 0
+        pagina = min(pagina, max(0, (len(righe)-1)//7))
+        destinazione_pagina = f"oro_anteprima:{slot_anteprima}:" if slot_anteprima else "oro_cal:"
         bottoni = []
         with sqlite3.connect(DB_PATH, timeout=30) as db:
             inviate = {r[0] for r in db.execute("SELECT DISTINCT giorno FROM oroscopo_uscite")}
         for (giorno,) in righe[pagina * 7:pagina * 7 + 7]:
             row = [InlineKeyboardButton(f"{'✅' if giorno in inviate else '👁'} {giorno}",
-                                        callback_data=f"oro_preview:{giorno}")]
-            if giorno not in inviate:
+                                        callback_data=(f"oro_prova:{slot_anteprima}:{giorno}:{pagina}" if slot_anteprima else f"oro_preview:{giorno}"))]
+            if giorno not in inviate and slot_anteprima is None:
                 row.append(InlineKeyboardButton("✏️ Modifica", callback_data=f"oro_modifica:{giorno}"))
             bottoni.append(row)
         nav = []
         if pagina:
-            nav.append(InlineKeyboardButton("⬅️", callback_data=f"oro_cal:{pagina - 1}"))
+            nav.append(InlineKeyboardButton("⬅️", callback_data=destinazione_pagina + str(pagina - 1)))
         if len(righe) > (pagina + 1) * 7:
-            nav.append(InlineKeyboardButton("➡️", callback_data=f"oro_cal:{pagina + 1}"))
+            nav.append(InlineKeyboardButton("➡️", callback_data=destinazione_pagina + str(pagina + 1)))
         if nav:
             bottoni.append(nav)
         bottoni.append([InlineKeyboardButton("⬅️ Rubrica", callback_data="oro_menu")])
-        await msg.reply_text("📅 Scegli una data per l’anteprima privata (nessun invio al canale).",
+        await msg.reply_text(("☀️ Anteprima sole" if slot_anteprima == 1 else "🌙 Anteprima luna" if slot_anteprima == 2 else "📅 Calendario / modifica") + "\nScegli una data per l’anteprima privata (nessun invio al canale).",
                              reply_markup=InlineKeyboardMarkup(bottoni))
     elif dato.startswith("oro_preview:"):
         giorno = dato.split(":")[1]
@@ -12869,12 +12876,14 @@ async def azione_oroscopo(dato, msg, context):
              InlineKeyboardButton("🌙 Anteprima luna", callback_data=f"oro_prova:2:{giorno}")],
             [InlineKeyboardButton("⬅️ Indietro", callback_data="oro_anteprima")]]))
     elif dato.startswith("oro_prova:"):
-        _, numero, giorno = dato.split(":")
+        parti = dato.split(":")
+        _, numero, giorno = parti[:3]
+        ritorno = f"oro_anteprima:{numero}:{max(0, int(parti[3]))}" if len(parti) == 4 else f"oro_preview:{giorno}"
         if numero not in {"1", "2"}:
             raise ValueError("Appuntamento non valido.")
         await invia_anteprima_oroscopo(context.bot, msg.chat_id, giorno, slot=int(numero))
         await msg.reply_text("Prova i 12 pulsanti qui sopra.", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Indietro", callback_data=f"oro_preview:{giorno}")]]))
+            [InlineKeyboardButton("⬅️ Indietro", callback_data=ritorno)]]))
 
 
 async def ricevi_input_oroscopo(msg, context, modalita):
