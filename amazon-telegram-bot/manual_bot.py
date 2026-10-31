@@ -10171,21 +10171,19 @@ async def invia_scheda_programmato(
     messaggio_html = messaggio_post.startswith("__RICERCA_HTML__")
     if messaggio_html:
         messaggio_post = messaggio_post.replace("__RICERCA_HTML__", "", 1)
-    testo = (
+    informazioni = (
         f"📅 POST PROGRAMMATO #{post['id']} — {next((c.nome for c in CANALI.values() if c.chat_id == str(post['telegram_chat_id'])), post['telegram_chat_id'])}\n"
-        f"🕒 {quando}\n\n"
-        "👀 ANTEPRIMA\n\n"
-        + crea_caption_con_link(
-            messaggio_post,
-            post["link"],
-            messaggio_gia_html=messaggio_html,
-        )
+        f"🕒 {quando}\n"
+        f"Stato: {post['stato']}\n\n"
+        "👀 Anteprima del contenuto previsto qui sotto."
     )
+    testo = crea_caption_con_link(messaggio_post, post["link"], messaggio_gia_html=messaggio_html)
+    await messaggio.reply_text(informazioni)
 
     tastiera = InlineKeyboardMarkup(
         [
             *tastiera_offerta_automatica(post["link"]).inline_keyboard,
-            [
+            *([[
                 InlineKeyboardButton(
                     "✏️ MODIFICA",
                     callback_data="prog_modifica",
@@ -10194,11 +10192,11 @@ async def invia_scheda_programmato(
                     "🗑 ELIMINA",
                     callback_data="prog_elimina",
                 ),
-            ],
+            ]] if post["stato"] == "attesa" else []),
             [
                 InlineKeyboardButton(
                     "⬅️ TORNA AI PROGRAMMATI",
-                    callback_data="prog_indietro",
+                    callback_data=next((f"v2c:{c.chiave}:queue:0" for c in CANALI.values() if c.chat_id == str(post["telegram_chat_id"])), "prog_indietro"),
                 )
             ],
         ]

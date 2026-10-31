@@ -59,7 +59,7 @@ with tempfile.TemporaryDirectory() as tmp:
         with patch.object(type(app.bot),'send_message',new=AsyncMock(return_value=sent)) as send, \
              patch.object(type(app.bot),'answer_callback_query',new=AsyncMock()) as answer, \
              patch.object(type(app.bot),'edit_message_text',new=AsyncMock(return_value=sent)) as edit, \
-             patch.object(type(app.bot),'send_photo',new=AsyncMock(return_value=sent)):
+             patch.object(type(app.bot),'send_photo',new=AsyncMock(return_value=sent)) as private_photo:
             await click('v2_home')
             await click('v2_settings')
             await click('v2_templates')
@@ -167,7 +167,17 @@ with tempfile.TemporaryDirectory() as tmp:
             scheduled=runtime.ARCHIVIO.lista('programmazioni','-100202')[0][0]['id']
             await click('v2c:casa:queue:0')
             await text('#'+str(scheduled))
-            assert 'Offerta di prova' in send.call_args.kwargs['text']
+            assert 'Offerta di prova' in private_photo.call_args.kwargs['caption']
+            assert private_photo.call_args.kwargs['photo']=='prepared-photo'
+            assert private_photo.call_args.kwargs['parse_mode']=='HTML'
+            assert 'Scopri l’offerta su Amazon' in private_photo.call_args.kwargs['caption']
+            assert private_photo.call_args.kwargs['chat_id']==42
+            assert app.user_data[42]['prog_id']==scheduled
+            scheduled_row=runtime.ARCHIVIO.dettaglio('programmazioni','-100202',scheduled)
+            expected_caption=runtime.crea_caption_con_link(scheduled_row['messaggio'],scheduled_row['link'])
+            assert private_photo.call_args.kwargs['caption']==expected_caption
+            assert 'POST PROGRAMMATO' not in private_photo.call_args.kwargs['caption']
+
             await click(f'v2c:casa:editqueue:{scheduled}')
             await click('prog_modifica')
             await click('prog_edit_nome')

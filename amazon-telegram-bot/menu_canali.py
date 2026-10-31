@@ -230,6 +230,13 @@ async def gestisci(s, update, context, data_override=None):
             await mostra(s, update, '✅ Invio annullato.' if done else 'Il post non è più in attesa.', tastiera(s, [back]))
         elif parts[0] == 'cancel':
             await mostra(s, update, f"Annullare il post #{row['id']} su {channel.nome}?", tastiera(s, [[('✅ Conferma annullamento', prefix + 'cancelok:' + number)], back]))
+        elif kind == 'queue':
+            if row['stato'] == 'attesa':
+                context.user_data['prog_id'] = row['id']
+            else:
+                context.user_data.pop('prog_id', None)
+            await s.invia_scheda_programmato(update.effective_message, row['id'])
+            return s.PROG_GESTIONE if row['stato'] == 'attesa' else s.ConversationHandler.END
         else:
             buttons = [back]
             if kind == 'queue' and row['stato'] == 'attesa':
