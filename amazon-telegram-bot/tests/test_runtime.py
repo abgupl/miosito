@@ -31,6 +31,7 @@ with tempfile.TemporaryDirectory() as tmp:
     with patch.object(runtime.Application,'run_polling',autospec=True) as polling:
         runtime.main()
         app=polling.call_args.args[0]
+    assert app.bot.defaults.link_preview_options.is_disabled
     app._initialized=True
     app.bot._initialized=True
     app.bot._bot_user=User(123456,'Test',True,username='test_bot')
@@ -115,6 +116,18 @@ with tempfile.TemporaryDirectory() as tmp:
             await click('multi_min_60')
             assert runtime.ARCHIVIO.impostazioni('-100202')['intervallo']==60
             assert runtime.ARCHIVIO.impostazioni('-100101')['intervallo']==45
+            draft=app.user_data[42]['multiplo']
+            draft['non_letti']=['https://www.amazon.it/dp/B000000001']
+            draft['timer_token']=object()
+            assert any(b.callback_data=='multi_retry' for row in runtime.tastiera_multiplo(draft).inline_keyboard for b in row)
+            with patch.object(runtime,'prepara_lotto_multiplo',new=AsyncMock()) as retry:
+                await click('multi_retry')
+                await asyncio.sleep(0)
+                retry.assert_awaited_once()
+                assert retry.call_args.args[2] is draft
+                assert retry.call_args.args[3]==draft['non_letti']
+                assert 'timer_token' not in draft
+                assert draft['canale']=='casa'
             await click('repost')
             draft=app.user_data[42]['multiplo']
             assert draft['tipo']=='repost' and draft['canale']=='casa'

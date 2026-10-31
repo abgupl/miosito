@@ -41,3 +41,9 @@ La schermata iniziale mostra, nell’ordine: lista canali; Aggiungi canale; Rubr
 Il ritorno dall’automazione apre il menu del canale; Menu principale apre sempre la lista iniziale. Le schermate di inserimento, i pannelli automatici, le anteprime e gli editor dispongono di pulsanti di uscita. L’aggiunta del canale consente di tornare al passo precedente senza perdere tutta la bozza.
 
 Verifiche: 44 test, con navigazione degli handler reali su TECH, CASA e un canale SPORT simulato; nessun invio reale.
+
+## Recupero articoli solo su richiesta
+
+Per tutti i canali, il lotto esegue una sola lettura con massimo tre tentativi per articolo. La seconda passata automatica dopo 20 secondi è rimossa. Il riepilogo conserva i link non letti e mostra il pulsante Riprova articoli non letti (N); il recupero riparte solo su pressione del pulsante, conserva i prodotti pronti e la destinazione e mantiene il controllo duplicati tra le passate. Finché ci sono non letti, e dopo un recupero manuale, il lotto richiede conferma esplicita. Nessun timer può avviarlo durante il recupero. Per lotti completamente riusciti al primo giro resta l'avvio dopo due minuti. Il riepilogo distingue link ricevuti, pronti, non letti, esclusi e duplicati.
+
+Le anteprime automatiche dei link sono disabilitate tramite Defaults dell'applicazione Telegram, anche per riepiloghi e modifiche di messaggi; foto e anteprime richieste esplicitamente rimangono disponibili. Le nuove regole si applicano dopo il deploy e non riscrivono i vecchi messaggi. Validazione: 58 test, con controllo del pulsante e delle callback reali e isolamento TECH/CASA/SPORT; nessun invio reale.

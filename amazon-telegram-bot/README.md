@@ -215,3 +215,9 @@ Le tastiere dei sottomenu mantengono un solo ritorno contestuale con etichetta I
 ### Accesso diretto alle anteprime
 
 Il pannello Oroscopo mostra Carica oroscopi e Calendario/modifica affiancati; foto sole e luna nella seconda riga; anteprime sole e luna nella terza. Ogni anteprima apre un calendario dedicato all'appuntamento scelto e conserva la selezione durante la paginazione e il ritorno. Le vecchie callback generiche rimangono compatibili. Verificato con 54 test senza invii reali.
+
+## Recupero articoli solo su richiesta
+
+Per tutti i canali, il lotto esegue una sola lettura con massimo tre tentativi per articolo. La seconda passata automatica dopo 20 secondi è rimossa. Il riepilogo conserva i link non letti e mostra il pulsante Riprova articoli non letti (N); il recupero riparte solo su pressione del pulsante, conserva i prodotti pronti e la destinazione e mantiene il controllo duplicati tra le passate. Finché ci sono non letti, e dopo un recupero manuale, il lotto richiede conferma esplicita. Nessun timer può avviarlo durante il recupero. Per lotti completamente riusciti al primo giro resta l'avvio dopo due minuti. Il riepilogo distingue link ricevuti, pronti, non letti, esclusi e duplicati.
+
+Le anteprime automatiche dei link sono disabilitate tramite Defaults dell'applicazione Telegram, anche per riepiloghi e modifiche di messaggi; foto e anteprime richieste esplicitamente rimangono disponibili. Le nuove regole si applicano dopo il deploy e non riscrivono i vecchi messaggi. Validazione: 58 test, con controllo del pulsante e delle callback reali e isolamento TECH/CASA/SPORT; nessun invio reale.

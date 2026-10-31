@@ -45,12 +45,14 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaPhoto,
+    LinkPreviewOptions,
 )
 
 from pulsanti import InlineKeyboardButton, InlineKeyboardMarkup
 
 from telegram.ext import (
     Application,
+    Defaults,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
@@ -8940,7 +8942,7 @@ async def proteggi_menu_v2(update, context):
     elif channel and (data in {'nuova','rapido','repost','publish_menu','menu_admin','annulla',
                                'dati_ok','dati_manual','dati_riprova','foto_aggiungi','foto_salta',
                                'pubblica','programma','cambia_template','conferma_orario_vicino','cambia_orario'}
-                      or re.fullmatch(r'prog_giorno_[012]|tpl_(pulito|aggressivo|tech)|multi_(timing|personalizzato|min_(10|20|30|40|60)|avvia|annulla)', data)):
+                      or re.fullmatch(r'prog_giorno_[012]|tpl_(pulito|aggressivo|tech)|multi_(timing|personalizzato|min_(10|20|30|40|60)|avvia|annulla|retry)', data)):
         return
     await q.answer('Schermata precedente o canale diverso. Usa /start oppure il menu corrente.', show_alert=True)
     raise ApplicationHandlerStop
@@ -13303,6 +13305,7 @@ def main():
         Application
         .builder()
         .token(TOKEN)
+        .defaults(Defaults(link_preview_options=LinkPreviewOptions(is_disabled=True)))
         .post_init(avvia_programmazioni)
         .build()
     )
@@ -13433,7 +13436,7 @@ def main():
 
             RAPIDO: [
                 CallbackQueryHandler(decidi_ricontrollo_cronologia,pattern=r'^hist_(pubblica|programma|annulla)$'),
-                CallbackQueryHandler(gestisci_multiplo, pattern=r"^multi_(?:canale_(?:tech|casa)|timing|personalizzato|min_(?:10|20|30|40|60)|avvia|annulla)$"),
+                CallbackQueryHandler(gestisci_multiplo, pattern=r"^multi_(?:canale_(?:tech|casa)|timing|personalizzato|min_(?:10|20|30|40|60)|avvia|annulla|retry)$"),
                 MessageHandler(
                     filters.TEXT
                     & ~filters.COMMAND,

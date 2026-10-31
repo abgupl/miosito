@@ -23,11 +23,21 @@ class CounterTests(unittest.IsolatedAsyncioTestCase):
   async def prepare(*args,**kwargs):return await invio_multiplo.prepara_lotto_multiplo(s,*args,**kwargs)
   s.prepara_lotto_multiplo=prepare
   await prepare(message,context,draft,['a','b','c'])
+  self.assertEqual(calls,{'a':1,'b':1,'c':1})
+  self.assertEqual(draft['non_letti'],['b','c'])
+  s.asyncio.sleep.assert_not_awaited()
+  self.assertEqual([p['asin'] for p in draft['pronti']],['A'])
+  self.assertTrue(draft['conferma_manuale'])
+  pending=list(draft['non_letti'])
+  draft['elaborazione']=True
+  await prepare(message,context,draft,pending,seconda_passata=True)
   self.assertEqual([p['asin'] for p in draft['pronti']],['A','C'])
   self.assertEqual(draft['duplicati'],1)
   captions=[c.kwargs['caption'] for c in message.reply_photo.call_args_list]
   self.assertTrue(captions[0].startswith('📦 Preparato 1/3'))
   self.assertTrue(captions[1].startswith('📦 Preparato 2/3'))
   self.assertTrue(any('Recupero link non letti: link 1/2' in c.args[0] for c in message.edit_text.call_args_list))
-  s.riepilogo_multiplo.assert_awaited_once()
+  self.assertEqual(s.riepilogo_multiplo.await_count,2)
+  self.assertEqual(draft['non_letti'],[])
+  self.assertEqual(calls,{'a':1,'b':2,'c':2})
   self.assertFalse(draft['elaborazione'])
