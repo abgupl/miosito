@@ -192,7 +192,9 @@ async def gestisci(s, update, context, data_override=None):
         buttons = []
         for row in rows:
             when = row.get('invio_previsto') or row.get('pubblicata_il')
-            text += f"\n#{row['id']} · {str(row.get('nome') or '')[:80]}\n{s._data_archivio(when)} · {row.get('origine') or 'manuale'}\n"
+            origine = row.get('origine') or 'manuale'
+            suffisso = '' if origine == 'multiplo' else ' · ' + origine
+            text += f"\n#{row['id']} · {str(row.get('nome') or '')[:80]}\n{s._data_archivio(when)}{suffisso}\n"
         nav = []
         if page:
             nav.append(('⬅️ Precedenti', prefix + f'{kind}:{page - 1}'))
