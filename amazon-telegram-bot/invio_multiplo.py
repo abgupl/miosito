@@ -177,7 +177,8 @@ async def rapido_da_pulsante(servizi, update: Update, context: ContextTypes.DEFA
 
 
 async def prepara_lotto_multiplo(servizi, messaggio, context, draft, links, seconda_passata=False):
-    visti = set()
+    visti = {p.get('asin') for p in draft.get('pronti', []) if p.get('asin')}
+    totale = draft.setdefault('totale_link', len(links))
     da_riprovare = []
     try:
         for indice, candidato in enumerate(links, 1):
@@ -190,7 +191,8 @@ async def prepara_lotto_multiplo(servizi, messaggio, context, draft, links, seco
             if draft.get('tipo') == 'repost':
                 stato = f"🔁 REPOST: {len(draft['pronti'])}/{draft['richiesti']} post pronti\n🔎 Candidato esaminato: {indice} (gli altri sono riserve)"
             else:
-                stato = f'🔎 Prodotto {indice}/{len(links)} — preparazione in corso…'
+                fase = '♻️ Recupero link non letti' if seconda_passata else '🔎 Prima passata'
+                stato = f"{fase}: link {indice}/{len(links)}\n📦 Post pronti: {len(draft['pronti'])}/{totale}"
             try:
                 await messaggio.edit_text(stato, reply_markup=servizi.tastiera_annulla_elaborazione())
             except Exception:
@@ -204,7 +206,7 @@ async def prepara_lotto_multiplo(servizi, messaggio, context, draft, links, seco
                 if numero < 3:
                     try:
                         if context.user_data.get('multiplo') is draft and (not draft.get('annullato')):
-                            await messaggio.edit_text(f"🔎 Tentativo {numero}/3 — {len(draft['pronti'])}/{draft.get('richiesti', len(links))} post pronti. Riprovo…", reply_markup=servizi.tastiera_annulla_elaborazione())
+                            await messaggio.edit_text(f"🔎 Tentativo {numero}/3 — {len(draft['pronti'])}/{draft.get('richiesti', totale)} post pronti. Riprovo…", reply_markup=servizi.tastiera_annulla_elaborazione())
                     except Exception:
                         pass
             if draft.get('tipo') == 'repost':
@@ -242,7 +244,7 @@ async def prepara_lotto_multiplo(servizi, messaggio, context, draft, links, seco
                     foto = await servizi.prepara_foto_automatica(dati['immagine'])
                 if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
                     return
-                anteprima = await messaggio.reply_photo(photo=foto, caption=f"📦 Preparato {indice}/{len(links)}: {str(dati['nome'])[:700]}")
+                anteprima = await messaggio.reply_photo(photo=foto, caption=f"📦 Preparato {len(draft['pronti']) + 1}/{draft.get('richiesti', totale)}: {str(dati['nome'])[:700]}")
                 if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
                     return
                 visti.add(asin)
