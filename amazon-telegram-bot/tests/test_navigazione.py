@@ -22,7 +22,7 @@ class NavigationTests(unittest.IsolatedAsyncioTestCase):
    self.assertNotIn('v2_home',values)
    self.assertNotIn('v2c:'+channel+':automatic',values)
  def test_empty_input_screen_has_scoped_back_and_home(self):
-  for namespace,channel,target in [('v2a','tech','v2a:tech:auto_menu'),('v2r','global','v2r:global:rub_menu'),('v2m','casa','v2c:casa:posts')]:
+  for namespace,channel,target in [('v2a','tech','v2a:tech:auto_menu'),('v2r','global','v2r:global:rub_menu'),('v2m','casa','v2c:casa:menu')]:
    values=self.callbacks(tastiera_scoped(self.s,None,namespace,channel))
    self.assertIn(target,values)
    self.assertNotIn('v2_home',values)

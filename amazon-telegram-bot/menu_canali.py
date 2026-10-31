@@ -22,7 +22,7 @@ def menu_iniziale(s, user_id=None):
 def menu_canale(s, channel):
     prefix = 'v2c:' + channel.chiave + ':'
     return tastiera(s, [
-        [('✍️ Nuovi post', prefix + 'posts')],
+        [('✍️ Invio', 'rapido')],
         [('♻️ Repost', prefix + 'repost')],
         [('🤖 Invio automatico', prefix + 'automatic')],
         [('📅 Programmati e code', prefix + 'queue:0')],
@@ -133,8 +133,7 @@ async def gestisci(s, update, context, data_override=None):
         import invio_automatico
         return await invio_automatico.apri(s, update, context)
     elif action == 'posts':
-        await mostra(s, update, '✍️ NUOVI POST — ' + channel.nome + '\n\nLa destinazione rimane questo canale per tutta la preparazione.',
-                     tastiera(s, [[('📝 Invio singolo', 'nuova')], [('📦 Invio multiplo', 'rapido')], back]))
+        return await s.rapido_da_pulsante(update, context)
     elif action == 'repost':
         await mostra(s, update, '♻️ REPOST — ' + channel.nome +
                      f"\n\nCronologia: ultimi {settings['repost_giorni']} giorni.\n"

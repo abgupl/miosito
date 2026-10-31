@@ -58,7 +58,8 @@ with tempfile.TemporaryDirectory() as tmp:
         sent.set_bot(app.bot)
         with patch.object(type(app.bot),'send_message',new=AsyncMock(return_value=sent)) as send, \
              patch.object(type(app.bot),'answer_callback_query',new=AsyncMock()) as answer, \
-             patch.object(type(app.bot),'edit_message_text',new=AsyncMock(return_value=sent)) as edit:
+             patch.object(type(app.bot),'edit_message_text',new=AsyncMock(return_value=sent)) as edit, \
+             patch.object(type(app.bot),'send_photo',new=AsyncMock(return_value=sent)):
             await click('v2_home')
             await click('v2_settings')
             await click('v2_templates')
@@ -94,10 +95,12 @@ with tempfile.TemporaryDirectory() as tmp:
                 tech_scan.assert_not_called()
             await click('v2_home')
             await click('v2_select_casa')
+            assert send.call_args.kwargs['reply_markup'].inline_keyboard[0][0].callback_data=='rapido'
+            assert send.call_args.kwargs['reply_markup'].inline_keyboard[0][0].text=='✍️ Invio'
             await click('v2c:casa:posts')
             await click('nuova')
-            assert app.user_data[42]['telegram_chat_id']=='-100202'
-            assert any(b.callback_data=='v2c:casa:posts' for row in send.call_args.kwargs['reply_markup'].inline_keyboard for b in row)
+            assert app.user_data[42]['multiplo']['canale']=='casa'
+            assert any(b.callback_data=='v2c:casa:menu' for row in send.call_args.kwargs['reply_markup'].inline_keyboard for b in row)
             await click('v2_home')
             await click('v2_select_tech')
             await click('v2c:casa:days:90')
@@ -135,18 +138,30 @@ with tempfile.TemporaryDirectory() as tmp:
             assert draft['annullato']
             await click('v2_select_casa')
             await click('nuova')
+            from telegram import PhotoSize
+            photo_message=Message(901,runtime.datetime.now(runtime.timezone.utc),Chat(42,'private'),photo=[PhotoSize('prepared-photo','unique',100,100)])
+            photo_message.set_bot(app.bot)
+            preparation_tasks=[]
+            def schedule_preparation(coro,**kwargs):
+                task=asyncio.create_task(coro)
+                preparation_tasks.append(task)
+                return task
             with patch.object(runtime,'leggi_offerta_con_sei_tentativi',new=AsyncMock(return_value={
-                'asin':'B087654321','nome':'Offerta di prova','prezzo':'10','vecchio_prezzo':'20',
-                'categoria':'casa','condizione':'Nuovo','disponibile':True})):
+                'asin':'B087654321','nome':'Offerta di prova','prezzo':'10','vecchio_prezzo':'20','immagine':'img',
+                'categoria':'casa','condizione':'Nuovo','disponibile':True})), \
+                 patch.object(runtime,'risolvi_asin_da_link',return_value='B087654321'), \
+                 patch.object(runtime,'prepara_foto_automatica',new=AsyncMock(return_value='prepared-photo')), \
+                 patch.object(type(app.bot),'send_photo',new=AsyncMock(return_value=photo_message)), \
+                 patch.object(runtime,'arma_avvio_multiplo') as timer, \
+                 patch.object(type(app),'create_task',side_effect=schedule_preparation):
                 await text('https://amzn.eu/LinkDiProva')
+                await asyncio.gather(*preparation_tasks)
                 runtime.leggi_offerta_con_sei_tentativi.assert_awaited_once()
-            await click('dati_ok')
-            await click('foto_salta')
+                assert len(app.user_data[42]['multiplo']['pronti'])==1
+                assert app.user_data[42]['multiplo']['canale']=='casa'
+                timer.assert_called_once()
             assert not errors,errors
-            assert app.user_data[42]['anteprima_id']==900
-            await click('programma')
-            await click('prog_giorno_1')
-            await text('12:00')
+            await click('multi_avvia')
             assert runtime.ARCHIVIO.lista('programmazioni','-100202')[1]==1
             assert runtime.ARCHIVIO.lista('programmazioni','-100101')[1]==0
             scheduled=runtime.ARCHIVIO.lista('programmazioni','-100202')[0][0]['id']
@@ -157,13 +172,20 @@ with tempfile.TemporaryDirectory() as tmp:
             await click('prog_modifica')
             await click('prog_edit_nome')
             await text('Nome aggiornato CASA')
-            assert runtime.ARCHIVIO.dettaglio('programmazioni','-100202',scheduled)['nome']=='Nome aggiornato CASA'
+            assert runtime.ARCHIVIO.dettaglio('programmazioni','-100202',scheduled)['nome']=='Nome aggiornato CASA', (errors,send.call_args,app.user_data[42])
             await click('v2_home')
             await click('v2_select_tech')
             await click(f'v2c:tech:editqueue:{scheduled}')
             assert 'prog_id' not in app.user_data[42]
             await click('prog_modifica')
             assert answer.call_args.kwargs.get('show_alert')
+            # Shared date selection remains available after removing the single-send module.
+            await click('v2_home')
+            await click('v2_select_casa')
+            app.user_data[42]['telegram_chat_id']='-100202'
+            await click('v2a:casa:prog_giorno_1')
+            assert 'data_programmata' in app.user_data[42]
+            assert 'Ora scrivi solo' in send.call_args.kwargs['text']
             # Original automation settings and selective filters are reachable through scoped buttons.
             await click('v2_home')
             await click('v2_select_casa')

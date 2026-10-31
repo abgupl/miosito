@@ -8,7 +8,7 @@ Il punto di avvio rimane `manual_bot.py`.
 `/start` mostra i canali disponibili all'amministratore, **☕ Rubrica** e **Impostazioni generali**.
 Dopo la selezione, il menu del canale contiene:
 
-- Nuovi post: invio singolo e multiplo.
+- Invio: da uno a cinquanta link nello stesso flusso.
 - Repost: ricerca casuale nella cronologia del solo canale corrente.
 - Invio automatico: gestione dei filtri e delle impostazioni legacy, indipendenti per canale.
 - Programmati e code: elenco, dettagli, modifica e annullamento dei post in attesa.
@@ -26,7 +26,7 @@ presente non viene mostrata automaticamente come collegamento verificato.
 
 ## Link accettati
 
-Singolo e multiplo usano lo stesso filtro in `link_amazon.py`.
+Il flusso unico usa il filtro condiviso in `link_amazon.py`.
 Sono ammessi link HTTP/HTTPS diretti Amazon e link brevi `amzn.eu`,
 `amzn.to`, `a.co`, `link.amazon` e `link.amazon.it`, oltre ai domini
 Amazon esteri come `amazon.de` e `amazon.com`. Il link deve condurre a un
@@ -103,7 +103,6 @@ La selezione delle categorie automatiche avviene nel menu del nuovo canale.
 | File | Responsabilità |
 |---|---|
 | `manual_bot.py` | Avvio, coordinamento, callback compatibili e servizi storici |
-| `invio_singolo.py` | Preparazione, anteprima e conferma del singolo post |
 | `invio_multiplo.py` | Preparazione lotti e pianificazione sequenze |
 | `repost.py` | Selezione e verifica dei candidati dalla cronologia |
 | `canali.py` | Registro, autorizzazioni per canale e selezione personale |
@@ -204,7 +203,7 @@ Impostazioni → Stato del bot mostra versione del pannello e commit Railway se 
 
 ## Grafica e pulsanti
 
-Impostazioni → Grafica e template ripristina l'accesso al pannello informativo legacy sulle tipologie di offerta, soglie di sconto e condizioni Amazon. Non è un editor dei template. La selezione del template del singolo post resta nel relativo flusso. Tutti i pulsanti costruiti dal bot passano dal formato comune di pulsanti.py: prima lettera maiuscola e successive minuscole, senza modificare callback o URL. Le vecchie tastiere già inviate non vengono riscritte. Validazione: 50 test.
+Impostazioni → Grafica e template ripristina l'accesso al pannello informativo legacy sulle tipologie di offerta, soglie di sconto e condizioni Amazon. Non è un editor dei template. Il flusso Invio usa il formato automatico attuale; le modifiche dei post programmati restano disponibili. Tutti i pulsanti costruiti dal bot passano dal formato comune di pulsanti.py: prima lettera maiuscola e successive minuscole, senza modificare callback o URL. Le vecchie tastiere già inviate non vengono riscritte. Validazione: 50 test.
 
 ## Pausa caffè: sole e luna
 
@@ -221,3 +220,7 @@ Il pannello Oroscopo mostra Carica oroscopi e Calendario/modifica affiancati; fo
 Per tutti i canali, il lotto esegue una sola lettura con massimo tre tentativi per articolo. La seconda passata automatica dopo 20 secondi è rimossa. Il riepilogo conserva i link non letti e mostra il pulsante Riprova articoli non letti (N); il recupero riparte solo su pressione del pulsante, conserva i prodotti pronti e la destinazione e mantiene il controllo duplicati tra le passate. Finché ci sono non letti, e dopo un recupero manuale, il lotto richiede conferma esplicita. Nessun timer può avviarlo durante il recupero. Per lotti completamente riusciti al primo giro resta l'avvio dopo due minuti. Il riepilogo distingue link ricevuti, pronti, non letti, esclusi e duplicati.
 
 Le anteprime automatiche dei link sono disabilitate tramite Defaults dell'applicazione Telegram, anche per riepiloghi e modifiche di messaggi; foto e anteprime richieste esplicitamente rimangono disponibili. Le nuove regole si applicano dopo il deploy e non riscrivono i vecchi messaggi. Validazione: 58 test, con controllo del pulsante e delle callback reali e isolamento TECH/CASA/SPORT; nessun invio reale.
+
+## Invio unico
+
+Il pulsante Invio del canale apre direttamente la preparazione da 1 a 50 link Amazon, uno per riga. Il modulo invio_singolo.py e i suoi handler sono rimossi. La logica comune resta in invio_multiplo.py, con tre tentativi massimi, recupero manuale dei non letti, controlli duplicati e destinazione per canale. I lotti interamente riusciti al primo giro mantengono l'avvio dopo due minuti; quelli con non letti o recuperati attendono conferma. Nessun nuovo editor prima della conferma viene aggiunto. La scelta giorno/orario usata da cronologia e ricerca è conservata nel coordinatore come funzione condivisa. /invio è il comando principale; i vecchi comandi /nuova, /multiplo, /rapido e il vecchio pulsante nuova aprono il medesimo flusso unico. Il separatore dei link è corretto per gli a capo e la lettera s negli URL. Rubrica, automatico, repost e archivio legacy restano preservati. Validazione: 57 test, inclusi flussi da uno e più link per TECH/CASA/SPORT, preparazione/programmazione reale con servizi esterni simulati e modifica di un programmato con foto.

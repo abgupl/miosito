@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import invio_multiplo
-import invio_singolo
 import repost
 from database import ArchivioCanali
 from canali import Canale
@@ -139,20 +138,12 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await invio_multiplo.avvia_lotto_multiplo(s, message, context, draft))
         s.piano_multiplo.assert_called_once_with(draft['pronti'], 30, 'CASA', salva=True, origine='repost')
 
-    async def test_single_rejects_invalid_link_without_reading_amazon(self):
-        update = SimpleNamespace(message=SimpleNamespace(text='invalid', reply_text=AsyncMock()))
-        s = SimpleNamespace(controlla_autorizzazione=AsyncMock(return_value=True),
-                            link_amazon_valido=lambda link: False, LINK=7,
-                            leggi_offerta_con_sei_tentativi=AsyncMock())
-        result = await invio_singolo.ricevi_link(s, update, SimpleNamespace(user_data={}))
-        self.assertEqual(result, 7)
-        s.leggi_offerta_con_sei_tentativi.assert_not_awaited()
 
     async def test_unauthorized_entry_does_not_clear_user_state(self):
         context = SimpleNamespace(user_data={'preserve': True})
         s = SimpleNamespace(controlla_autorizzazione=AsyncMock(return_value=False),
                             ConversationHandler=SimpleNamespace(END=-1))
-        for function in (invio_singolo.nuova_da_comando, invio_multiplo.rapido_da_comando, repost.repost_da_pulsante):
+        for function in (invio_multiplo.rapido_da_comando, repost.repost_da_pulsante):
             self.assertEqual(await function(s, object(), context), -1)
             self.assertEqual(context.user_data, {'preserve': True})
 
@@ -161,16 +152,16 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         tree = ast.parse(path.read_text())
         callbacks = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                      and (ast.get_docstring(n) or '').startswith('Callback compatibile;')]
-        self.assertEqual(len(callbacks), 34)
+        self.assertEqual(len(callbacks), 21)
         coordinator = ModuleType('test_coordinator')
-        coordinator.__dict__.update(invio_singolo=invio_singolo, invio_multiplo=invio_multiplo, repost=repost)
+        coordinator.__dict__.update(invio_multiplo=invio_multiplo, repost=repost)
         coordinator._servizi_invii = coordinator
         future = ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0)
         module = ast.fix_missing_locations(ast.Module(body=[future] + callbacks, type_ignores=[]))
         exec(compile(module, str(path), 'exec'), coordinator.__dict__)
         coordinator.controlla_autorizzazione = AsyncMock(return_value=False)
         coordinator.ConversationHandler = SimpleNamespace(END=-1)
-        result = await coordinator.nuova_da_comando(object(), object())
+        result = await coordinator.rapido_da_comando(object(), object())
         self.assertEqual(result, -1)
         coordinator.controlla_autorizzazione.assert_awaited_once()
 

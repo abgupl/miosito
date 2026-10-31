@@ -8244,8 +8244,7 @@ def menu_principale():
 
 def menu_pubblicazione():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('📝 Invio singolo', callback_data='nuova')],
-        [InlineKeyboardButton('📦 Invio multiplo', callback_data='rapido')],
+        [InlineKeyboardButton('✍️ Invio', callback_data='rapido')],
         [InlineKeyboardButton('⬅️ Menu canale', callback_data='menu_admin')],
     ])
 
@@ -8254,7 +8253,7 @@ async def mostra_menu_pubblicazione(update, context):
     if not await controlla_autorizzazione(update) or not await richiedi_canale(update, context):
         return ConversationHandler.END
     await update.callback_query.answer()
-    await update.effective_message.reply_text('✍️ NUOVI POST — ' + canale_corrente(context).nome, reply_markup=menu_pubblicazione())
+    await update.effective_message.reply_text('✍️ INVIO — ' + canale_corrente(context).nome, reply_markup=menu_pubblicazione())
     return ConversationHandler.END
 
 
@@ -8836,7 +8835,6 @@ def leggi_prodotto_creators_da_link(link):
 
 
 # Adattatori espliciti: i moduli non importano il coordinatore.
-import invio_singolo
 import invio_multiplo
 import repost
 import canali
@@ -8940,64 +8938,12 @@ async def proteggi_menu_v2(update, context):
         if channel and data.split(':', 2)[1] == channel.chiave:
             return
     elif channel and (data in {'nuova','rapido','repost','publish_menu','menu_admin','annulla',
-                               'dati_ok','dati_manual','dati_riprova','foto_aggiungi','foto_salta',
-                               'pubblica','programma','cambia_template','conferma_orario_vicino','cambia_orario'}
+                               'conferma_orario_vicino','cambia_orario'}
                       or re.fullmatch(r'prog_giorno_[012]|tpl_(pulito|aggressivo|tech)|multi_(timing|personalizzato|min_(10|20|30|40|60)|avvia|annulla|retry)', data)):
         return
     await q.answer('Schermata precedente o canale diverso. Usa /start oppure il menu corrente.', show_alert=True)
     raise ApplicationHandlerStop
 
-
-
-# =========================================================
-# NUOVA OFFERTA
-# =========================================================
-
-async def nuova_da_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.nuova_da_comando(_servizi_invii, update, context)
-
-
-async def nuova_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.nuova_da_pulsante(_servizi_invii, update, context)
-
-
-# =========================================================
-# RICEZIONE LINK
-# =========================================================
-
-async def ricevi_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.ricevi_link(_servizi_invii, update, context)
-
-
-# =========================================================
-# CONFERMA DATI AUTOMATICI
-# =========================================================
-
-async def conferma_dati_automatici(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.conferma_dati_automatici(_servizi_invii, update, context)
-
-
-# =========================================================
-# INSERIMENTO MANUALE
-# =========================================================
-
-async def ricevi_nome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.ricevi_nome(_servizi_invii, update, context)
-
-
-async def ricevi_prezzo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.ricevi_prezzo(_servizi_invii, update, context)
-
-
-async def ricevi_vecchio_prezzo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.ricevi_vecchio_prezzo(_servizi_invii, update, context)
 
 
 # =========================================================
@@ -9331,6 +9277,36 @@ async def gestisci_multiplo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================================================
 # RICEZIONE ORA PROGRAMMAZIONE
 # =========================================================
+
+@navigazione_coordinatore
+async def scegli_giorno_programmazione(update, context):
+    if not await controlla_autorizzazione(update) or not await richiedi_canale(update, context):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    if query.data == 'annulla':
+        return await annulla(update, context)
+    if query.data.startswith('prog_giorno_'):
+        try:
+            giorni = int(query.data.replace('prog_giorno_', ''))
+        except ValueError:
+            return CONFERMA
+        data_scelta = datetime.now(ROMA_TZ).date() + timedelta(days=giorni)
+        context.user_data['data_programmata'] = data_scelta.isoformat()
+        etichetta = 'oggi' if giorni == 0 else 'domani' if giorni == 1 else 'tra 2 giorni'
+        eventi = programmazioni_del_giorno(data_scelta, context.user_data['telegram_chat_id'])
+        if eventi:
+            orari_occupati = ', '.join((evento['datetime'].strftime('%H:%M') for evento in eventi))
+        else:
+            orari_occupati = 'nessuno'
+        suggerito = suggerisci_prossimo_slot(data_scelta, context.user_data['telegram_chat_id'])
+        if suggerito:
+            suggerimento_testo = f"💡 Prossimo spazio consigliato: {suggerito.strftime('%H:%M')}\n\n"
+        else:
+            suggerimento_testo = '⚠️ Non trovo altri spazi consigliati oggi.\n\n'
+        await query.message.reply_text(f"🕒 Hai scelto {etichetta}.\n\n📅 Orari già programmati: {orari_occupati}\n\n{suggerimento_testo}Ora scrivi solo l'orario.")
+        return PROGRAMMA_ORA
+    return CONFERMA
 
 @navigazione_coordinatore
 async def ricevi_ora_programmazione(
@@ -11159,33 +11135,18 @@ def crea_messaggio(context):
     return corpo_pulito_post(dati['nome'],dati['prezzo'],dati.get('vecchio_prezzo','NO'),dati.get('categoria'),dati.get('coupon'))
 
 
-async def prova_foto_automatica_o_chiedi(update, context):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.prova_foto_automatica_o_chiedi(_servizi_invii, update, context)
 
 
-async def chiedi_immagine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.chiedi_immagine(_servizi_invii, update, context)
 
 
-async def scelta_immagine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.scelta_immagine(_servizi_invii, update, context)
 
 
-async def ricevi_immagine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.ricevi_immagine(_servizi_invii, update, context)
 
 
 # =========================================================
 # ANTEPRIMA
 # =========================================================
 
-async def mostra_anteprima(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.mostra_anteprima(_servizi_invii, update, context)
 
 
 # =========================================================
@@ -11206,9 +11167,6 @@ def minuti_rimanenti_prima_del_prossimo_invio(destinazione=CHANNEL_ID):
 # CONFERMA / PUBBLICAZIONE
 # =========================================================
 
-async def conferma(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback compatibile; implementazione in invio_singolo.py."""
-    return await invio_singolo.conferma(_servizi_invii, update, context)
 
 
 # =========================================================
@@ -13332,9 +13290,10 @@ def main():
 
             CommandHandler(
                 "nuova",
-                nuova_da_comando,
+                rapido_da_comando,
             ),
 
+            CommandHandler("invio", rapido_da_comando),
             CommandHandler("multiplo", rapido_da_comando),
             CommandHandler(
                 "rapido",
@@ -13342,7 +13301,7 @@ def main():
             ),
 
             CallbackQueryHandler(
-                nuova_da_pulsante,
+                rapido_da_pulsante,
                 pattern="^nuova$",
             ),
 
@@ -13377,20 +13336,7 @@ def main():
             PRIORITA_ACCESSORIO_RIMUOVI: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_automatico_v2('ricevi_modifica_priorita'))],
             menu_canali.INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ricevi_impostazione_v2)],
 
-            LINK: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    ricevi_link,
-                )
-            ],
 
-            DATI_AUTOMATICI: [
-                CallbackQueryHandler(
-                    conferma_dati_automatici,
-                    pattern="^(dati_ok|dati_manual|dati_riprova)$",
-                )
-            ],
 
             PROGRAMMA_ORA: [
                 MessageHandler(
@@ -13410,29 +13356,8 @@ def main():
                 )
             ],
 
-            NOME: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    ricevi_nome,
-                )
-            ],
 
-            PREZZO: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    ricevi_prezzo,
-                )
-            ],
 
-            VECCHIO_PREZZO: [
-                MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
-                    ricevi_vecchio_prezzo,
-                )
-            ],
 
             RAPIDO: [
                 CallbackQueryHandler(decidi_ricontrollo_cronologia,pattern=r'^hist_(pubblica|programma|annulla)$'),
@@ -13444,37 +13369,10 @@ def main():
                 )
             ],
 
-            FOTO_SCELTA: [
-                CallbackQueryHandler(
-                    scelta_immagine,
-                    pattern="^(foto_aggiungi|foto_salta)$",
-                )
-            ],
 
-            FOTO_ATTESA: [
-                MessageHandler(
-                    filters.PHOTO,
-                    ricevi_immagine,
-                )
-            ],
 
-            CONFERMA: [
-                CallbackQueryHandler(
-                    conferma,
-                    pattern=(
-                        "^(pubblica|"
-                        "programma|"
-                        "prog_giorno_0|"
-                        "prog_giorno_1|"
-                        "prog_giorno_2|"
-                        "annulla|"
-                        "cambia_template|"
-                        "tpl_pulito|"
-                        "tpl_aggressivo|"
-                        "tpl_tech)$"
-                    ),
-                )
-            ],
+            CONFERMA: [CallbackQueryHandler(scegli_giorno_programmazione, pattern=r'^(prog_giorno_[012]|annulla)$')],
+
         },
 
         fallbacks=[

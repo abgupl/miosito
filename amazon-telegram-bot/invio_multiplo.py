@@ -136,7 +136,7 @@ async def riepilogo_multiplo(servizi, messaggio, draft, context=None):
         return await servizi.mostra_confronto_cronologia(messaggio, context, draft)
     servizi.filtra_duplicati_recenti_multiplo(draft)
     piano = servizi.piano_multiplo(draft['pronti'], draft['minuti'], servizi._chat_id_per_canale(draft['canale']))
-    righe = [f"{('🔁 REPOST' if draft.get('tipo') == 'repost' else '📦 INVIO MULTIPLO')} — {draft['canale'].upper()}", f"⏱ Intervallo: {draft['minuti']} minuti", f"📥 Link ricevuti: {draft.get('ricevuti', draft.get('totale_link', draft.get('candidati', len(draft['pronti']))))}", f"✅ Pronti: {len(piano)} · Non letti: {len(draft.get('non_letti', []))} · Esclusi: {len(draft['scartati'])} · Duplicati: {draft['duplicati']}", '']
+    righe = [f"{('🔁 REPOST' if draft.get('tipo') == 'repost' else '✍️ INVIO')} — {draft['canale'].upper()}", f"⏱ Intervallo: {draft['minuti']} minuti", f"📥 Link ricevuti: {draft.get('ricevuti', draft.get('totale_link', draft.get('candidati', len(draft['pronti']))))}", f"✅ Pronti: {len(piano)} · Non letti: {len(draft.get('non_letti', []))} · Esclusi: {len(draft['scartati'])} · Duplicati: {draft['duplicati']}", '']
     if draft.get('richiesti'):
         righe.append(f"Richiesti: {draft['richiesti']} · Preparati: {len(piano)} · Candidati disponibili per il controllo: {draft.get('candidati', 0)}")
     if piano:
@@ -178,7 +178,7 @@ async def rapido_da_comando(servizi, update: Update, context: ContextTypes.DEFAU
     servizi.reset_flusso(context)
     draft = {'canale': channel.chiave, 'minuti': servizi.intervallo_multiplo(update.effective_user.id, canale=channel.chiave), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
     context.user_data['multiplo'] = draft
-    await update.effective_message.reply_text('📦 INVIO MULTIPLO — ' + channel.nome + '\n\nScegli l’intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nSe tutti i prodotti sono pronti, il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare. Se ci sono articoli non letti, attende la tua scelta: riprova oppure conferma solo quelli pronti.', reply_markup=servizi.tastiera_multiplo(draft))
+    await update.effective_message.reply_text('✍️ INVIO — ' + channel.nome + '\n\nScegli l’intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nSe tutti i prodotti sono pronti, il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare. Se ci sono articoli non letti, attende la tua scelta: riprova oppure conferma solo quelli pronti.', reply_markup=servizi.tastiera_multiplo(draft))
     return servizi.RAPIDO
 
 
@@ -321,7 +321,7 @@ async def ricevi_rapido(servizi, update: Update, context: ContextTypes.DEFAULT_T
     if not servizi.tag_canale(draft['canale']):
         await update.message.reply_text('⚠️ Prima imposta AMAZON_PARTNER_TAG nelle variabili Railway con il TUO tag affiliato Amazon, poi reinvia i link.')
         return servizi.RAPIDO
-    links = servizi.re.findall('https?://[^\\s<>]+', update.message.text, flags=servizi.re.IGNORECASE)
+    links = servizi.re.findall(r'https?://[^\s<>]+', update.message.text, flags=servizi.re.IGNORECASE)
     links = [x.rstrip('.,;)]') for x in links]
     validi = []
     for link in links:

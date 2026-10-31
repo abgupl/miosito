@@ -67,7 +67,7 @@ async def _gestisci(s, update, context, checked):
     elif action.startswith(('offer_search', 'os_')):
         handler = s.gestisci_ricerca_offerte
     elif action.startswith('prog_giorno_'):
-        handler = s.conferma
+        handler = s.scegli_giorno_programmazione
     else:
         handler = {
             'auto_menu': s.menu_automazione,

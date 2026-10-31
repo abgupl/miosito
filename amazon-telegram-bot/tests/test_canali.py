@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import canali
 import menu_canali
-import invio_singolo
 import invio_multiplo
 from database import ArchivioCanali
 
@@ -148,34 +147,7 @@ class MenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, menu_canali.INPUT)
         self.s.ARCHIVIO.salva.assert_not_called()
 
-    async def test_single_captures_destination_before_input(self):
-        self.context.user_data = {'canale_attivo': 'casa'}
-        self.update.message = self.message
-        self.s.richiedi_canale = AsyncMock(return_value=True)
-        self.s.canale_corrente = lambda ctx: canali.selezionato(ctx, self.registry)
-        self.s.reset_flusso = canali.reset_flusso
-        self.s.LINK = 7
-        await invio_singolo.nuova_da_comando(self.s, self.update, self.context)
-        self.assertEqual(self.context.user_data['telegram_chat_id'], 'CASA')
-        self.assertEqual(self.context.user_data['canale_attivo'], 'casa')
 
-    async def test_single_confirm_queues_to_captured_destination_once(self):
-        self.query.data = 'pubblica'
-        self.query.message = self.message
-        self.message.message_id = 88
-        self.context.user_data = {'canale_attivo': 'casa', 'telegram_chat_id': 'CASA',
-                                  'nome': 'Prodotto', 'messaggio': 'Post', 'link': 'Link', 'prezzo': '10', 'anteprima_id': 88}
-        self.s.canale_corrente = lambda ctx: canali.selezionato(ctx, self.registry)
-        self.s.datetime, self.s.ROMA_TZ = datetime, timezone.utc
-        self.s.CONFERMA = 9
-        self.s.salva_programmazione = Mock(return_value=(12, datetime.now(timezone.utc)))
-        self.s.salva_foto_programmazione = Mock()
-        self.s.reset_flusso = canali.reset_flusso
-        self.s.menu_dopo_pubblicazione = lambda: []
-        await invio_singolo.conferma(self.s, self.update, self.context)
-        await invio_singolo.conferma(self.s, self.update, self.context)
-        self.assertEqual(self.s.salva_programmazione.call_count, 1)
-        self.assertEqual(self.s.salva_programmazione.call_args.args[-1], 'CASA')
 
     async def test_repost_interval_is_per_channel_instead_of_per_admin(self):
         store = SimpleNamespace(impostazioni=Mock(return_value={'intervallo': 60}), salva=Mock())

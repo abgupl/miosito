@@ -2,7 +2,7 @@
 
 ## Funzioni disponibili
 
-- Invio singolo, multiplo e repost nei moduli condivisi.
+- Invio unico da 1 a 50 link e repost nei moduli condivisi.
 - Scelta canale, cronologia e code con apertura tramite numero digitato.
 - Configurazioni automatiche indipendenti per ciascun canale.
 - Marchi, parole escluse, priorità e anti-accessori separati, con migrazione non distruttiva dei valori legacy.
@@ -47,3 +47,7 @@ Verifiche: 44 test, con navigazione degli handler reali su TECH, CASA e un canal
 Per tutti i canali, il lotto esegue una sola lettura con massimo tre tentativi per articolo. La seconda passata automatica dopo 20 secondi è rimossa. Il riepilogo conserva i link non letti e mostra il pulsante Riprova articoli non letti (N); il recupero riparte solo su pressione del pulsante, conserva i prodotti pronti e la destinazione e mantiene il controllo duplicati tra le passate. Finché ci sono non letti, e dopo un recupero manuale, il lotto richiede conferma esplicita. Nessun timer può avviarlo durante il recupero. Per lotti completamente riusciti al primo giro resta l'avvio dopo due minuti. Il riepilogo distingue link ricevuti, pronti, non letti, esclusi e duplicati.
 
 Le anteprime automatiche dei link sono disabilitate tramite Defaults dell'applicazione Telegram, anche per riepiloghi e modifiche di messaggi; foto e anteprime richieste esplicitamente rimangono disponibili. Le nuove regole si applicano dopo il deploy e non riscrivono i vecchi messaggi. Validazione: 58 test, con controllo del pulsante e delle callback reali e isolamento TECH/CASA/SPORT; nessun invio reale.
+
+## Invio unico
+
+Il pulsante Invio del canale apre direttamente la preparazione da 1 a 50 link Amazon, uno per riga. Il modulo invio_singolo.py e i suoi handler sono rimossi. La logica comune resta in invio_multiplo.py, con tre tentativi massimi, recupero manuale dei non letti, controlli duplicati e destinazione per canale. I lotti interamente riusciti al primo giro mantengono l'avvio dopo due minuti; quelli con non letti o recuperati attendono conferma. Nessun nuovo editor prima della conferma viene aggiunto. La scelta giorno/orario usata da cronologia e ricerca è conservata nel coordinatore come funzione condivisa. /invio è il comando principale; i vecchi comandi /nuova, /multiplo, /rapido e il vecchio pulsante nuova aprono il medesimo flusso unico. Il separatore dei link è corretto per gli a capo e la lettera s negli URL. Rubrica, automatico, repost e archivio legacy restano preservati. Validazione: 57 test, inclusi flussi da uno e più link per TECH/CASA/SPORT, preparazione/programmazione reale con servizi esterni simulati e modifica di un programmato con foto.

@@ -40,7 +40,7 @@ def tastiera_scoped(s, markup, namespace, channel):
     if not has_back:
         target = ('v2a:' + channel + ':auto_menu' if namespace == 'v2a' else
                   'v2r:global:rub_menu' if namespace == 'v2r' else
-                  'v2_add_back' if channel == 'global' else 'v2c:' + channel + ':posts')
+                  'v2_add_back' if channel == 'global' else 'v2c:' + channel + ':menu')
         rows.append([s.InlineKeyboardButton('⬅️ Indietro', callback_data=target)])
     from pulsanti import normalizza_righe
     return s.InlineKeyboardMarkup(normalizza_righe(rows, s.InlineKeyboardButton))
