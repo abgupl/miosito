@@ -116,7 +116,7 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data['prezzo'], '10')
         self.assertEqual(data['nome'], 'Storico')
         self.assertEqual(data['_foto_storica_repost'], 'foto')
-        s.leggi_offerta_con_sei_tentativi.assert_awaited_once_with('link', richiedi_immagine=False, callback=None)
+        s.leggi_offerta_con_sei_tentativi.assert_awaited_once_with('link', richiedi_immagine=False, callback=None, diagnostica={})
 
     async def test_no_current_discount_rejects_repost(self):
         s = SimpleNamespace(leggi_offerta_con_sei_tentativi=AsyncMock(return_value={'prezzo': '10'}),

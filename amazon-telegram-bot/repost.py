@@ -41,13 +41,15 @@ def candidati_repost(servizi, canale, quantita):
     return candidati[:min(300, max(30, quantita * 6))]
 
 
-async def leggi_offerta_repost(servizi, link, storico, callback=None):
+async def leggi_offerta_repost(servizi, link, storico, callback=None, diagnostica=None):
     """Storico per nome/foto; prezzi, sconto, coupon e disponibilita' da lettura corrente."""
-    dati = await servizi.leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callback=callback)
+    diagnostica = diagnostica if diagnostica is not None else {}
+    dati = await servizi.leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callback=callback, diagnostica=diagnostica)
     if not dati:
-        return (None, 'prezzo, disponibilita’ o condizione non verificabili (vedi log Railway)')
+        return (None, '; '.join(dict.fromkeys(diagnostica.get('motivi', []))) or 'Amazon non ha restituito dati verificabili; dettaglio non disponibile')
     if not servizi.offerta_attuale_rilevata(dati):
-        return (None, 'nessuno sconto o coupon attuale rilevato')
+        diagnostica['esito'] = 'escluso'
+        return (None, 'nessuno sconto verificabile sul prezzo di listino attuale')
     dati['nome'] = dati.get('nome') or storico.get('nome')
     dati['_foto_storica_repost'] = storico.get('foto_file_id')
     dati['categoria'] = dati.get('categoria') or storico.get('categoria')
@@ -93,4 +95,9 @@ def offerta_attuale_rilevata(servizi, dati):
     """Non confronta mai il prezzo con quello della pubblicazione storica."""
     attuale = servizi.numero_da_prezzo(dati.get('prezzo'))
     precedente = servizi.numero_da_prezzo(dati.get('vecchio_prezzo'))
-    return bool(attuale is not None and attuale > 0 and (precedente is not None) and (precedente > attuale) or servizi.frase_coupon(dati.get('coupon')))
+    if attuale is None or precedente is None or attuale <= 0 or precedente <= 0:
+        return False
+    if hasattr(servizi, 'importi_template'):
+        _, _, finale, _, _ = servizi.importi_template(dati)
+        return finale is not None and 0 < finale < precedente
+    return attuale < precedente

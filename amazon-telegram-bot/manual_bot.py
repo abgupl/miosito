@@ -1751,25 +1751,32 @@ def _unisci_dati_lettura(base, nuovo):
     return risultato
 
 
-async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callback=None):
+async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callback=None, diagnostica=None):
     """Lettura diretta della pagina Amazon: non interroga Creators API.
 
     Tre tentativi massimi, senza mescolare dati economici di letture diverse.
     """
+    if diagnostica is not None:
+        diagnostica.update(motivi=[], tentativi=0)
     asin = await asyncio.to_thread(risolvi_asin_da_link, link)
     if not asin:
+        if diagnostica is not None:
+            diagnostica['motivi'].append('ASIN non rilevato: impossibile identificare il prodotto dal link')
         print('Lettura Amazon: ASIN non rilevato dal link (anche dopo redirect).')
         return None
     url_canonico = f'https://www.amazon.it/dp/{asin}'
     lettori = (('pagina Amazon', leggi_prodotto_amazon),) * 3
     metadati = {}
-    motivi = []
+    motivi = diagnostica['motivi'] if diagnostica is not None else []
     for indice, (fonte, lettore) in enumerate(lettori, 1):
         try:
             # La pagina originale puo' includere parametri di offerta specifica.
             url_lettura = url_canonico if fonte == 'pagina Amazon' and not re.search(
                 r'[?&](?:offeringid|offerlistingid|smid|aod)=', str(link), re.I) else link
-            risultato = await asyncio.to_thread(lettore, url_lettura)
+            if diagnostica is not None:
+                diagnostica['tentativi'] = indice
+            dettaglio = {}
+            risultato = await asyncio.to_thread(lettore, url_lettura, diagnostica=dettaglio)
             if risultato and risultato.get('disponibile') is False:
                 print(f'Lettura Amazon ASIN {asin}: prodotto non disponibile ({fonte}).')
                 motivo = 'disponibilita non confermata'
@@ -1781,6 +1788,8 @@ async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callbac
                 continue
             if isinstance(risultato, dict) and risultato:
                 dati = _unisci_dati_lettura(metadati, risultato)
+                if diagnostica is not None and dati.get('nome'):
+                    diagnostica['nome'] = dati['nome']
                 dati['_link_originale'] = link
                 motivo = _diagnostica_lettura(dati, richiedi_immagine)
                 if not motivo:
@@ -1794,7 +1803,7 @@ async def leggi_offerta_con_sei_tentativi(link, richiedi_immagine=False, callbac
                     if dati.get(campo):
                         metadati[campo] = dati[campo]
             else:
-                motivo = 'nessuna risposta utilizzabile'
+                motivo = dettaglio.get('motivo') or 'nessuna risposta utilizzabile'
             motivi.append(f'{fonte}: {motivo}')
             print(f'Lettura Amazon ASIN {asin} tentativo {indice}/3 ({fonte}): {motivo}')
         except Exception as errore:
@@ -8612,7 +8621,7 @@ def frase_coupon(coupon):
     return f'✅ Applica il coupon {preposizione} {coupon} visibile nella pagina Amazon.'
 
 
-def leggi_prodotto_amazon(url):
+def leggi_prodotto_amazon(url, diagnostica=None):
 
     headers = {
         "User-Agent": (
@@ -8640,12 +8649,18 @@ def leggi_prodotto_amazon(url):
         )
 
         if risposta.status_code != 200:
+            if diagnostica is not None:
+                diagnostica['motivo'] = f'Amazon ha risposto HTTP {risposta.status_code}'
             print(f"Amazon pagina HTTP {risposta.status_code}: {risposta.url}")
             return None
         if not risposta.content:
+            if diagnostica is not None:
+                diagnostica['motivo'] = 'Amazon ha restituito una pagina vuota'
             print(f"Amazon pagina vuota: {risposta.url}")
             return None
         if any(m in risposta.text.lower() for m in ('captcha', 'enter the characters you see below', 'robot check')):
+            if diagnostica is not None:
+                diagnostica['motivo'] = 'Amazon ha mostrato una verifica anti-bot/CAPTCHA'
             print(f"Amazon pagina di verifica anti-bot: {risposta.url}")
             return None
 
@@ -8748,6 +8763,8 @@ def leggi_prodotto_amazon(url):
                 immagine = og.get('content')
 
         if not titolo and not prezzo:
+            if diagnostica is not None:
+                diagnostica['motivo'] = 'Pagina ricevuta senza titolo e prezzo del prodotto'
             print(f"Amazon pagina HTTP 200 ma senza titolo e prezzo: {risposta.url}")
             return None
 
@@ -8770,14 +8787,20 @@ def leggi_prodotto_amazon(url):
         }
 
     except requests.Timeout as errore:
+        if diagnostica is not None:
+            diagnostica['motivo'] = 'Timeout: Amazon non ha risposto entro 10 secondi'
         print(f"Amazon timeout HTTP (10s): {type(errore).__name__}: {errore}")
         return None
     except requests.RequestException as errore:
+        if diagnostica is not None:
+            diagnostica['motivo'] = 'Errore di connessione o richiesta HTTP ad Amazon'
         print(f"Amazon errore HTTP: {type(errore).__name__}: {errore}")
         return None
 
     except Exception as errore:
 
+        if diagnostica is not None:
+            diagnostica['motivo'] = f'Errore di lettura della pagina ({type(errore).__name__})'
         print(f"Errore lettura Amazon: {type(errore).__name__}: {errore}")
 
         return None
@@ -9122,9 +9145,9 @@ def candidati_repost(canale, quantita):
     return repost.candidati_repost(_servizi_invii, canale, quantita)
 
 
-async def leggi_offerta_repost(link, storico, callback=None):
+async def leggi_offerta_repost(link, storico, callback=None, diagnostica=None):
     """Callback compatibile; implementazione in repost.py."""
-    return await repost.leggi_offerta_repost(_servizi_invii, link, storico, callback)
+    return await repost.leggi_offerta_repost(_servizi_invii, link, storico, callback, diagnostica=diagnostica)
 
 
 async def repost_da_pulsante(update: Update, context: ContextTypes.DEFAULT_TYPE):

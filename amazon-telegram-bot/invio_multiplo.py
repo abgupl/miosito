@@ -102,6 +102,21 @@ async def avvio_multiplo_differito(servizi, messaggio, context, draft, token):
         await servizi.avvia_lotto_multiplo(messaggio, context, draft, automatico=True)
 
 
+def dettagli_non_letti(draft):
+    links = draft.get('non_letti', [])
+    if not links:
+        return []
+    lines = [f"⚠️ Articoli non letti: {len(links)}"]
+    for i, item in enumerate(links, 1):
+        link = item.get('link') if isinstance(item, dict) else item
+        info = draft.get('motivi_non_letti', {}).get(link, {})
+        name = info.get('nome') or (item.get('nome') if isinstance(item, dict) else None) or 'Prodotto non identificato'
+        lines.extend([f"{i}. {str(name)[:160]}", str(link), 'Motivo: ' + info.get('motivo', 'Dettaglio non disponibile per questa lettura.')])
+        if info.get('tentativi') is not None:
+            lines.append(f"Tentativi di lettura pagina: {info['tentativi']}")
+    return lines
+
+
 async def avvia_lotto_multiplo(servizi, messaggio, context, draft, automatico=False):
     if draft.get('tipo') == 'singolo_cronologia':
         return False
@@ -121,8 +136,9 @@ async def avvia_lotto_multiplo(servizi, messaggio, context, draft, automatico=Fa
     righe = [f"✅ {('Avvio automatico dopo 2 minuti' if automatico else 'Avvio confermato')}", f"📅 {len(piano)} post aggiunti a Programmati — {draft['canale'].upper()}.", f'Primo invio: {piano[0][1].astimezone(servizi.ROMA_TZ):%d/%m %H:%M}' if piano else 'Nessun invio: tutti i prodotti sono stati scartati.', f"Intervallo: {draft['minuti']} minuti. Orari già occupati rispettati.", f"Richiesti: {draft['richiesti']} · Validati: {len(piano)}" if draft.get('richiesti') else '', 'Il primo post partirà al primo orario libero, rispettando le Pause Caffè.', f"Duplicati ignorati: {draft['duplicati']}"]
     if draft['scartati']:
         righe += ['', '❌ LINK SCARTATI / ERRORI:'] + list(draft['scartati'])
-    else:
+    elif not draft.get('non_letti'):
         righe.append('✅ Nessun link scartato per errori o dati mancanti.')
+    righe.extend(dettagli_non_letti(draft))
     testo = '\n'.join(righe)
     try:
         for pos in range(0, len(testo), 3500):
@@ -151,13 +167,12 @@ async def riepilogo_multiplo(servizi, messaggio, draft, context=None):
         righe.append(f"{quando.astimezone(servizi.ROMA_TZ):%d/%m %H:%M} · {prodotto['nome'][:75]} · {prodotto['prezzo']} €")
     for motivo in draft['scartati']:
         righe.append('❌ ' + motivo)
+    righe.extend(dettagli_non_letti(draft))
     if draft.get('non_letti') and draft.get('richiesti') and len(draft['pronti']) >= draft['richiesti']:
         righe.append(f"\n✅ Obiettivo raggiunto: {draft['richiesti']} post pronti.")
         righe.append(f"ℹ️ {len(draft['non_letti'])} riserve non lette non sono necessarie: non sono state recuperate né aggiunte al lotto.")
         righe.append('Premi Conferma e avvia per programmare i post pronti. Nessun avvio automatico.')
     elif draft.get('non_letti'):
-        righe.append('\n⚠️ Articoli non letti dopo 3 tentativi:')
-        righe.extend(str(x.get('link') if isinstance(x, dict) else x) for x in draft['non_letti'])
         righe.append('Premi Riprova articoli non letti per un nuovo controllo, oppure conferma solo quelli pronti. Nessun recupero o avvio automatico.')
     elif draft.get('conferma_manuale'):
         righe.append('\n✅ Recupero terminato. Premi Conferma e avvia: il lotto attende la tua conferma.')
@@ -228,14 +243,22 @@ async def prepara_lotto_multiplo(servizi, messaggio, context, draft, links, seco
                             await messaggio.edit_text(f"🔎 Tentativo {numero}/3 — {len(draft['pronti'])}/{draft.get('richiesti', totale)} post pronti. Riprovo…", reply_markup=servizi.tastiera_annulla_elaborazione())
                     except Exception:
                         pass
+            diagnostica = {}
             if draft.get('tipo') == 'repost':
-                dati, motivo_repost = await servizi.leggi_offerta_repost(link, storico, mostra_tentativo_multiplo)
+                dati, motivo_repost = await servizi.leggi_offerta_repost(link, storico, mostra_tentativo_multiplo, diagnostica=diagnostica)
             else:
-                dati = await servizi.leggi_offerta_con_sei_tentativi(link, richiedi_immagine=True, callback=mostra_tentativo_multiplo)
+                dati = await servizi.leggi_offerta_con_sei_tentativi(link, richiedi_immagine=True, callback=mostra_tentativo_multiplo, diagnostica=diagnostica)
                 motivo_repost = None
             if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
                 return
             if not dati:
+                if diagnostica.get('esito') == 'escluso':
+                    draft['scartati'].append(f"{storico.get('nome') or link} — {motivo_repost}")
+                    continue
+                draft.setdefault('motivi_non_letti', {})[link] = {
+                    'nome': diagnostica.get('nome') or storico.get('nome'),
+                    'motivo': motivo_repost or '; '.join(dict.fromkeys(diagnostica.get('motivi', []))) or 'Amazon non ha restituito dati verificabili; dettaglio non disponibile',
+                    'tentativi': diagnostica.get('tentativi')}
                 non_letti.append(candidato)
                 draft['conferma_manuale'] = True
                 print(f'Invio multiplo: {link} non letto dopo 3 tentativi; recupero solo su richiesta.')
@@ -243,7 +266,7 @@ async def prepara_lotto_multiplo(servizi, messaggio, context, draft, links, seco
             tipo = servizi.tipo_o_fallback(link, dati)
             dati['tipologia_amazon'] = tipo
             if draft.get('tipo') == 'repost' and (not servizi.offerta_attuale_rilevata(dati)):
-                draft['scartati'].append(f'{link} — nessuno sconto attuale né coupon rilevato')
+                draft['scartati'].append(f'{link} — nessuno sconto verificabile sul prezzo di listino attuale')
                 continue
             try:
                 asin = dati.get('asin') or asin_iniziale
@@ -267,6 +290,7 @@ async def prepara_lotto_multiplo(servizi, messaggio, context, draft, links, seco
                 visti.add(asin)
                 draft['pronti'].append({'nome': ' '.join(str(dati['nome']).split())[:500], 'prezzo': servizi.pulisci_prezzo(dati['prezzo']), 'vecchio_prezzo': servizi.pulisci_prezzo(dati['vecchio_prezzo']) if dati.get('vecchio_prezzo') else 'NO', 'link': affiliato, 'foto_file_id': anteprima.photo[-1].file_id, 'categoria': dati.get('categoria'), 'asin': asin, 'link_originale': link, 'coupon': dati.get('coupon')})
             except Exception as exc:
+                draft.setdefault('motivi_non_letti', {})[link] = {'nome': dati.get('nome') or storico.get('nome'), 'motivo': f'Preparazione della foto o anteprima non riuscita ({type(exc).__name__})'}
                 non_letti.append(candidato)
                 draft['conferma_manuale'] = True
                 print(f'Invio multiplo: preparazione {link} fallita: {type(exc).__name__}; recupero solo su richiesta.')
