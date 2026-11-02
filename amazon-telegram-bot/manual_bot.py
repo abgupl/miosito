@@ -8974,7 +8974,7 @@ async def proteggi_menu_v2(update, context):
             return
     elif channel and (data in {'nuova','rapido','repost','importa_messaggio','publish_menu','menu_admin','annulla',
                                'conferma_orario_vicino','cambia_orario'}
-                      or re.fullmatch(r'prog_giorno_[012]|tpl_(pulito|aggressivo|tech)|multi_(timing|personalizzato|min_(10|20|30|40|60)|avvia|annulla|retry)', data)):
+                      or re.fullmatch(r'prog_giorno_[012]|tpl_(pulito|aggressivo|tech)|multi_(elabora|timing|personalizzato|min_(10|20|30|40|60)|avvia|annulla|retry)', data)):
         return
     await q.answer('Schermata precedente o canale diverso. Usa /start oppure il menu corrente.', show_alert=True)
     raise ApplicationHandlerStop
@@ -13396,7 +13396,7 @@ def main():
 
             RAPIDO: [
                 CallbackQueryHandler(decidi_ricontrollo_cronologia,pattern=r'^hist_(pubblica|programma|annulla)$'),
-                CallbackQueryHandler(gestisci_multiplo, pattern=r"^multi_(?:canale_(?:tech|casa)|timing|personalizzato|min_(?:10|20|30|40|60)|avvia|annulla|retry)$"),
+                CallbackQueryHandler(gestisci_multiplo, pattern=r"^multi_(?:canale_(?:tech|casa)|elabora|timing|personalizzato|min_(?:10|20|30|40|60)|avvia|annulla|retry)$"),
                 MessageHandler(
                     (filters.TEXT | filters.CAPTION)
                     & ~filters.COMMAND,

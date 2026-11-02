@@ -108,23 +108,30 @@ with tempfile.TemporaryDirectory() as tmp:
             await click('importa_messaggio')
             assert app.user_data[42]['multiplo']['importa_messaggio']
             assert any(b.callback_data=='v2c:casa:menu' for row in send.call_args.kwargs['reply_markup'].inline_keyboard for b in row)
-            for payload in [
-                {'text':'🔥 Apri qui; https://amzn.eu/Altra', 'entities':[{'type':'text_link','offset':3,'length':8,'url':'https://link.amazon/Primo'}]},
-                {'photo':[{'file_id':'input-photo','file_unique_id':'unique-input','width':100,'height':100}],
-                 'caption':'☀️ Tocca qui', 'caption_entities':[{'type':'text_link','offset':3,'length':9,'url':'https://amzn.eu/Foto'}]}
-            ]:
-                with patch.object(runtime,'prepara_lotto_multiplo',new=AsyncMock()) as imported:
+            with patch.object(runtime,'prepara_lotto_multiplo',new=AsyncMock()) as imported:
+                for payload in [
+                    {'text':'🔥 Apri qui; https://amzn.eu/Altra', 'entities':[{'type':'text_link','offset':3,'length':8,'url':'https://link.amazon/Primo'}]},
+                    {'photo':[{'file_id':'input-photo','file_unique_id':'unique-input','width':100,'height':100}],
+                     'caption':'☀️ Tocca qui', 'caption_entities':[{'type':'text_link','offset':3,'length':9,'url':'https://amzn.eu/Foto'}]},
+                    {'text':'Offerta https://ofclub.click/v9bhotc'},
+                    {'text':'Quarta offerta https://amzn.eu/Quarto'}
+                ]:
                     counter+=1
                     raw={'update_id':counter,'message':{'message_id':counter,'date':1700000000,
+                         'forward_origin':{'type':'channel','chat':{'id':-100999,'type':'channel','title':'Origine'},'message_id':counter,'date':1700000000},
                          'from':{'id':42,'is_bot':False,'first_name':'Admin'},'chat':{'id':42,'type':'private'},**payload}}
                     await app.process_update(Update.de_json(raw,app.bot))
-                    await asyncio.sleep(0)
-                    imported.assert_awaited_once()
-                    links=imported.call_args.args[-1]
-                    assert links==(['https://link.amazon/Primo','https://amzn.eu/Altra'] if 'text' in payload else ['https://amzn.eu/Foto']), links
-                    assert imported.call_args.args[2]['canale']=='casa'
-                await click('v2c:casa:menu')
-                await click('importa_messaggio')
+                    imported.assert_not_awaited()
+                assert app.user_data[42]['multiplo']['messaggi_ricevuti']==4
+                assert len(app.user_data[42]['multiplo']['link_raccolti'])==5
+                await click('multi_elabora')
+                await asyncio.sleep(0)
+                imported.assert_awaited_once()
+                assert imported.call_args.args[-1]==['https://link.amazon/Primo','https://amzn.eu/Altra','https://amzn.eu/Foto','https://ofclub.click/v9bhotc','https://amzn.eu/Quarto']
+                assert imported.call_args.args[2]['canale']=='casa'
+                await click('multi_elabora')
+                assert imported.await_count==1
+            await click('v2c:casa:menu')
             await click('v2c:casa:posts')
             await click('nuova')
             assert app.user_data[42]['multiplo']['canale']=='casa'

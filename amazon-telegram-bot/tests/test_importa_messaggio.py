@@ -46,18 +46,21 @@ class ExtractionTests(unittest.TestCase):
 class ImportFlowTests(unittest.IsolatedAsyncioTestCase):
     def services(self, tag='mio-21'):
         return NS(controlla_autorizzazione=AsyncMock(return_value=True), tag_canale=lambda key:tag,
-                  RAPIDO=1, re=re, urlencode=urlencode, prepara_lotto_multiplo=AsyncMock(), ConversationHandler=NS(END=-1))
+                  RAPIDO=1, re=re, urlencode=urlencode, prepara_lotto_multiplo=AsyncMock(), tastiera_multiplo=lambda draft:None, ConversationHandler=NS(END=-1))
 
     async def test_every_channel_prepares_one_batch_from_caption_with_global_affiliation(self):
         for key in ('tech', 'casa', 'sport'):
             s = self.services()
-            draft = dict(canale=key, importa_messaggio=True, pronti=[], scartati=[], elaborazione=False)
+            draft = dict(canale=key, importa_messaggio=True, raccolta_aperta=True, pronti=[], scartati=[], duplicati=0, elaborazione=False)
             tasks = []
             def schedule(coro, **kwargs):
                 task = asyncio.create_task(coro); tasks.append(task); return task
             ctx = NS(user_data={'multiplo':draft}, application=NS(create_task=schedule))
             msg = NS(text=None, caption='Offerta https://amzn.eu/Uno; https://link.amazon/Due', reply_text=AsyncMock())
             self.assertEqual(await invio_multiplo.ricevi_rapido(s, NS(message=msg), ctx), 1)
+            s.prepara_lotto_multiplo.assert_not_awaited()
+            query=NS(data='multi_elabora', answer=AsyncMock(), message=msg)
+            await invio_multiplo.gestisci_multiplo(s,NS(callback_query=query),ctx)
             await asyncio.gather(*tasks)
             self.assertEqual(s.prepara_lotto_multiplo.call_args.args[-1], ['https://amzn.eu/Uno', 'https://link.amazon/Due'])
             self.assertEqual(draft['canale'], key)

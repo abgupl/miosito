@@ -1,6 +1,6 @@
 """Importazione di link da testo, didascalie, entità e pulsanti disponibili."""
 import re
-from link_amazon import link_amazon_valido
+from redirect_amazon import link_importabile
 
 
 def estrai_link(messaggio):
@@ -21,7 +21,32 @@ def estrai_link(messaggio):
         trovati.extend(b.url for b in riga if getattr(b, 'url', None))
     # Deduplica le due rappresentazioni dello stesso collegamento Telegram.
     unici = list(dict.fromkeys(trovati))
-    return [link for link in unici if link_amazon_valido(link)], sum(not link_amazon_valido(link) for link in unici)
+    return [link for link in unici if link_importabile(link)], sum(not link_importabile(link) for link in unici)
+
+
+async def raccogli(servizi, update, context, draft, links, ignorati):
+    raccolti = draft.setdefault('link_raccolti', [])
+    nuovi = [link for link in links if link not in raccolti]
+    if len(raccolti) + len(nuovi) > 50:
+        await update.message.reply_text('Limite di 50 link per lotto: questo messaggio non è stato aggiunto. Elabora quelli già raccolti oppure annulla.', reply_markup=servizi.tastiera_multiplo(draft))
+        return servizi.RAPIDO
+    identita = (getattr(update.message, 'chat_id', None), getattr(update.message, 'message_id', None))
+    visti = draft.setdefault('messaggi_importati', set())
+    if identita[1] is not None and identita in visti:
+        return servizi.RAPIDO
+    if identita[1] is not None:
+        visti.add(identita)
+    raccolti.extend(nuovi)
+    draft['messaggi_ricevuti'] = draft.get('messaggi_ricevuti', 0) + 1
+    draft['ricevuti'] = draft.get('ricevuti', 0) + len(links)
+    draft['duplicati'] += len(links) - len(nuovi)
+    if ignorati:
+        draft['scartati'].append(f'{ignorati} link non supportati ignorati nel messaggio {draft["messaggi_ricevuti"]}')
+    await update.message.reply_text(
+        f'📩 Messaggi raccolti: {draft["messaggi_ricevuti"]}\n🔗 Link distinti: {len(raccolti)}\n\n'
+        'Puoi inoltrare altri messaggi. Quando hai finito premi Elabora messaggi: la lettura non parte prima.',
+        reply_markup=servizi.tastiera_multiplo(draft))
+    return servizi.RAPIDO
 
 
 async def apri(servizi, update, context):

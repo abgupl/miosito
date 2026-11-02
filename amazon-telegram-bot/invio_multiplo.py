@@ -45,6 +45,8 @@ def tastiera_multiplo(servizi, draft):
     if draft.get('tipo') == 'singolo_cronologia':
         return servizi.tastiera_confronto_cronologia(bool(draft.get('pronti')) and not draft.get('elaborazione'))
     rows = [[servizi.InlineKeyboardButton(f"⏱ Intervallo: {draft['minuti']} min", callback_data='multi_timing')]]
+    if draft.get('raccolta_aperta') and draft.get('link_raccolti'):
+        rows.append([servizi.InlineKeyboardButton(f"📥 Elabora messaggi ({draft.get('messaggi_ricevuti', 0)})", callback_data='multi_elabora')])
     if draft.get('pronti') and not draft.get('elaborazione'):
         rows.append([servizi.InlineKeyboardButton('🚀 CONFERMA E AVVIA', callback_data='multi_avvia')])
     obiettivo_raggiunto = draft.get('richiesti') and len(draft.get('pronti', [])) >= draft['richiesti']
@@ -134,6 +136,8 @@ async def avvia_lotto_multiplo(servizi, messaggio, context, draft, automatico=Fa
             return False
         context.user_data.pop('multiplo', None)
     righe = [f"✅ {('Avvio automatico dopo 2 minuti' if automatico else 'Avvio confermato')}", f"📅 {len(piano)} post aggiunti a Programmati — {draft['canale'].upper()}.", f'Primo invio: {piano[0][1].astimezone(servizi.ROMA_TZ):%d/%m %H:%M}' if piano else 'Nessun invio: tutti i prodotti sono stati scartati.', f"Intervallo: {draft['minuti']} minuti. Orari già occupati rispettati.", f"Richiesti: {draft['richiesti']} · Validati: {len(piano)}" if draft.get('richiesti') else '', 'Il primo post partirà al primo orario libero, rispettando le Pause Caffè.', f"Duplicati ignorati: {draft['duplicati']}"]
+    if draft.get('importa_messaggio'):
+        righe.insert(1, f"📩 Messaggi importati: {draft.get('messaggi_ricevuti', 0)}")
     if draft['scartati']:
         righe += ['', '❌ LINK SCARTATI / ERRORI:'] + list(draft['scartati'])
     elif not draft.get('non_letti'):
@@ -154,6 +158,8 @@ async def riepilogo_multiplo(servizi, messaggio, draft, context=None):
     servizi.filtra_duplicati_recenti_multiplo(draft)
     piano = servizi.piano_multiplo(draft['pronti'], draft['minuti'], servizi._chat_id_per_canale(draft['canale']))
     righe = [f"{('🔁 REPOST' if draft.get('tipo') == 'repost' else '✍️ INVIO')} — {draft['canale'].upper()}", f"⏱ Intervallo: {draft['minuti']} minuti", f"📥 Link ricevuti: {draft.get('ricevuti', draft.get('totale_link', draft.get('candidati', len(draft['pronti']))))}", f"✅ Pronti: {len(piano)} · Non letti: {len(draft.get('non_letti', []))} · Esclusi: {len(draft['scartati'])} · Duplicati: {draft['duplicati']}", '']
+    if draft.get('importa_messaggio'):
+        righe.insert(1, f"📩 Messaggi importati: {draft.get('messaggi_ricevuti', 0)}")
     if draft.get('richiesti'):
         righe.append(f"Richiesti: {draft['richiesti']} · Preparati: {len(piano)} · Candidati disponibili per il controllo: {draft.get('candidati', 0)}")
     if piano:
@@ -198,9 +204,10 @@ async def rapido_da_comando(servizi, update: Update, context: ContextTypes.DEFAU
     servizi.reset_flusso(context)
     draft = {'canale': channel.chiave, 'minuti': servizi.intervallo_multiplo(update.effective_user.id, canale=channel.chiave), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
     draft['importa_messaggio'] = importa
+    draft['raccolta_aperta'] = importa
     context.user_data['multiplo'] = draft
     if importa:
-        testo = ('📩 IMPORTA MESSAGGIO — ' + channel.nome + '\n\nIncolla o inoltra un messaggio con link Amazon, anche nascosti nel testo o nella didascalia. Puoi separare più testi con ; oppure andare a capo. Massimo 50 prodotti.\nUso il tuo tag affiliato globale e il template del bot, leggendo i dati da Amazon fino a 3 volte per prodotto.\nSe tutti i prodotti sono pronti, avvio dopo 2 minuti; se ci sono articoli non letti, attendo la tua scelta. I pulsanti vengono letti solo se Telegram li conserva.')
+        testo = ('📩 IMPORTA MESSAGGIO — ' + channel.nome + '\n\nIncolla o inoltra uno o più messaggi, anche separatamente. Li raccolgo tutti: quando hai finito premi Elabora messaggi. Puoi anche separare più testi con ; oppure andare a capo. Massimo 50 link distinti.\nLeggo link Amazon nel testo, nelle didascalie e nei collegamenti cliccabili; accetto ofclub.click solo se porta ad Amazon. I pulsanti vengono letti solo se Telegram li conserva.\nUso il tuo tag globale e il template del bot, con fino a 3 tentativi per prodotto. Dopo la preparazione, se tutti sono pronti, resta l’avvio dopo 2 minuti; con articoli non letti attendo la tua scelta.')
         await update.effective_message.reply_text(testo, reply_markup=servizi.tastiera_multiplo(draft))
         return servizi.RAPIDO
     await update.effective_message.reply_text('✍️ INVIO — ' + channel.nome + '\n\nScegli l’intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nSe tutti i prodotti sono pronti, il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare. Se ci sono articoli non letti, attende la tua scelta: riprova oppure conferma solo quelli pronti.', reply_markup=servizi.tastiera_multiplo(draft))
@@ -236,7 +243,22 @@ async def prepara_lotto_multiplo(servizi, messaggio, context, draft, links, seco
                 await messaggio.edit_text(stato, reply_markup=servizi.tastiera_annulla_elaborazione())
             except Exception:
                 pass
-            asin_iniziale = await servizi.asyncio.to_thread(servizi.risolvi_asin_da_link, link)
+            link_lettura = link
+            if draft.get('importa_messaggio'):
+                from redirect_amazon import link_esterno_supportato, risolvi
+                if link_esterno_supportato(link):
+                    link_lettura, motivo = await servizi.asyncio.to_thread(risolvi, link)
+                    if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
+                        return
+                    if not link_lettura:
+                        if motivo.startswith('Destinazione non Amazon:'):
+                            draft['scartati'].append(f'{link} — {motivo}')
+                        else:
+                            draft.setdefault('motivi_non_letti', {})[link] = {'motivo': motivo, 'tentativi': 0}
+                            non_letti.append(candidato)
+                            draft['conferma_manuale'] = True
+                        continue
+            asin_iniziale = await servizi.asyncio.to_thread(servizi.risolvi_asin_da_link, link_lettura)
             if draft.get('tipo') != 'singolo_cronologia' and servizi.prodotto_inviato_ultime_24h(asin_iniziale, servizi._chat_id_per_canale(draft['canale'])):
                 draft['scartati'].append(f"{link} — già pubblicato nelle ultime 24 ore nel canale {draft['canale'].upper()}")
                 continue
@@ -252,7 +274,7 @@ async def prepara_lotto_multiplo(servizi, messaggio, context, draft, links, seco
             if draft.get('tipo') == 'repost':
                 dati, motivo_repost = await servizi.leggi_offerta_repost(link, storico, mostra_tentativo_multiplo, diagnostica=diagnostica)
             else:
-                dati = await servizi.leggi_offerta_con_sei_tentativi(link, richiedi_immagine=True, callback=mostra_tentativo_multiplo, diagnostica=diagnostica)
+                dati = await servizi.leggi_offerta_con_sei_tentativi(link_lettura, richiedi_immagine=True, callback=mostra_tentativo_multiplo, diagnostica=diagnostica)
                 motivo_repost = None
             if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
                 return
@@ -354,6 +376,9 @@ async def ricevi_rapido(servizi, update: Update, context: ContextTypes.DEFAULT_T
     if draft.get('pronti') or draft.get('non_letti'):
         await update.message.reply_text('Conferma i post pronti, riprova quelli non letti oppure annulla il lotto prima di inviare altri link.', reply_markup=servizi.tastiera_multiplo(draft))
         return servizi.RAPIDO
+    if draft.get('importa_messaggio') and not draft.get('raccolta_aperta', True):
+        await update.message.reply_text('Questa raccolta è già stata elaborata. Riapri Importa messaggio per iniziare un nuovo lotto.')
+        return servizi.RAPIDO
     if not servizi.tag_canale(draft['canale']):
         await update.message.reply_text('⚠️ Prima imposta il tuo tag in Impostazioni generali → Tag affiliato, poi reinvia il messaggio.')
         return servizi.RAPIDO
@@ -373,6 +398,9 @@ async def ricevi_rapido(servizi, update: Update, context: ContextTypes.DEFAULT_T
             testo = 'Sono presenti più di 50 link Amazon: dividi il contenuto in lotti più piccoli.'
         await update.message.reply_text(testo)
         return servizi.RAPIDO
+    if draft.get('importa_messaggio') and draft.get('raccolta_aperta', True):
+        from importa_messaggio import raccogli
+        return await raccogli(servizi, update, context, draft, unici, ignorati)
     draft['ricevuti'] = len(validi)
     draft['duplicati'] = len(validi) - len(unici)
     draft['scartati'] = [f'{ignorati} link non Amazon ignorati'] if ignorati else []
@@ -400,6 +428,20 @@ async def gestisci_multiplo(servizi, update: Update, context: ContextTypes.DEFAU
         return servizi.ConversationHandler.END
     if draft.get('elaborazione') or draft.get('conferma_in_corso'):
         await query.message.reply_text("⏳ Attendi il completamento dell'operazione in corso.")
+        return servizi.RAPIDO
+    if azione == 'multi_elabora':
+        if not draft.get('importa_messaggio') or not draft.get('raccolta_aperta') or not draft.get('link_raccolti'):
+            await query.message.reply_text('Non ci sono nuovi messaggi da elaborare.', reply_markup=servizi.tastiera_multiplo(draft))
+            return servizi.RAPIDO
+        if not servizi.tag_canale(draft['canale']):
+            await query.message.reply_text('Imposta il tuo tag in Impostazioni generali → Tag affiliato prima di elaborare i messaggi.')
+            return servizi.RAPIDO
+        draft['raccolta_aperta'] = False
+        draft['elaborazione'] = True
+        draft.pop('timer_token', None)
+        links = list(draft['link_raccolti'])
+        attesa = await query.message.reply_text(f'🔎 Preparo {len(links)} link da {draft["messaggi_ricevuti"]} messaggi raccolti. Puoi usare /annulla per interrompere.')
+        context.application.create_task(servizi.prepara_lotto_multiplo(attesa, context, draft, links), update=update)
         return servizi.RAPIDO
     if azione == 'multi_retry':
         links = list(draft.get('non_letti', []))
