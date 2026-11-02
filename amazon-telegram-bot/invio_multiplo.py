@@ -47,7 +47,8 @@ def tastiera_multiplo(servizi, draft):
     rows = [[servizi.InlineKeyboardButton(f"⏱ Intervallo: {draft['minuti']} min", callback_data='multi_timing')]]
     if draft.get('pronti') and not draft.get('elaborazione'):
         rows.append([servizi.InlineKeyboardButton('🚀 CONFERMA E AVVIA', callback_data='multi_avvia')])
-    if draft.get('non_letti') and not draft.get('elaborazione'):
+    obiettivo_raggiunto = draft.get('richiesti') and len(draft.get('pronti', [])) >= draft['richiesti']
+    if draft.get('non_letti') and not draft.get('elaborazione') and not obiettivo_raggiunto:
         rows.append([servizi.InlineKeyboardButton(f"🔄 Riprova articoli non letti ({len(draft['non_letti'])})", callback_data='multi_retry')])
     rows.append([servizi.InlineKeyboardButton('❌ ANNULLA', callback_data='multi_annulla')])
     return servizi.InlineKeyboardMarkup(rows)
@@ -150,7 +151,11 @@ async def riepilogo_multiplo(servizi, messaggio, draft, context=None):
         righe.append(f"{quando.astimezone(servizi.ROMA_TZ):%d/%m %H:%M} · {prodotto['nome'][:75]} · {prodotto['prezzo']} €")
     for motivo in draft['scartati']:
         righe.append('❌ ' + motivo)
-    if draft.get('non_letti'):
+    if draft.get('non_letti') and draft.get('richiesti') and len(draft['pronti']) >= draft['richiesti']:
+        righe.append(f"\n✅ Obiettivo raggiunto: {draft['richiesti']} post pronti.")
+        righe.append(f"ℹ️ {len(draft['non_letti'])} riserve non lette non sono necessarie: non sono state recuperate né aggiunte al lotto.")
+        righe.append('Premi Conferma e avvia per programmare i post pronti. Nessun avvio automatico.')
+    elif draft.get('non_letti'):
         righe.append('\n⚠️ Articoli non letti dopo 3 tentativi:')
         righe.extend(str(x.get('link') if isinstance(x, dict) else x) for x in draft['non_letti'])
         righe.append('Premi Riprova articoli non letti per un nuovo controllo, oppure conferma solo quelli pronti. Nessun recupero o avvio automatico.')
@@ -197,6 +202,8 @@ async def prepara_lotto_multiplo(servizi, messaggio, context, draft, links, seco
             storico = candidato if isinstance(candidato, dict) else {}
             link = storico.get('link') if storico else candidato
             if draft.get('richiesti') and len(draft['pronti']) >= draft['richiesti']:
+                if seconda_passata:
+                    non_letti.extend(links[indice - 1:])
                 break
             if context.user_data.get('multiplo') is not draft or draft.get('annullato'):
                 return
