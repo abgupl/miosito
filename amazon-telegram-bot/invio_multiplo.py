@@ -57,7 +57,7 @@ def tastiera_multiplo(servizi, draft):
 def link_affiliato_multiplo(servizi, link, asin, canale=None):
     tag = servizi.tag_canale(canale)
     if not tag:
-        raise ValueError('Imposta AMAZON_PARTNER_TAG su Railway con il tuo tag affiliato Amazon')
+        raise ValueError('Imposta il tuo tag affiliato in Impostazioni generali → Tag affiliato')
     if not asin:
         raise ValueError('ASIN del prodotto non trovato')
     return 'https://www.amazon.it/dp/' + asin + '?' + servizi.urlencode({'tag': tag})
@@ -187,7 +187,7 @@ async def riepilogo_multiplo(servizi, messaggio, draft, context=None):
 
 
 @navigabile
-async def rapido_da_comando(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def rapido_da_comando(servizi, update: Update, context: ContextTypes.DEFAULT_TYPE, importa=False):
     if not await servizi.controlla_autorizzazione(update):
         return servizi.ConversationHandler.END
     if update.callback_query:
@@ -197,7 +197,12 @@ async def rapido_da_comando(servizi, update: Update, context: ContextTypes.DEFAU
     channel = servizi.canale_corrente(context)
     servizi.reset_flusso(context)
     draft = {'canale': channel.chiave, 'minuti': servizi.intervallo_multiplo(update.effective_user.id, canale=channel.chiave), 'pronti': [], 'scartati': [], 'duplicati': 0, 'elaborazione': False}
+    draft['importa_messaggio'] = importa
     context.user_data['multiplo'] = draft
+    if importa:
+        testo = ('📩 IMPORTA MESSAGGIO — ' + channel.nome + '\n\nIncolla o inoltra un messaggio con link Amazon, anche nascosti nel testo o nella didascalia. Puoi separare più testi con ; oppure andare a capo. Massimo 50 prodotti.\nUso il tuo tag affiliato globale e il template del bot, leggendo i dati da Amazon fino a 3 volte per prodotto.\nSe tutti i prodotti sono pronti, avvio dopo 2 minuti; se ci sono articoli non letti, attendo la tua scelta. I pulsanti vengono letti solo se Telegram li conserva.')
+        await update.effective_message.reply_text(testo, reply_markup=servizi.tastiera_multiplo(draft))
+        return servizi.RAPIDO
     await update.effective_message.reply_text('✍️ INVIO — ' + channel.nome + '\n\nScegli l’intervallo, poi incolla i link Amazon, uno per riga (massimo 50).\nOgni prodotto ha fino a 3 tentativi di lettura.\nSe tutti i prodotti sono pronti, il lotto parte automaticamente entro 2 minuti: puoi confermare subito o annullare. Se ci sono articoli non letti, attende la tua scelta: riprova oppure conferma solo quelli pronti.', reply_markup=servizi.tastiera_multiplo(draft))
     return servizi.RAPIDO
 
@@ -318,7 +323,7 @@ async def ricevi_rapido(servizi, update: Update, context: ContextTypes.DEFAULT_T
         return servizi.RAPIDO
     if draft.pop('timing_personalizzato', False):
         try:
-            minuti = int(update.message.text.strip())
+            minuti = int((update.message.text or '').strip())
             if not 1 <= minuti <= 1440:
                 raise ValueError
         except ValueError:
@@ -332,12 +337,12 @@ async def ricevi_rapido(servizi, update: Update, context: ContextTypes.DEFAULT_T
             await update.message.reply_text(f'✅ Intervallo salvato: {minuti} minuti.', reply_markup=servizi.tastiera_multiplo(draft))
         return servizi.RAPIDO
     if draft.get('repost_attesa_quantita'):
-        testo = update.message.text.strip()
+        testo = (update.message.text or '').strip()
         if not testo.isdigit() or not 1 <= int(testo) <= 50:
             await update.message.reply_text('Scrivi quanti prodotti vuoi ripubblicare: un numero da 1 a 50.')
             return servizi.RAPIDO
         if not servizi.tag_canale(draft['canale']):
-            await update.message.reply_text('⚠️ Imposta AMAZON_PARTNER_TAG su Railway con il tuo tag affiliato prima di avviare Repost.')
+            await update.message.reply_text('⚠️ Imposta il tuo tag in Impostazioni generali → Tag affiliato prima di avviare Repost.')
             return servizi.RAPIDO
         quantita = int(testo)
         draft['elaborazione'] = True
@@ -350,21 +355,27 @@ async def ricevi_rapido(servizi, update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text('Conferma i post pronti, riprova quelli non letti oppure annulla il lotto prima di inviare altri link.', reply_markup=servizi.tastiera_multiplo(draft))
         return servizi.RAPIDO
     if not servizi.tag_canale(draft['canale']):
-        await update.message.reply_text('⚠️ Prima imposta AMAZON_PARTNER_TAG nelle variabili Railway con il TUO tag affiliato Amazon, poi reinvia i link.')
+        await update.message.reply_text('⚠️ Prima imposta il tuo tag in Impostazioni generali → Tag affiliato, poi reinvia il messaggio.')
         return servizi.RAPIDO
-    links = servizi.re.findall(r'https?://[^\s<>]+', update.message.text, flags=servizi.re.IGNORECASE)
-    links = [x.rstrip('.,;)]') for x in links]
-    validi = []
-    for link in links:
-        if servizi.link_amazon_valido(link):
-            validi.append(link)
-    if not validi or len(validi) > 50:
-        await update.message.reply_text('Invia da 1 a 50 link Amazon validi, uno per riga.')
-        return servizi.RAPIDO
+    if draft.get('importa_messaggio'):
+        from importa_messaggio import estrai_link
+        validi, ignorati = estrai_link(update.message)
+    else:
+        links = servizi.re.findall(r'https?://[^\s<>]+', update.message.text or '', flags=servizi.re.IGNORECASE)
+        links = [x.rstrip('.,;)]') for x in links]
+        validi = [link for link in links if servizi.link_amazon_valido(link)]
+        ignorati = len(links) - len(validi)
     unici = list(dict.fromkeys(validi))
+    if not unici or len(unici) > 50:
+        testo = ('Non ho trovato link Amazon utilizzabili. Incolla o inoltra un messaggio con da 1 a 50 link Amazon, anche nella didascalia o nel testo cliccabile.'
+                 if draft.get('importa_messaggio') else 'Invia da 1 a 50 link Amazon validi, uno per riga.')
+        if len(unici) > 50:
+            testo = 'Sono presenti più di 50 link Amazon: dividi il contenuto in lotti più piccoli.'
+        await update.message.reply_text(testo)
+        return servizi.RAPIDO
     draft['ricevuti'] = len(validi)
     draft['duplicati'] = len(validi) - len(unici)
-    draft['scartati'] = [f'{len(links) - len(validi)} link non Amazon ignorati'] if len(links) != len(validi) else []
+    draft['scartati'] = [f'{ignorati} link non Amazon ignorati'] if ignorati else []
     draft['elaborazione'] = True
     attesa = await update.message.reply_text(f'🔎 Preparo {len(unici)} prodotti. Puoi usare /annulla per interrompere.')
     context.application.create_task(servizi.prepara_lotto_multiplo(attesa, context, draft, unici), update=update)

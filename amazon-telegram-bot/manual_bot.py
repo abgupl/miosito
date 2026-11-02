@@ -1872,6 +1872,7 @@ def render_template_condizione(dati):
 
 def crea_caption_con_link(messaggio, link, messaggio_gia_html=False):
     """Crea una didascalia uniforme senza mostrare l'URL completo."""
+    link = affiliazione.applica(link, tag_canale())
     dati=dati_template_da_corpo(messaggio)
     if dati is not None:
         corpo=render_template_condizione(dati)
@@ -2126,7 +2127,7 @@ async def invia_recap_giornaliero(bot, canale, telegram_chat_id):
     offerte = offerte_recap_di_oggi(telegram_chat_id)
     if not offerte:
         return False
-    top = seleziona_top_recap(offerte, limite=5)
+    top = [dict(p, link=link_affiliato_multiplo(p.get("link"), p.get("asin") or estrai_asin_da_link(p.get("link")))) for p in seleziona_top_recap(offerte, limite=5)]
     righe = crea_righe_recap(top)
     oggi = datetime.now(ROMA_TZ).date().isoformat()
     testo = (
@@ -2701,6 +2702,8 @@ async def invia_offerta_programmata(
             )
             return
 
+    link = link_affiliato_multiplo(link, estrai_asin_da_link(link) or await asyncio.to_thread(risolvi_asin_da_link, link))
+
     # Il post programmato e' stato preparato durante l'acquisizione del link.
     # Nessuna seconda lettura Amazon immediatamente prima della pubblicazione.
 
@@ -2718,7 +2721,7 @@ async def invia_offerta_programmata(
     # Ricontrolla la pausa anche se la coda e' stata preparata ore prima.
     await attendi_finestra_offerte(destinazione)
     with sqlite3.connect(DB_PATH) as db_stato:
-        acquisita = db_stato.execute("UPDATE programmazioni SET stato='in_invio' WHERE id=? AND CAST(telegram_chat_id AS TEXT)=? AND stato='attesa'", (programmazione_id, str(destinazione))).rowcount
+        acquisita = db_stato.execute("UPDATE programmazioni SET stato='in_invio',link=? WHERE id=? AND CAST(telegram_chat_id AS TEXT)=? AND stato='attesa'", (link, programmazione_id, str(destinazione))).rowcount
     if not acquisita:
         return
     if foto_file_id:
@@ -5401,6 +5404,7 @@ def salva_raccolta_casa(prodotti, tema, messaggio_telegram, foto_file_id):
 
 
 async def pubblica_raccolta_casa(bot, prodotti, tema):
+    prodotti = [dict(p, link=link_affiliato_multiplo(p.get('link'), p.get('asin') or estrai_asin_da_link(p.get('link')), 'casa')) for p in prodotti]
     collage = await asyncio.to_thread(crea_collage_raccolta_casa, prodotti, tema)
     caption = crea_caption_raccolta_casa(prodotti, tema)
     messaggio = await bot.send_photo(
@@ -5798,6 +5802,7 @@ def salva_raccolta_tech(prodotti, tema, messaggio_telegram, foto_file_id):
 
 
 async def pubblica_raccolta_tech(bot, prodotti, tema):
+    prodotti = [dict(p, link=link_affiliato_multiplo(p.get('link'), p.get('asin') or estrai_asin_da_link(p.get('link')), 'tech')) for p in prodotti]
     collage = await asyncio.to_thread(crea_collage_raccolta_tech, prodotti, tema)
     caption = crea_caption_raccolta_tech(prodotti, tema)
     messaggio = await bot.send_photo(
@@ -7014,6 +7019,7 @@ def link_post_telegram(messaggio=None, chat_id=None, message_id=None):
 
 def tastiera_offerta_automatica(link, link_post=None, asin=None):
     """Tastiera unica 2x2 per tutti i percorsi di pubblicazione delle offerte."""
+    link = affiliazione.applica(link, tag_canale())
     asin = str(asin or estrai_asin_da_link(link) or "").upper()
     condivisione = "https://t.me/share/url?" + urlencode({
         "url": link_post or link,
@@ -7064,12 +7070,12 @@ async def storico_prezzi_non_disponibile(update, context):
 
 
 async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="automatico"):
+    if not tag_canale():
+        raise ValueError("Configura il tuo tag in Impostazioni generali → Tag affiliato.")
     if canale is not None and canale not in CANALI:
         raise ValueError('Canale non configurato.')
     canale_effettivo = canale or ('casa' if prodotto.get('categoria') in CASA_CATEGORIE else 'tech')
     prodotto = dict(prodotto)
-    if tag_canale(canale_effettivo):
-        prodotto['link'] = link_affiliato_multiplo(prodotto.get('link'), prodotto.get('asin') or risolvi_asin_da_link(prodotto.get('link')), canale_effettivo)
     tipo = tipo_o_fallback(prodotto.get('link'), prodotto)
     if tipo == 'sconosciuto' and not prodotto.get('_lettura_offerta_completata'):
         # Solo per pubblicazioni dirette non passate dalla ricerca automatica.
@@ -7082,6 +7088,7 @@ async def pubblica_offerta_automatica(bot, prodotto, canale=None, origine="autom
         tipo = tipo_o_fallback(prodotto.get('link'), prodotto)
     elif tipo == 'sconosciuto':
         raise ValueError('Offerta non verificabile: prodotto saltato')
+    prodotto['link'] = link_affiliato_multiplo(prodotto.get('link'), prodotto.get('asin') or await asyncio.to_thread(risolvi_asin_da_link, prodotto.get('link')), canale_effettivo)
     prodotto['tipologia_amazon'] = tipo
     nome = prodotto["nome"]
     prezzo_numero = _prezzo_italiano(prodotto["prezzo_valore"])
@@ -8859,6 +8866,8 @@ def leggi_prodotto_creators_da_link(link):
 
 # Adattatori espliciti: i moduli non importano il coordinatore.
 import invio_multiplo
+import importa_messaggio
+import affiliazione
 import repost
 import canali
 import menu_canali
@@ -8923,9 +8932,12 @@ async def richiedi_canale(update, context):
         return False
     return True
 
-def tag_canale(key):
-    override = ARCHIVIO.impostazioni(CANALI[key].chat_id)['tag'] if key else ''
-    return override or (os.environ.get('AMAZON_PARTNER_TAG') or os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip()
+def tag_canale(key=None):
+    # Il parametro resta compatibile con i chiamanti: il tag è sempre globale.
+    return affiliazione.leggi(DB_PATH, os.environ)
+
+async def importa_da_pulsante(update, context):
+    return await importa_messaggio.apri(_servizi_invii, update, context)
 
 async def gestisci_menu_v2(update, context):
     return await menu_canali.gestisci(_servizi_invii, update, context)
@@ -8960,7 +8972,7 @@ async def proteggi_menu_v2(update, context):
     if data.startswith(('v2c:', 'v2a:', 'v2r:')):
         if channel and data.split(':', 2)[1] == channel.chiave:
             return
-    elif channel and (data in {'nuova','rapido','repost','publish_menu','menu_admin','annulla',
+    elif channel and (data in {'nuova','rapido','repost','importa_messaggio','publish_menu','menu_admin','annulla',
                                'conferma_orario_vicino','cambia_orario'}
                       or re.fullmatch(r'prog_giorno_[012]|tpl_(pulito|aggressivo|tech)|multi_(timing|personalizzato|min_(10|20|30|40|60)|avvia|annulla|retry)', data)):
         return
@@ -11486,8 +11498,8 @@ async def ricontrolla_da_cronologia(update: Update, context: ContextTypes.DEFAUL
     if not row:
         await q.message.reply_text('❌ Prodotto non trovato.')
         return ConversationHandler.END
-    if not (os.environ.get('AMAZON_PARTNER_TAG') or os.environ.get('AMAZON_ASSOCIATE_TAG') or '').strip():
-        await q.message.reply_text('⚠️ Imposta AMAZON_PARTNER_TAG nelle variabili Railway.')
+    if not tag_canale():
+        await q.message.reply_text('⚠️ Imposta il tuo tag in Impostazioni generali → Tag affiliato.')
         return ConversationHandler.END
     link,chat_id,asin,prezzo_storico,data_storica=row
     canale='casa' if str(chat_id)==str(CASA_CHANNEL_ID) else 'tech'
@@ -11991,6 +12003,7 @@ async def reinvia_offerta_storica(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text("❌ Offerta non trovata.")
         return
 
+    draft['link'] = link_affiliato_multiplo(draft['link'], draft.get('asin') or await asyncio.to_thread(risolvi_asin_da_link, draft['link']))
     messaggio = _messaggio_reinvio(draft)
     ora = datetime.now(ROMA_TZ)
     if prossimo_orario_manuale(ora) != ora:
@@ -13307,6 +13320,7 @@ def main():
             CallbackQueryHandler(ricontrolla_da_cronologia, pattern=r'^archive_recheck_[0-9]+$'),
 
             CallbackQueryHandler(repost_da_pulsante, pattern='^repost$'),
+            CallbackQueryHandler(importa_da_pulsante, pattern='^importa_messaggio$'),
 
 
             CommandHandler(
@@ -13384,7 +13398,7 @@ def main():
                 CallbackQueryHandler(decidi_ricontrollo_cronologia,pattern=r'^hist_(pubblica|programma|annulla)$'),
                 CallbackQueryHandler(gestisci_multiplo, pattern=r"^multi_(?:canale_(?:tech|casa)|timing|personalizzato|min_(?:10|20|30|40|60)|avvia|annulla|retry)$"),
                 MessageHandler(
-                    filters.TEXT
+                    (filters.TEXT | filters.CAPTION)
                     & ~filters.COMMAND,
                     ricevi_rapido,
                 )

@@ -62,6 +62,13 @@ with tempfile.TemporaryDirectory() as tmp:
              patch.object(type(app.bot),'send_photo',new=AsyncMock(return_value=sent)) as private_photo:
             await click('v2_home')
             await click('v2_settings')
+            await click('v2_tag')
+            await text('globale-21')
+            assert runtime.tag_canale('tech') == runtime.tag_canale('casa') == 'globale-21'
+            runtime.ARCHIVIO.salva('-100202','tag','vecchio-21')
+            assert runtime.tag_canale('casa') == 'globale-21'
+            await click('v2_tag')
+            await text('test-21')
             await click('v2_templates')
             assert 'GRAFICA E TEMPLATE' in send.call_args.kwargs['text']
             await click('settings_menu')
@@ -97,6 +104,27 @@ with tempfile.TemporaryDirectory() as tmp:
             await click('v2_select_casa')
             assert send.call_args.kwargs['reply_markup'].inline_keyboard[0][0].callback_data=='rapido'
             assert send.call_args.kwargs['reply_markup'].inline_keyboard[0][0].text=='✍️ Invio'
+            assert send.call_args.kwargs['reply_markup'].inline_keyboard[1][0].callback_data=='importa_messaggio'
+            await click('importa_messaggio')
+            assert app.user_data[42]['multiplo']['importa_messaggio']
+            assert any(b.callback_data=='v2c:casa:menu' for row in send.call_args.kwargs['reply_markup'].inline_keyboard for b in row)
+            for payload in [
+                {'text':'🔥 Apri qui; https://amzn.eu/Altra', 'entities':[{'type':'text_link','offset':3,'length':8,'url':'https://link.amazon/Primo'}]},
+                {'photo':[{'file_id':'input-photo','file_unique_id':'unique-input','width':100,'height':100}],
+                 'caption':'☀️ Tocca qui', 'caption_entities':[{'type':'text_link','offset':3,'length':9,'url':'https://amzn.eu/Foto'}]}
+            ]:
+                with patch.object(runtime,'prepara_lotto_multiplo',new=AsyncMock()) as imported:
+                    counter+=1
+                    raw={'update_id':counter,'message':{'message_id':counter,'date':1700000000,
+                         'from':{'id':42,'is_bot':False,'first_name':'Admin'},'chat':{'id':42,'type':'private'},**payload}}
+                    await app.process_update(Update.de_json(raw,app.bot))
+                    await asyncio.sleep(0)
+                    imported.assert_awaited_once()
+                    links=imported.call_args.args[-1]
+                    assert links==(['https://link.amazon/Primo','https://amzn.eu/Altra'] if 'text' in payload else ['https://amzn.eu/Foto']), links
+                    assert imported.call_args.args[2]['canale']=='casa'
+                await click('v2c:casa:menu')
+                await click('importa_messaggio')
             await click('v2c:casa:posts')
             await click('nuova')
             assert app.user_data[42]['multiplo']['canale']=='casa'
@@ -384,7 +412,7 @@ with tempfile.TemporaryDirectory() as tmp:
             assert not errors,errors
             # Persisted jobs retain the destination independently of the open UI.
             runtime.ARCHIVIO.salva('-100202','attiva','0')
-            pid,_=runtime.salva_programmazione('Prodotto','Test','https://www.amazon.it/dp/B012345678?tag=test-21','10',runtime.datetime.now(runtime.ROMA_TZ),'-100202')
+            pid,_=runtime.salva_programmazione('Prodotto','Test','https://www.amazon.it/dp/B012345678?tag=estraneo-21','10',runtime.datetime.now(runtime.ROMA_TZ),'-100202')
             with sqlite3.connect(runtime.DB_PATH) as db:
                 row=db.execute('SELECT id,nome,messaggio,link,prezzo,foto_file_id,telegram_chat_id FROM programmazioni WHERE id=?',(pid,)).fetchone()
             send.reset_mock()
@@ -395,6 +423,9 @@ with tempfile.TemporaryDirectory() as tmp:
                 await runtime.invia_offerta_programmata(app.bot,row)
             send.assert_awaited_once()
             assert send.call_args.kwargs['chat_id']=='-100202'
+            assert 'tag=test-21' in send.call_args.kwargs['text']
+            assert 'estraneo-21' not in send.call_args.kwargs['text']
+            assert 'tag=test-21' in send.call_args.kwargs['reply_markup'].inline_keyboard[0][1].url
             assert runtime.ARCHIVIO.lista('recap_offerte','-100202')[1]==1
             assert runtime.ARCHIVIO.lista('recap_offerte','-100101')[1]==0
             runtime.ARCHIVIO.salva('-100101','attiva','0')

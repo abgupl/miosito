@@ -1,6 +1,7 @@
 """Menu V2 con callback legati al canale della schermata."""
 import re
 import monitoraggio
+import affiliazione
 from canali import reset_flusso, selezionato
 
 INPUT = 'V2_IMPOSTAZIONE'
@@ -23,6 +24,7 @@ def menu_canale(s, channel):
     prefix = 'v2c:' + channel.chiave + ':'
     return tastiera(s, [
         [('✍️ Invio', 'rapido')],
+        [('📩 Importa messaggio', 'importa_messaggio')],
         [('♻️ Repost', prefix + 'repost')],
         [('🤖 Invio automatico', prefix + 'automatic')],
         [('📅 Programmati e code', prefix + 'queue:0')],
@@ -87,16 +89,28 @@ async def gestisci(s, update, context, data_override=None):
         await mostra(s, update,
                      '⚙️ IMPOSTAZIONI GENERALI\n\n'
                      'Fuso orario: Europe/Rome\n'
-                     'Tag affiliato predefinito: ' + (s.tag_canale(None) or 'non configurato') + '\n\n'
-                     'I canali ereditano il tag generale finché non impostano il proprio.\n'
+                     'Tag affiliato globale: ' + (s.tag_canale(None) or 'non configurato') + '\n\n'
+                     'Lo stesso tag vale per tutti i canali presenti e futuri e per tutte le modalità di pubblicazione.\n'
                      'Destinazioni e amministratori si configurano nelle variabili del servizio.',
                      tastiera(s, [[('🎨 Grafica e template', 'v2_templates')],
+                                  [('🔗 Tag affiliato', 'v2_tag')],
                                   [('🔎 Monitoraggio post: ' + ('ATTIVO' if monitoraggio.attivo(s.DB_PATH) else 'DISATTIVATO'), 'v2_monitor')],
                                   [('📢 Canali configurati', 'v2_channels')],
                                   [('📊 Stato del bot', 'v2_status')],
                                   [('📋 Log e diagnostica', 'diag_logs_all_0')],
                                   [('⬅️ Scelta canale', 'v2_home')]]))
         return s.ConversationHandler.END
+    if data == 'v2_tag':
+        reset_flusso(context)
+        if not all(c.accessibile(update.effective_user.id) for c in s.CANALI.values()):
+            await mostra(s, update, 'La modifica del tag globale richiede accesso a tutti i canali.',
+                         tastiera(s, [[('⬅️ Indietro', 'v2_settings')]]))
+            return s.ConversationHandler.END
+        context.user_data['v2_input'] = ('globale', 'tag')
+        await mostra(s, update, '🔗 TAG AFFILIATO GLOBALE\n\nAttuale: ' + (s.tag_canale(None) or 'non configurato') +
+                     '\n\nInvia soltanto il tuo tag affiliato Amazon, non il link. Sarà usato per tutti i canali e tutte le pubblicazioni, anche quelle già in coda. I post già pubblicati non vengono riscritti.',
+                     tastiera(s, [[('⬅️ Indietro', 'v2_settings')]]))
+        return INPUT
     if data == 'v2_status' or re.fullmatch(r'v2_status_[0-9]+', data):
         import stato_bot
         await stato_bot.apri(s, update, update.effective_user.id, int(data.rsplit('_',1)[1]) if data != 'v2_status' else 0)
@@ -153,11 +167,10 @@ async def gestisci(s, update, context, data_override=None):
         await mostra(s, update, '⚙️ IMPOSTAZIONI — ' + channel.nome +
                      f"\n\nIntervallo multiplo/repost: {settings['intervallo']} minuti\n"
                      f"Fascia: {settings['inizio']}–{settings['fine']} ({'attiva' if settings['attiva'] else 'disattivata'})\n"
-                     'Tag affiliato: ' + (s.tag_canale(channel.chiave) or 'non configurato'),
+                     'Tag affiliato globale: ' + (s.tag_canale(None) or 'non configurato') + ' (Impostazioni generali)',
                      tastiera(s, [[('⏱ Intervallo', prefix + 'edit:intervallo')],
                                   [('🕒 Fascia oraria', prefix + 'edit:fascia')],
                                   [('🔘 Attiva/disattiva fascia', prefix + 'toggle')],
-                                  [('🔗 Tag affiliato', prefix + 'edit:tag')],
                                   [('🔎 Verifica collegamento', prefix + 'check')], back]))
     elif action == 'toggle':
         s.ARCHIVIO.salva(channel.chat_id, 'attiva', '0' if settings['attiva'] else '1')
@@ -166,9 +179,10 @@ async def gestisci(s, update, context, data_override=None):
                      tastiera(s, [[('⚙️ Impostazioni canale', prefix + 'settings')], back]))
     elif action.startswith('edit:'):
         field = action.split(':')[1]
+        if field == 'tag':
+            return await gestisci(s, update, context, data_override='v2_tag')
         prompts = {'intervallo': 'Scrivi l’intervallo in minuti, da 1 a 1440.',
-                   'fascia': 'Scrivi inizio e fine nel formato HH:MM-HH:MM, ad esempio 08:30-21:30.',
-                   'tag': 'Scrivi il tag affiliato del canale oppure PREDEFINITO per usare quello generale.'}
+                   'fascia': 'Scrivi inizio e fine nel formato HH:MM-HH:MM, ad esempio 08:30-21:30.'}
         if field in prompts:
             context.user_data['v2_input'] = (channel.chiave, field)
             await mostra(s, update, channel.nome + '\n\n' + prompts[field], tastiera(s, [back]))
@@ -254,8 +268,20 @@ async def gestisci(s, update, context, data_override=None):
 async def ricevi_impostazione(s, update, context):
     if not await s.controlla_autorizzazione(update):
         return s.ConversationHandler.END
-    channel = selezionato(context, s.CANALI, update.effective_user.id)
     pending = context.user_data.get('v2_input')
+    if pending == ('globale', 'tag'):
+        if not all(c.accessibile(update.effective_user.id) for c in s.CANALI.values()):
+            return s.ConversationHandler.END
+        try:
+            affiliazione.salva(s.DB_PATH, update.message.text)
+        except ValueError as exc:
+            await update.message.reply_text(str(exc), reply_markup=tastiera(s, [[('⬅️ Indietro', 'v2_settings')]]))
+            return INPUT
+        context.user_data.pop('v2_input', None)
+        await mostra(s, update, '✅ Tag affiliato globale salvato per tutti i canali.',
+                     tastiera(s, [[('⬅️ Indietro', 'v2_settings')]]))
+        return s.ConversationHandler.END
+    channel = selezionato(context, s.CANALI, update.effective_user.id)
     if channel is None or not pending or pending[0] != channel.chiave:
         return s.ConversationHandler.END
     field = pending[1]
@@ -275,8 +301,6 @@ async def ricevi_impostazione(s, update, context):
         s.ARCHIVIO.salva(channel.chat_id, 'inizio', value[:5])
         s.ARCHIVIO.salva(channel.chat_id, 'fine', value[6:])
         s.riallinea_programmati_fascia()
-    elif field == 'tag' and (value.upper() == 'PREDEFINITO' or re.fullmatch(r'[A-Za-z0-9_-]{1,100}', value)):
-        s.ARCHIVIO.salva(channel.chat_id, field, '' if value.upper() == 'PREDEFINITO' else value)
     else:
         await update.message.reply_text('❌ Valore non valido. Riprova oppure usa /annulla.')
         return INPUT

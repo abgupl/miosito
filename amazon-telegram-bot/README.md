@@ -13,14 +13,14 @@ Dopo la selezione, il menu del canale contiene:
 - Invio automatico: gestione dei filtri e delle impostazioni legacy, indipendenti per canale.
 - Programmati e code: elenco, dettagli, modifica e annullamento dei post in attesa.
 - Cronologia: pubblicazioni del canale, con dettagli e paginazione.
-- Impostazioni canale: intervallo, fascia oraria, tag affiliato e verifica dei permessi Telegram.
+- Impostazioni canale: intervallo, fascia oraria e verifica dei permessi Telegram. Il tag affiliato è globale.
 - Cambia canale.
 
 Dopo gli elenchi di cronologia e programmati il bot chiede quale # aprire:
 si digita il numero (123 oppure #123), senza pulsanti per i singoli risultati.
 Il numero viene cercato solo nel canale selezionato.
 
-Le impostazioni generali mostrano tag predefinito, fuso orario, canali configurati,
+Le impostazioni generali mostrano tag globale, fuso orario, canali configurati,
 stato e diagnostica. I nuovi canali si aggiungono dal bot; gli amministratori globali restano configurati nelle variabili del servizio. La verifica dei permessi Telegram è esplicita: una configurazione
 presente non viene mostrata automaticamente come collegamento verificato.
 
@@ -232,3 +232,14 @@ Digitando il numero in Programmati e code si apre direttamente la scheda di ante
 ## Motivazioni di lettura e criteri Repost
 
 I riepiloghi prima e dopo la conferma elencano numero, nome quando disponibile, link, motivazione e tentativi effettivi degli articoli non letti, anche quando l'obiettivo è già raggiunto. La diagnostica è per chiamata, senza un ultimo errore globale condiviso: CAPTCHA, timeout, codici HTTP, pagina vuota, prezzo mancante o condizione non verificabile sono riportati solo se rilevati. Se manca il dettaglio viene dichiarato, senza attribuire cause non osservate. L'identificazione del link fallita riporta zero tentativi pagina. I prodotti letti senza sconto verificabile rispetto al prezzo di riferimento attuale sono esclusi e non finiscono nel recupero dei non letti. Non si confronta mai il prezzo della vecchia pubblicazione. Gli importi di coupon riconosciuti vengono calcolati con il renderer comune, ma servono comunque un prezzo attuale positivo e un prezzo di riferimento verificabile maggiore del finale. Le regole sono comuni a tutti i canali. Validazione: 68 test, nessun invio reale.
+
+
+## Importa messaggio e tag affiliato globale
+
+Ogni menu canale contiene **📩 Importa messaggio**, subito sotto **✍️ Invio**. Accetta messaggi incollati o inoltrati con link Amazon nel testo, nelle didascalie e nei collegamenti cliccabili. Più testi possono essere separati da punto e virgola o da righe; i pulsanti URL sono letti solo se Telegram li rende disponibili. Ignora i link non Amazon e deduplica i collegamenti, poi gli ASIN durante la lettura. Limite: 50 link Amazon distinti per lotto. Non effettua letture della cronologia di canali esterni.
+
+L’importazione riusa lettura Amazon (fino a 3 tentativi), foto, template, intervalli e code del flusso Invio. I testi originali non diventano descrizioni dei prodotti. Se tutti sono pronti resta l’avvio dopo 120 secondi; con articoli non letti attende la scelta dell’amministratore e mantiene il pulsante di recupero e le motivazioni degli errori. Le code e le cronologie restano separate per canale.
+
+**Impostazioni generali → Tag affiliato** salva un unico tag nella tabella SQLite `affiliazione_globale`. Il valore salvato ha precedenza su `AMAZON_PARTNER_TAG`/`AMAZON_ASSOCIATE_TAG`; in assenza del valore salvato viene mantenuto il tag d’ambiente esistente. I precedenti override dei singoli canali non vengono più usati. La modifica richiede accesso a tutti i canali. Il tag globale è applicato a Invio, importazione, Repost, automatico, reinvii, raccolte e recap. Al momento della pubblicazione si rigenerano anche i link dei post precedentemente accodati; i post già pubblicati non vengono modificati retroattivamente. Senza tag la pubblicazione è bloccata.
+
+Validazione: 77 test senza rete e senza invii reali, inclusi handler Telegram, testo con link nascosti dopo emoji, didascalie fotografiche, tag globale persistente e pubblicazione di un post accodato con un tag precedente.
